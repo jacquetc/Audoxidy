@@ -436,6 +436,66 @@ fn a_selected_separator_expands_to_its_songs_without_duplicates() {
     assert_eq!(selected_song_ids(&g, &set(&[99])), Vec::<i64>::new());
 }
 
+/// [`two_groups`] searched for "keep", which matches songs 2, 4 and 5.
+/// Displayed linear: 0 sep A, 1 s2, 2 sep B, 3 s4, 4 s5.
+fn searched_two_groups() -> (Vec<PlaylistFolderGroup>, Vec<PlaylistFolderGroup>) {
+    let mut g = two_groups();
+    for (gi, si) in [(0, 1), (1, 1), (1, 2)] {
+        g[gi].songs[si].title = "Keep me".into();
+    }
+    let filtered = filter_groups(&g, "keep").unwrap_or_default();
+    (g, filtered)
+}
+
+#[test]
+fn d2_an_action_under_a_search_targets_the_visible_song() {
+    // Before the fix, send-to looked up the song's position in the filtered
+    // group inside the full group: clicking song 2 sent song 1.
+    let (_, shown) = searched_two_groups();
+    let none = set(&[]);
+    assert_eq!(action_target_song_ids(&shown, &none, 1), vec![2]);
+    assert_eq!(action_target_song_ids(&shown, &none, 3), vec![4]);
+    assert_eq!(action_target_song_ids(&shown, &none, 4), vec![5]);
+}
+
+#[test]
+fn d2_a_separator_under_a_search_targets_only_its_visible_songs() {
+    // Before the fix, deleting separator B removed song 3 too, which the
+    // search hides.
+    let (_, shown) = searched_two_groups();
+    assert_eq!(action_target_song_ids(&shown, &set(&[]), 2), vec![4, 5]);
+    assert_eq!(action_target_song_ids(&shown, &set(&[2]), 2), vec![4, 5]);
+    assert_eq!(action_target_song_ids(&shown, &set(&[]), 0), vec![2]);
+}
+
+#[test]
+fn d2_a_clicked_item_in_the_selection_targets_the_whole_visible_selection() {
+    let (_, shown) = searched_two_groups();
+    let selection = set(&[4, 0]);
+    assert_eq!(action_target_song_ids(&shown, &selection, 4), vec![2, 5]);
+    // A click outside the selection targets only the clicked item.
+    assert_eq!(action_target_song_ids(&shown, &selection, 3), vec![4]);
+    // A separator selected with one of its songs counts each song once.
+    assert_eq!(action_target_song_ids(&shown, &set(&[2, 4]), 2), vec![4, 5]);
+}
+
+#[test]
+fn d2_without_a_search_the_targets_are_unchanged() {
+    let g = two_groups();
+    let none = set(&[]);
+    assert_eq!(action_target_song_ids(&g, &none, 1), vec![1]);
+    assert_eq!(action_target_song_ids(&g, &none, 5), vec![4]);
+    assert_eq!(action_target_song_ids(&g, &none, 3), vec![3, 4, 5]);
+    assert_eq!(action_target_song_ids(&g, &none, 99), Vec::<i64>::new());
+    let selection = set(&[6, 0]);
+    assert_eq!(action_target_song_ids(&g, &selection, 6), vec![1, 2, 5]);
+    assert_eq!(action_target_song_ids(&g, &selection, 4), vec![3]);
+    assert_eq!(
+        action_target_song_ids(&g, &selection, 6),
+        selected_song_ids(&g, &selection)
+    );
+}
+
 // ------------------------------------------------------------
 // Collapsing
 // ------------------------------------------------------------

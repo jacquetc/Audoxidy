@@ -509,6 +509,30 @@ pub fn selected_song_ids(groups: &[PlaylistFolderGroup], selected: &HashSet<usiz
         .collect()
 }
 
+/// Song ids that a playlist action on the item at `clicked` applies to
+/// (send to a new or existing list, remove from the playlist), resolved from
+/// what the user sees.
+///
+/// `displayed` is the list on screen: the search result when a filter is
+/// applied, else the full list; `clicked` and `selected` are linear indices
+/// into it. If `clicked` is part of the selection the action applies to the
+/// whole selection, otherwise to `clicked` alone. A song contributes itself
+/// and a separator the songs of its *displayed* group, so songs hidden by the
+/// search are never targeted. The ids come in playlist order without
+/// duplicates, as with [`selected_song_ids`]. The database calls key playlist
+/// items by `(playlist, song id)`, so no item ids are needed.
+pub fn action_target_song_ids(
+    displayed: &[PlaylistFolderGroup],
+    selected: &HashSet<usize>,
+    clicked: usize,
+) -> Vec<i64> {
+    if selected.contains(&clicked) {
+        selected_song_ids(displayed, selected)
+    } else {
+        selected_song_ids(displayed, &HashSet::from([clicked]))
+    }
+}
+
 // ============================================================
 // Collapsing
 // ============================================================

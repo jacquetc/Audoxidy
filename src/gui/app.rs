@@ -3955,40 +3955,9 @@ impl AudoxidyApp {
                 let db_arc = self.database.clone();
                 let active_playlist_id = self.playlist_manager.active_playlist_id;
 
-                // Si el índice está en la selección actual, eliminamos todo lo seleccionado
-                let target_songs = if self.playlist_manager.selected_idxs.contains(&linear_idx) {
-                    self.playlist_manager.get_selected_song_ids()
-                } else {
-                    // Si no, eliminamos solo este elemento (ya sea canción o carpeta completa)
-                    let mut ids = Vec::new();
-                    if let Some(item_info) = self
-                        .playlist_manager
-                        .get_item_info_at_linear_index(linear_idx)
-                    {
-                        match item_info {
-                            crate::gui::playlist::PlaylistItemType::Song(g_idx, s_idx, _) => {
-                                if let Some(group) =
-                                    self.playlist_manager.active_groups().get(g_idx)
-                                {
-                                    if let Some(song_ref) = group.songs.get(s_idx) {
-                                        ids.push(song_ref.song_id);
-                                    }
-                                }
-                            }
-                            crate::gui::playlist::PlaylistItemType::Separator(_, anchor) => {
-                                if let Some(group) = self
-                                    .playlist_manager
-                                    .groups
-                                    .iter()
-                                    .find(|g| g.first_item_id == anchor)
-                                {
-                                    ids.extend(group.songs.iter().map(|s| s.song_id));
-                                }
-                            }
-                        }
-                    }
-                    ids
-                };
+                // Toda la selección si el índice está en ella; si no, solo ese
+                // elemento. Se resuelve sobre lo que se ve (búsqueda incluida).
+                let target_songs = self.playlist_manager.action_target_song_ids(linear_idx);
 
                 if !target_songs.is_empty() {
                     return Task::batch(vec![
@@ -4088,45 +4057,7 @@ impl AudoxidyApp {
             Message::PlaylistSendToNewList(linear_idx) => {
                 self.focus = AppFocus::Playlist;
                 self.context_menu = None;
-                let target_songs = if self.playlist_manager.selected_idxs.contains(&linear_idx) {
-                    self.playlist_manager.get_selected_song_ids()
-                } else {
-                    let mut ids = Vec::new();
-                    if let Some(item_info) = self
-                        .playlist_manager
-                        .get_item_info_at_linear_index(linear_idx)
-                    {
-                        match item_info {
-                            crate::gui::playlist::PlaylistItemType::Song(
-                                _folder,
-                                local_idx,
-                                anchor,
-                            ) => {
-                                if let Some(group) = self
-                                    .playlist_manager
-                                    .groups
-                                    .iter()
-                                    .find(|g| g.first_item_id == anchor)
-                                {
-                                    if let Some(song_ref) = group.songs.get(local_idx) {
-                                        ids.push(song_ref.song_id);
-                                    }
-                                }
-                            }
-                            crate::gui::playlist::PlaylistItemType::Separator(_folder, anchor) => {
-                                if let Some(group) = self
-                                    .playlist_manager
-                                    .groups
-                                    .iter()
-                                    .find(|g| g.first_item_id == anchor)
-                                {
-                                    ids.extend(group.songs.iter().map(|s| s.song_id));
-                                }
-                            }
-                        }
-                    }
-                    ids
-                };
+                let target_songs = self.playlist_manager.action_target_song_ids(linear_idx);
                 self.update(Message::OpenDialog(ActiveDialog::CreatePlaylist {
                     name: "".to_string(),
                     pending_add_songs: target_songs,
@@ -4138,45 +4069,7 @@ impl AudoxidyApp {
                 self.context_menu = None;
                 let db_arc = self.database.clone();
 
-                let target_songs = if self.playlist_manager.selected_idxs.contains(&linear_idx) {
-                    self.playlist_manager.get_selected_song_ids()
-                } else {
-                    let mut ids = Vec::new();
-                    if let Some(item_info) = self
-                        .playlist_manager
-                        .get_item_info_at_linear_index(linear_idx)
-                    {
-                        match item_info {
-                            crate::gui::playlist::PlaylistItemType::Song(
-                                _folder,
-                                local_idx,
-                                anchor,
-                            ) => {
-                                if let Some(group) = self
-                                    .playlist_manager
-                                    .groups
-                                    .iter()
-                                    .find(|g| g.first_item_id == anchor)
-                                {
-                                    if let Some(song_ref) = group.songs.get(local_idx) {
-                                        ids.push(song_ref.song_id);
-                                    }
-                                }
-                            }
-                            crate::gui::playlist::PlaylistItemType::Separator(_folder, anchor) => {
-                                if let Some(group) = self
-                                    .playlist_manager
-                                    .groups
-                                    .iter()
-                                    .find(|g| g.first_item_id == anchor)
-                                {
-                                    ids.extend(group.songs.iter().map(|s| s.song_id));
-                                }
-                            }
-                        }
-                    }
-                    ids
-                };
+                let target_songs = self.playlist_manager.action_target_song_ids(linear_idx);
 
                 if !target_songs.is_empty() {
                     return Task::perform(
