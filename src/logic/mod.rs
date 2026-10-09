@@ -11,3 +11,5 @@
 //! / `expect()` are only allowed in tests (see `clippy.toml`).
 
 #![deny(warnings, clippy::all, clippy::unwrap_used, clippy::expect_used)]
+
+pub mod selection_modifiers;
