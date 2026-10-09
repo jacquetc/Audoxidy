@@ -3071,17 +3071,14 @@ impl AudoxidyApp {
             }
             Message::LibrarySortChanged(col) => {
                 self.focus = AppFocus::Library;
-                if self.library_manager.sort_column == Some(col) {
-                    if self.library_manager.sort_ascending == Some(true) {
-                        self.library_manager.sort_ascending = Some(false);
-                    } else {
-                        self.library_manager.sort_column = None;
-                        self.library_manager.sort_ascending = None;
-                    }
-                } else {
-                    self.library_manager.sort_column = Some(col);
-                    self.library_manager.sort_ascending = Some(true);
+                // Ciclo de tres estados: otra columna → ascendente → descendente → sin orden.
+                let next_sort = crate::logic::library_sort::SortState {
+                    column: self.library_manager.sort_column,
+                    ascending: self.library_manager.sort_ascending,
                 }
+                .after_header_click(col);
+                self.library_manager.sort_column = next_sort.column;
+                self.library_manager.sort_ascending = next_sort.ascending;
 
                 if self.library_manager.sort_column.is_none() {
                     // Restaurar orden original desde DB
@@ -4643,11 +4640,11 @@ impl AudoxidyApp {
             }
             Message::SelectSubfilter(sub) => {
                 self.focus = AppFocus::Library;
-                if sub == self.filters_manager.selected_subfilter {
-                    self.filters_manager.selected_subfilter = None;
-                } else {
-                    self.filters_manager.selected_subfilter = sub;
-                }
+                self.filters_manager.selected_subfilter =
+                    crate::logic::filter_index::next_subfilter(
+                        self.filters_manager.selected_subfilter.as_deref(),
+                        sub.as_deref(),
+                    );
                 self.filters_manager.selected_tree_node = None;
                 self.filters_manager.scroll_offset = iced::Vector::new(0.0, 0.0);
 
@@ -4675,11 +4672,10 @@ impl AudoxidyApp {
                 ])
             }
             Message::ToggleTreeNode(name) => {
-                if self.filters_manager.expanded_nodes.contains(&name) {
-                    self.filters_manager.expanded_nodes.remove(&name);
-                } else {
-                    self.filters_manager.expanded_nodes.insert(name.clone());
-                }
+                crate::logic::filter_index::toggle_node(
+                    &mut self.filters_manager.expanded_nodes,
+                    &name,
+                );
                 self.filters_manager.refresh_flattened_tree();
                 Task::none()
             }
@@ -4693,62 +4689,17 @@ impl AudoxidyApp {
                 self.library_manager.selected_header = None;
                 self.library_manager.selection_stats = None;
 
-                // Apply filter to library
-                self.library_manager.filter_artist = None;
-                self.library_manager.filter_album = None;
-                self.library_manager.filter_genre = None;
-                self.library_manager.filter_year = None;
+                // Apply filter to library. Un nodo de carpeta no aplica ningún filtro: lo
+                // gestionaría Message::SelectFolder, que nada emite.
+                let node_filters = crate::logic::filter_index::filters_for_node(
+                    self.filters_manager.current_filter,
+                    &name,
+                );
+                self.library_manager.filter_artist = node_filters.artist;
+                self.library_manager.filter_album = node_filters.album;
+                self.library_manager.filter_genre = node_filters.genre;
+                self.library_manager.filter_year = node_filters.year;
                 self.library_manager.filter_folder_id = None;
-
-                let parts: Vec<&str> = name.split('|').collect();
-                // parts[0] is the FilterType label string (e.g. "Genre")
-                let main_val = parts.get(1).copied(); // Level 1 (e.g. Genre name)
-                let sub_val = parts.get(2).copied(); // Level 2 (e.g. Artist name)
-                let third_val = parts.get(3).copied(); // Level 3 (e.g. Album name)
-
-                match self.filters_manager.current_filter {
-                    crate::gui::library_filters::FilterType::Artist => {
-                        if let Some(art) = main_val {
-                            self.library_manager.filter_artist = Some(art.to_string());
-                        }
-                        if let Some(alb) = sub_val {
-                            self.library_manager.filter_album = Some(alb.to_string());
-                        }
-                    }
-                    crate::gui::library_filters::FilterType::Album => {
-                        if let Some(alb) = main_val {
-                            self.library_manager.filter_album = Some(alb.to_string());
-                        }
-                        if let Some(art) = sub_val {
-                            self.library_manager.filter_artist = Some(art.to_string());
-                        }
-                    }
-                    crate::gui::library_filters::FilterType::Genre => {
-                        if let Some(gnr) = main_val {
-                            self.library_manager.filter_genre = Some(gnr.to_string());
-                        }
-                        if let Some(art) = sub_val {
-                            self.library_manager.filter_artist = Some(art.to_string());
-                        }
-                        if let Some(alb) = third_val {
-                            self.library_manager.filter_album = Some(alb.to_string());
-                        }
-                    }
-                    crate::gui::library_filters::FilterType::Year => {
-                        if let Some(yr) = main_val {
-                            self.library_manager.filter_year = Some(yr.to_string());
-                        }
-                        if let Some(art) = sub_val {
-                            self.library_manager.filter_artist = Some(art.to_string());
-                        }
-                        if let Some(alb) = third_val {
-                            self.library_manager.filter_album = Some(alb.to_string());
-                        }
-                    }
-                    crate::gui::library_filters::FilterType::Folder => {
-                        // Manejado por Message::SelectFolder
-                    }
-                }
 
                 self.library_manager.apply_filter();
                 self.library_manager.last_viewport = None;
@@ -5209,26 +5160,12 @@ impl AudoxidyApp {
                             let lib_x = (pos.x - 602.0).max(0.0);
                             let scroll_y = self.library_manager.scroll_offset.y;
                             let lib_y = pos.y - 72.0 + scroll_y;
-                            let end = iced::Point::new(lib_x, lib_y);
-
-                            let dx = start.x - end.x;
-                            let dy = start.y - end.y;
-                            let dist_sq = dx * dx + dy * dy;
 
                             // Solo procesar como marquee si ha habido un arrastre real (más de 3 píxeles)
-                            if dist_sq > 9.0 {
-                                let rect_x = start.x.min(end.x);
-                                let rect_y = start.y.min(end.y);
-                                let rect_w = (start.x - end.x).abs().max(1.0);
-                                let rect_h = (start.y - end.y).abs().max(1.0);
-
-                                let rect = iced::Rectangle {
-                                    x: rect_x,
-                                    y: rect_y,
-                                    width: rect_w,
-                                    height: rect_h,
-                                };
-
+                            if let Some(rect) = crate::logic::library_geometry::marquee_rect(
+                                (start.x, start.y),
+                                (lib_x, lib_y),
+                            ) {
                                 self.library_manager.select_marquee(rect, self.modifiers);
                             }
                         }

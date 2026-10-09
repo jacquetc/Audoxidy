@@ -9,6 +9,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 // Import deleted since song row is injected and artist header is in universal_song_list
 use crate::gui::widgets::{VuMeterWidget, standard_scrollable, standard_scrollbar};
+use crate::logic::library_geometry::{self, ContentRect};
+use crate::logic::library_groups;
+use crate::logic::library_selection::{self, LibraryData, LibrarySelection};
+use crate::logic::library_sort;
+use crate::logic::selection_modifiers::SelectModifiers;
 use crate::utils::{SortColumn, format_duration, format_size};
 
 // Contadores de redraw para diagnóstico — se incrementan cada vez que la vista se reconstruye
@@ -33,28 +38,19 @@ pub static GRID_ID_B: std::sync::LazyLock<iced::widget::Id> =
 pub static LIBRARY_SEARCH_ID: std::sync::LazyLock<iced::widget::Id> =
     std::sync::LazyLock::new(|| iced::widget::Id::new("library_search_input"));
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LibraryViewMode {
-    Grid,
-    DetailedList,
-    ThumbnailList,
-    SimpleList,
-}
+pub use crate::logic::library_geometry::{
+    LibraryAlbumGroup, LibraryViewMode, LibraryVirtualArtist, LibraryVirtualRow,
+};
+pub use crate::logic::library_groups::{AlbumEntry, ArtistGroup, LibraryStats};
+pub use crate::logic::library_selection::{LibraryListItem, LibraryNavDir};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum LibraryListItem {
-    Artist(String),
-    Album(String),
-    Song(i64),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LibraryNavDir {
-    Up,
-    Down,
-    Left,
-    Right,
-    None,
+/// Convierte los modificadores de Iced en los de la lógica de selección:
+/// Ctrl/Cmd alterna, Shift selecciona por rango.
+pub fn select_modifiers(modifiers: iced::keyboard::Modifiers) -> SelectModifiers {
+    SelectModifiers {
+        toggle: modifiers.command() || modifiers.control(),
+        range: modifiers.shift(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -65,56 +61,6 @@ pub enum LibrarySource {
     Qobuz,
     Deezer,
     Tidal,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct LibraryStats {
-    pub songs: u64,
-    pub albums: u64,
-    pub artists: u64,
-    pub duration_secs: f64,
-    pub size_bytes: f64,
-}
-
-#[derive(Debug, Clone)]
-pub struct ArtistGroup {
-    pub name: String,
-    pub albums_count: usize,
-    pub songs_count: usize,
-    pub songs: Vec<std::sync::Arc<crate::db::database::SongData>>,
-    pub duration_secs: f64,
-}
-
-#[derive(Debug, Clone)]
-pub struct AlbumEntry {
-    pub id: String,
-    pub title: String,
-    pub artist: String,
-    pub genre: String,
-    pub year: String,
-    pub cover_path: Option<String>,
-}
-
-/// Estructura para agrupar canciones por álbum en la vista de biblioteca
-#[derive(Debug, Clone)]
-pub struct LibraryAlbumGroup {
-    pub album_name: String,
-    pub album_hash: String,
-    pub songs: Vec<(std::sync::Arc<crate::db::database::SongData>, usize)>, // (song, global_idx)
-    pub duration_secs: f64,
-}
-
-/// Estructura para agrupar la jerarquía completa de un artista para virtualización
-#[derive(Debug, Clone)]
-pub struct LibraryVirtualArtist {
-    pub artist_name: String,
-    pub albums_count: usize,
-    pub songs_count: usize,
-    pub duration_secs: f64,
-    pub is_collapsed: bool,
-    pub top_y: f32,
-    pub height: f32,
-    pub albums: Vec<LibraryAlbumGroup>,
 }
 
 /// Datos de una fila calculada en la cuadrícula
@@ -138,33 +84,6 @@ pub enum LibraryGridElement {
         songs: Vec<(std::sync::Arc<crate::db::database::SongData>, usize)>,
         top_space: f32,
         bottom_space: f32,
-    },
-}
-
-/// Elementos que pueden aparecer en una lista virtualizada de la biblioteca
-#[derive(Debug, Clone)]
-pub enum LibraryVirtualRow {
-    ArtistHeader {
-        name: String,
-        is_collapsed: bool,
-        albums_count: usize,
-        songs_count: usize,
-        duration_secs: f64,
-    },
-    AlbumBlock {
-        album_name: String,
-        album_hash: String,
-        artist_name: String,
-        genre: String,
-        year: String,
-        is_expanded: bool,
-        songs: Vec<(std::sync::Arc<crate::db::database::SongData>, usize)>,
-        songs_count: usize,
-        duration_secs: f64,
-    },
-    SimpleSong {
-        song: std::sync::Arc<crate::db::database::SongData>,
-        global_idx: usize,
     },
 }
 
@@ -396,111 +315,13 @@ impl LibraryManager {
             return (h, v.clone());
         }
 
-        let groups = &self.artist_groups;
-        let mut v_artists = Vec::new();
-        let mut total_content_h = 0.0;
-        let mut global_song_idx = 0;
-
-        // Crear mapa de búsqueda de álbumes para evitar O(N^2)
-        let mut album_hash_map = std::collections::HashMap::new();
-        if let Some(albums_cache) = &self.cached_albums {
-            for alb in albums_cache {
-                album_hash_map.insert((alb.artist.clone(), alb.title.clone()), alb.id.clone());
-            }
-        }
-
-        let row_height = if self.view_mode == LibraryViewMode::ThumbnailList {
-            42.0
-        } else {
-            32.0
-        };
-        let header_h = if self.view_mode == LibraryViewMode::ThumbnailList {
-            42.0
-        } else {
-            32.0
-        };
-
-        for group in groups {
-            let is_artist_collapsed = self.collapsed_artists.contains(&group.name);
-            let mut albums_map: Vec<LibraryAlbumGroup> = Vec::new();
-
-            // Agrupar canciones por álbum conservando el orden O(N)
-            for song in &group.songs {
-                let alb_name = song
-                    .album
-                    .as_ref()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "Desconocido".to_string());
-
-                if let Some(last_alb) = albums_map.last_mut() {
-                    if last_alb.album_name == alb_name {
-                        last_alb.duration_secs += song.duration_secs.unwrap_or(0.0);
-                        last_alb.songs.push((song.clone(), global_song_idx));
-                        global_song_idx += 1;
-                        continue;
-                    }
-                }
-
-                let album_hash = album_hash_map
-                    .get(&(group.name.clone(), alb_name.clone()))
-                    .cloned()
-                    .unwrap_or_else(|| alb_name.clone());
-
-                albums_map.push(LibraryAlbumGroup {
-                    album_name: alb_name,
-                    album_hash,
-                    songs: vec![(song.clone(), global_song_idx)],
-                    duration_secs: song.duration_secs.unwrap_or(0.0),
-                });
-                global_song_idx += 1;
-            }
-
-            let mut artist_h = header_h;
-            if !is_artist_collapsed {
-                for alb in &albums_map {
-                    let composite_id = format!("{}|{}", group.name, alb.album_hash);
-                    let is_album_expanded = !self.collapsed_albums.contains(&composite_id);
-
-                    let album_header_h = if self.view_mode == LibraryViewMode::ThumbnailList {
-                        42.0
-                    } else {
-                        32.0
-                    };
-                    let card_h: f32 =
-                        if self.view_mode == LibraryViewMode::DetailedList && is_album_expanded {
-                            323.0
-                        } else {
-                            0.0
-                        };
-                    let right_h = if is_album_expanded {
-                        album_header_h + alb.songs.len() as f32 * row_height
-                    } else {
-                        album_header_h
-                    };
-
-                    let block_h = if self.view_mode == LibraryViewMode::DetailedList {
-                        card_h.max(right_h) + 10.0
-                    } else {
-                        right_h
-                    };
-
-                    artist_h += block_h;
-                }
-            }
-
-            v_artists.push(LibraryVirtualArtist {
-                artist_name: group.name.clone(),
-                albums_count: group.albums_count,
-                songs_count: group.songs_count,
-                duration_secs: group.duration_secs,
-                is_collapsed: is_artist_collapsed,
-                top_y: total_content_h,
-                height: artist_h,
-                albums: albums_map,
-            });
-
-            total_content_h += artist_h;
-        }
+        let (total_content_h, v_artists) = library_geometry::build_view_structure(
+            &self.artist_groups,
+            self.cached_albums.as_deref(),
+            &self.collapsed_artists,
+            &self.collapsed_albums,
+            self.view_mode,
+        );
 
         self.cached_detailed_view
             .replace(Some((total_content_h, v_artists.clone())));
@@ -511,14 +332,7 @@ impl LibraryManager {
     /// garantizando consistencia absoluta con la estructura visual actual.
     pub fn find_album_id_for_song(&self, song_id: i64) -> Option<String> {
         let (_, v_artists) = self.get_view_structure();
-        for va in v_artists {
-            for alb in va.albums {
-                if alb.songs.iter().any(|(s, _)| s.id == song_id) {
-                    return Some(format!("{}|{}", va.artist_name, alb.album_hash));
-                }
-            }
-        }
-        None
+        library_geometry::album_id_for_song(&v_artists, song_id)
     }
 
     /// Cambia el estado de expansión de un álbum y actualiza el foco/selección.
@@ -582,195 +396,40 @@ impl LibraryManager {
             .as_ref()
             .map(|v| v.height)
             .unwrap_or(800.0);
-        let view_min_raw = self.scroll_offset.y;
-
-        let max_scroll = (total_content_h - viewport_h).max(0.0);
-        let view_min = view_min_raw.min(max_scroll);
-        let view_max = view_min + viewport_h;
 
         // D-04: Margen dinámico = 50% del viewport (25% en low-resource)
-        let viewport_margin_ratio: f32 = if crate::utils::is_low_resource() {
-            0.25
-        } else {
-            0.5
-        };
-        let margin = (viewport_h * viewport_margin_ratio).max(50.0);
-        let render_min = view_min - margin;
-        let render_max = view_max + margin;
-
-        let mut top_space = 0.0;
-        let mut bottom_space = 0.0;
-        let mut visible_elements = Vec::new();
-        let mut sticky_artist_info = None;
-
-        let header_h = if self.view_mode == LibraryViewMode::ThumbnailList {
-            42.0
-        } else {
-            32.0
-        };
-        let album_header_h = if self.view_mode == LibraryViewMode::ThumbnailList {
-            42.0
-        } else {
-            32.0
-        };
-        let row_height = if self.view_mode == LibraryViewMode::ThumbnailList {
-            42.0
-        } else {
-            32.0
-        };
-
-        for va in v_artists {
-            let a_end = va.top_y + va.height;
-
-            // Sticky Header: umbral +31px (como en widgets.rs)
-            let sticky_threshold = header_h - 1.0;
-            if va.top_y <= view_min + sticky_threshold {
-                sticky_artist_info = Some((
-                    va.artist_name.clone(),
-                    va.is_collapsed,
-                    va.albums_count,
-                    va.songs_count,
-                    va.duration_secs,
-                ));
-            }
-
-            if a_end < render_min {
-                top_space += va.height;
-            } else if va.top_y > render_max {
-                bottom_space += va.height;
-            } else {
-                // Header del Artista
-                let ah_end = va.top_y + header_h;
-                if ah_end >= render_min && va.top_y <= render_max {
-                    visible_elements.push(LibraryVirtualRow::ArtistHeader {
-                        name: va.artist_name.clone(),
-                        is_collapsed: va.is_collapsed,
-                        albums_count: va.albums_count,
-                        songs_count: va.songs_count,
-                        duration_secs: va.duration_secs,
-                    });
-                } else if ah_end < render_min {
-                    top_space += header_h;
-                } else {
-                    bottom_space += header_h;
-                }
-
-                if !va.is_collapsed {
-                    let mut current_y = va.top_y + header_h;
-                    for alb in &va.albums {
-                        let composite_id = format!("{}|{}", va.artist_name, alb.album_hash);
-                        let is_album_expanded = !self.collapsed_albums.contains(&composite_id);
-                        let card_h: f32 = if self.view_mode == LibraryViewMode::DetailedList
-                            && is_album_expanded
-                        {
-                            323.0
-                        } else {
-                            0.0
-                        };
-                        let right_h = if is_album_expanded {
-                            album_header_h + alb.songs.len() as f32 * row_height
-                        } else {
-                            album_header_h
-                        };
-
-                        let block_h = if self.view_mode == LibraryViewMode::DetailedList {
-                            card_h.max(right_h) + 10.0
-                        } else {
-                            right_h
-                        };
-
-                        let block_end = current_y + block_h;
-
-                        if block_end >= render_min && current_y <= render_max {
-                            // En modo no detallado, los headers de álbum y canciones se pueden virtualizar individualmente
-                            if self.view_mode != LibraryViewMode::DetailedList {
-                                // Header Álbum
-                                if current_y + album_header_h >= render_min
-                                    && current_y <= render_max
-                                {
-                                    visible_elements.push(LibraryVirtualRow::AlbumBlock {
-                                        album_name: alb.album_name.clone(),
-                                        album_hash: alb.album_hash.clone(),
-                                        artist_name: va.artist_name.clone(),
-                                        genre: String::new(),
-                                        year: String::new(), // No se usan en este modo
-                                        is_expanded: is_album_expanded,
-                                        songs: Vec::new(),
-                                        songs_count: alb.songs.len(),
-                                        duration_secs: alb.duration_secs,
-                                    });
-                                } else if current_y + album_header_h < render_min {
-                                    top_space += album_header_h;
-                                } else {
-                                    bottom_space += album_header_h;
-                                }
-
-                                if is_album_expanded {
-                                    let mut song_y = current_y + album_header_h;
-                                    for (song, song_i) in &alb.songs {
-                                        if song_y + row_height >= render_min && song_y <= render_max
-                                        {
-                                            visible_elements.push(LibraryVirtualRow::SimpleSong {
-                                                song: song.clone(),
-                                                global_idx: *song_i,
-                                            });
-                                        } else if song_y + row_height < render_min {
-                                            top_space += row_height;
-                                        } else {
-                                            bottom_space += row_height;
-                                        }
-                                        song_y += row_height;
-                                    }
-                                }
-                            } else {
-                                // Modo Detallado: El bloque completo se renderiza (es mejor así por el layout de tarjeta)
-                                let genre = alb
-                                    .songs
-                                    .first()
-                                    .and_then(|(s, _)| s.genre.as_ref().map(|s| s.to_string()))
-                                    .unwrap_or_default();
-                                let year = alb
-                                    .songs
-                                    .first()
-                                    .and_then(|(s, _)| {
-                                        s.release_year.as_ref().map(|s| s.to_string())
-                                    })
-                                    .unwrap_or_default();
-                                visible_elements.push(LibraryVirtualRow::AlbumBlock {
-                                    album_name: alb.album_name.clone(),
-                                    album_hash: alb.album_hash.clone(),
-                                    artist_name: va.artist_name.clone(),
-                                    genre,
-                                    year,
-                                    is_expanded: is_album_expanded,
-                                    songs: alb.songs.clone(),
-                                    songs_count: alb.songs.len(),
-                                    duration_secs: alb.duration_secs,
-                                });
-                            }
-                        } else if block_end < render_min {
-                            top_space += block_h;
-                        } else {
-                            bottom_space += block_h;
-                        }
-                        current_y += block_h;
-                    }
-                }
-            }
-        }
+        let margin = library_geometry::render_margin(viewport_h, crate::utils::is_low_resource());
+        let visible = library_geometry::visible_rows(
+            total_content_h,
+            &v_artists,
+            &self.collapsed_albums,
+            self.view_mode,
+            self.scroll_offset.y,
+            viewport_h,
+            margin,
+        );
+        let sticky_artist_info = visible.sticky.map(|s| {
+            (
+                s.name,
+                s.is_collapsed,
+                s.albums_count,
+                s.songs_count,
+                s.duration_secs,
+            )
+        });
 
         self.cached_visible_elements.replace(Some((
-            top_space,
-            bottom_space,
-            total_content_h,
-            visible_elements.clone(),
+            visible.top_space,
+            visible.bottom_space,
+            visible.total_height,
+            visible.rows.clone(),
             sticky_artist_info.clone(),
         )));
         (
-            top_space,
-            bottom_space,
-            total_content_h,
-            visible_elements,
+            visible.top_space,
+            visible.bottom_space,
+            visible.total_height,
+            visible.rows,
             sticky_artist_info,
         )
     }
@@ -922,112 +581,7 @@ impl LibraryManager {
     /// Obtiene el rango Y (y, height) de un ítem en la biblioteca virtualizada
     pub fn get_item_y_range(&self, item: &LibraryListItem) -> Option<(f32, f32)> {
         let (_total_h, v_artists) = self.get_view_structure();
-        let header_h = if self.view_mode == LibraryViewMode::ThumbnailList {
-            42.0
-        } else {
-            32.0
-        };
-        let album_header_h = if self.view_mode == LibraryViewMode::ThumbnailList {
-            42.0
-        } else {
-            32.0
-        };
-        let row_height = if self.view_mode == LibraryViewMode::ThumbnailList {
-            42.0
-        } else {
-            32.0
-        };
-
-        match item {
-            LibraryListItem::Artist(name) => {
-                v_artists
-                    .iter()
-                    .find(|va| va.artist_name == *name)
-                    .map(|va| (va.top_y, header_h)) // El rango del header
-            }
-            LibraryListItem::Album(composite_id) => {
-                // composite_id format: "Artist|AlbumHash"
-                let parts: Vec<&str> = composite_id.split('|').collect();
-                if parts.len() < 2 {
-                    return None;
-                }
-                let artist_name = parts[0];
-                let album_hash = parts[1];
-
-                let va = v_artists.iter().find(|va| va.artist_name == artist_name)?;
-                let mut current_y = va.top_y + header_h;
-
-                for alb in &va.albums {
-                    let is_album_expanded = !self
-                        .collapsed_albums
-                        .contains(&format!("{}|{}", va.artist_name, alb.album_hash));
-                    let card_h: f32 =
-                        if self.view_mode == LibraryViewMode::DetailedList && is_album_expanded {
-                            323.0
-                        } else {
-                            0.0
-                        };
-                    let right_h = if is_album_expanded {
-                        album_header_h + alb.songs.len() as f32 * row_height
-                    } else {
-                        album_header_h
-                    };
-                    let block_h = if self.view_mode == LibraryViewMode::DetailedList {
-                        card_h.max(right_h) + 10.0
-                    } else {
-                        right_h
-                    };
-
-                    if alb.album_hash == album_hash {
-                        return Some((current_y, album_header_h)); // Retornamos el header del álbum
-                    }
-                    current_y += block_h;
-                }
-                None
-            }
-            LibraryListItem::Song(song_id) => {
-                for va in &v_artists {
-                    if va.is_collapsed {
-                        continue;
-                    }
-                    let mut current_y = va.top_y + header_h;
-                    for alb in &va.albums {
-                        let composite_id = format!("{}|{}", va.artist_name, alb.album_hash);
-                        let is_album_expanded = !self.collapsed_albums.contains(&composite_id);
-
-                        let card_h: f32 = if self.view_mode == LibraryViewMode::DetailedList
-                            && is_album_expanded
-                        {
-                            323.0
-                        } else {
-                            0.0
-                        };
-                        let right_h = if is_album_expanded {
-                            album_header_h + alb.songs.len() as f32 * row_height
-                        } else {
-                            album_header_h
-                        };
-                        let block_h = if self.view_mode == LibraryViewMode::DetailedList {
-                            card_h.max(right_h) + 10.0
-                        } else {
-                            right_h
-                        };
-
-                        if is_album_expanded {
-                            let mut song_y = current_y + album_header_h;
-                            for (song, _) in &alb.songs {
-                                if song.id == *song_id {
-                                    return Some((song_y, row_height));
-                                }
-                                song_y += row_height;
-                            }
-                        }
-                        current_y += block_h;
-                    }
-                }
-                None
-            }
-        }
+        library_geometry::item_y_range(item, &v_artists, &self.collapsed_albums, self.view_mode)
     }
 
     pub fn sort_songs_static(
@@ -1035,122 +589,7 @@ impl LibraryManager {
         sort_column: Option<SortColumn>,
         sort_ascending: Option<bool>,
     ) {
-        if let Some(col_ref) = sort_column {
-            let is_asc = sort_ascending.unwrap_or(true);
-            songs.sort_by(|a, b| {
-                let res = match col_ref {
-                    SortColumn::TrackNumber => crate::utils::compare_track_numbers(
-                        a.track_number.as_deref(),
-                        b.track_number.as_deref(),
-                    ),
-                    SortColumn::Title => crate::utils::compare_strings_ignore_case(
-                        a.title.as_deref().unwrap_or(""),
-                        b.title.as_deref().unwrap_or(""),
-                    )
-                    .then(crate::utils::compare_track_numbers(
-                        a.track_number.as_deref(),
-                        b.track_number.as_deref(),
-                    )),
-                    SortColumn::Artist | SortColumn::AlbumArtist => {
-                        let art_a = crate::utils::get_effective_artist(a);
-                        let art_b = crate::utils::get_effective_artist(b);
-                        crate::utils::compare_strings_ignore_case(art_a, art_b)
-                            .then(crate::utils::compare_strings_ignore_case(
-                                a.release_year.as_deref().unwrap_or(""),
-                                b.release_year.as_deref().unwrap_or(""),
-                            ))
-                            .then(crate::utils::compare_strings_ignore_case(
-                                a.album.as_deref().unwrap_or(""),
-                                b.album.as_deref().unwrap_or(""),
-                            ))
-                            .then(crate::utils::compare_track_numbers(
-                                a.track_number.as_deref(),
-                                b.track_number.as_deref(),
-                            ))
-                    }
-                    SortColumn::Album => {
-                        let art_a = crate::utils::get_effective_artist(a);
-                        let art_b = crate::utils::get_effective_artist(b);
-                        crate::utils::compare_strings_ignore_case(
-                            a.album.as_deref().unwrap_or(""),
-                            b.album.as_deref().unwrap_or(""),
-                        )
-                        .then(crate::utils::compare_strings_ignore_case(art_a, art_b))
-                        .then(crate::utils::compare_track_numbers(
-                            a.track_number.as_deref(),
-                            b.track_number.as_deref(),
-                        ))
-                    }
-                    SortColumn::Format => crate::utils::compare_strings_ignore_case(
-                        a.format.as_deref().unwrap_or(""),
-                        b.format.as_deref().unwrap_or(""),
-                    ),
-                    SortColumn::Size => a.size.unwrap_or(0).cmp(&b.size.unwrap_or(0)),
-                    SortColumn::SampleRate => {
-                        a.sample_rate.unwrap_or(0).cmp(&b.sample_rate.unwrap_or(0))
-                    }
-                    SortColumn::Channels => a.channels.unwrap_or(0).cmp(&b.channels.unwrap_or(0)),
-                    SortColumn::Bitrate => {
-                        let bitrate = |s: &crate::db::database::SongData| {
-                            s.duration_secs
-                                .filter(|d| *d > 0.0)
-                                .map(|d| s.size.unwrap_or(0) as f64 * 8.0 / (d * 1000.0))
-                                .unwrap_or(0.0)
-                        };
-                        bitrate(&**a)
-                            .partial_cmp(&bitrate(&**b))
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                    SortColumn::Genre => {
-                        let art_a = crate::utils::get_effective_artist(a);
-                        let art_b = crate::utils::get_effective_artist(b);
-                        crate::utils::compare_strings_ignore_case(
-                            a.genre.as_deref().unwrap_or(""),
-                            b.genre.as_deref().unwrap_or(""),
-                        )
-                        .then(crate::utils::compare_strings_ignore_case(art_a, art_b))
-                        .then(crate::utils::compare_strings_ignore_case(
-                            a.album.as_deref().unwrap_or(""),
-                            b.album.as_deref().unwrap_or(""),
-                        ))
-                        .then(crate::utils::compare_track_numbers(
-                            a.track_number.as_deref(),
-                            b.track_number.as_deref(),
-                        ))
-                    }
-                    SortColumn::Year => {
-                        let art_a = crate::utils::get_effective_artist(a);
-                        let art_b = crate::utils::get_effective_artist(b);
-                        crate::utils::compare_strings_ignore_case(
-                            a.release_year.as_deref().unwrap_or(""),
-                            b.release_year.as_deref().unwrap_or(""),
-                        )
-                        .then(crate::utils::compare_strings_ignore_case(art_a, art_b))
-                        .then(crate::utils::compare_strings_ignore_case(
-                            a.album.as_deref().unwrap_or(""),
-                            b.album.as_deref().unwrap_or(""),
-                        ))
-                        .then(crate::utils::compare_track_numbers(
-                            a.track_number.as_deref(),
-                            b.track_number.as_deref(),
-                        ))
-                    }
-                    SortColumn::Duration => {
-                        let dur_a = a.duration_secs.unwrap_or(0.0);
-                        let dur_b = b.duration_secs.unwrap_or(0.0);
-                        dur_a
-                            .partial_cmp(&dur_b)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                    SortColumn::BitDepth => a.bit_depth.unwrap_or(0).cmp(&b.bit_depth.unwrap_or(0)),
-                    SortColumn::AlbumCard => std::cmp::Ordering::Equal,
-                    SortColumn::AlbumThumbnail => std::cmp::Ordering::Equal,
-                };
-                if is_asc { res } else { res.reverse() }
-            });
-        } else {
-            songs.sort_by(|a, b| crate::utils::compare_songs_for_listing(a, b));
-        }
+        library_sort::sort_songs(songs, sort_column, sort_ascending);
     }
 
     pub fn sort_songs(&self, songs: &mut [std::sync::Arc<crate::db::database::SongData>]) {
@@ -1162,51 +601,7 @@ impl LibraryManager {
         sort_column: Option<SortColumn>,
         sort_ascending: Option<bool>,
     ) {
-        if let Some(col_ref) = sort_column {
-            let is_asc = sort_ascending.unwrap_or(true);
-            albums.sort_by(|a, b| {
-                let res = match col_ref {
-                    SortColumn::Album => {
-                        crate::utils::compare_strings_ignore_case(&a.title, &b.title)
-                            .then(crate::utils::compare_strings_ignore_case(
-                                &a.artist, &b.artist,
-                            ))
-                            .then(crate::utils::compare_strings_ignore_case(&a.year, &b.year))
-                    }
-                    SortColumn::Artist | SortColumn::AlbumArtist => {
-                        crate::utils::compare_albums_for_listing(
-                            &a.artist, &a.year, &a.title, &b.artist, &b.year, &b.title,
-                        )
-                    }
-                    SortColumn::Genre => {
-                        crate::utils::compare_strings_ignore_case(&a.genre, &b.genre)
-                            .then(crate::utils::compare_strings_ignore_case(
-                                &a.artist, &b.artist,
-                            ))
-                            .then(crate::utils::compare_strings_ignore_case(&a.year, &b.year))
-                            .then(crate::utils::compare_strings_ignore_case(
-                                &a.title, &b.title,
-                            ))
-                    }
-                    SortColumn::Year => crate::utils::compare_strings_ignore_case(&a.year, &b.year)
-                        .then(crate::utils::compare_strings_ignore_case(
-                            &a.artist, &b.artist,
-                        ))
-                        .then(crate::utils::compare_strings_ignore_case(
-                            &a.title, &b.title,
-                        )),
-                    _ => std::cmp::Ordering::Equal,
-                };
-                if is_asc { res } else { res.reverse() }
-            });
-        } else {
-            // Usar el ordenamiento canónico global de Audoxidy por defecto
-            albums.sort_by(|a, b| {
-                crate::utils::compare_albums_for_listing(
-                    &a.artist, &a.year, &a.title, &b.artist, &b.year, &b.title,
-                )
-            });
-        }
+        library_sort::sort_albums(albums, sort_column, sort_ascending);
     }
 
     pub fn sort_albums(&self, albums: &mut [AlbumEntry]) {
@@ -1240,23 +635,15 @@ impl LibraryManager {
     /// Maneja la navegación por teclado unificada entre cabeceras y canciones.
     /// Devuelve (NuevaCabecera, NuevoIndiceCanción, FocoEnCanción).
     pub fn get_row_height(&self) -> f32 {
-        match self.view_mode {
-            LibraryViewMode::ThumbnailList => 42.0,
-            _ => 32.0,
-        }
+        library_geometry::ListMetrics::for_mode(self.view_mode).row_h
     }
 
     pub fn get_header_height(&self) -> f32 {
-        match self.view_mode {
-            LibraryViewMode::ThumbnailList => 42.0,
-            _ => 32.0,
-        }
+        library_geometry::ListMetrics::for_mode(self.view_mode).artist_header_h
     }
 
     pub fn is_list_mode(&self) -> bool {
-        self.view_mode == LibraryViewMode::SimpleList
-            || self.view_mode == LibraryViewMode::DetailedList
-            || self.view_mode == LibraryViewMode::ThumbnailList
+        self.view_mode.is_list()
     }
 
     pub fn get_song_by_global_idx(
@@ -1273,149 +660,77 @@ impl LibraryManager {
         None
     }
 
-    pub fn get_visible_items(&self) -> Vec<(LibraryListItem, iced::Rectangle)> {
-        let mut items = Vec::new();
-        let mut current_y = 0.0;
-        let header_h: f32 = if self.view_mode == LibraryViewMode::ThumbnailList {
-            42.0
-        } else {
-            32.0
-        };
-        let album_header_h: f32 = if self.view_mode == LibraryViewMode::ThumbnailList {
-            42.0
-        } else {
-            32.0
-        };
-        let row_height: f32 = if self.view_mode == LibraryViewMode::ThumbnailList {
-            42.0
-        } else {
-            32.0
-        };
+    /// Ítems visibles en orden de pantalla con su rectángulo en espacio de contenido.
+    pub fn get_visible_items(&self) -> Vec<(LibraryListItem, ContentRect)> {
         let lib_width = self.library_area_width.max(100.0);
 
         if self.is_list_mode() {
             let (_total_h, v_artists) = self.get_view_structure();
-            for va in v_artists {
-                items.push((
-                    LibraryListItem::Artist(va.artist_name.clone()),
-                    iced::Rectangle::new(
-                        iced::Point::new(0.0, va.top_y),
-                        iced::Size::new(lib_width, header_h),
-                    ),
-                ));
+            return library_geometry::list_item_rects(
+                &v_artists,
+                &self.collapsed_albums,
+                self.view_mode,
+                lib_width,
+            );
+        }
 
-                if !va.is_collapsed {
-                    let mut current_y = va.top_y + header_h;
-                    for alb in va.albums {
-                        let composite_id = format!("{}|{}", va.artist_name, alb.album_hash);
-                        let is_album_expanded = !self.collapsed_albums.contains(&composite_id);
+        // Modo Grid: Los elementos son álbumes y opcionalmente canciones si está expandido
+        let mut items = Vec::new();
+        let mut current_y = 0.0;
+        let albums_to_show = self
+            .filtered_albums
+            .as_ref()
+            .or(self.cached_albums.as_ref());
 
-                        let card_h: f32 = if self.view_mode == LibraryViewMode::DetailedList
-                            && is_album_expanded
-                        {
-                            323.0
-                        } else {
-                            0.0
-                        };
-                        let right_h = if is_album_expanded {
-                            album_header_h + alb.songs.len() as f32 * row_height
-                        } else {
-                            album_header_h
-                        };
-                        let block_h = if self.view_mode == LibraryViewMode::DetailedList {
-                            card_h.max(right_h) + 10.0
-                        } else {
-                            right_h
-                        };
+        if let Some(albums) = albums_to_show {
+            let per_row = self.albums_per_row.get().max(1);
+            let card_inner_width = 182.0;
+            let spacing = 5.0;
+            let x_start = 5.0; // El padding left: 5.0 definido en library.rs para content_with_deselection
 
-                        items.push((
-                            LibraryListItem::Album(composite_id),
-                            iced::Rectangle::new(
-                                iced::Point::new(0.0, current_y),
-                                iced::Size::new(lib_width, album_header_h),
-                            ),
-                        ));
+            for chunk in albums.chunks(per_row) {
+                let mut row_h = 252.0;
+                let mut expanded_id = None;
 
-                        if is_album_expanded {
-                            let mut song_y = current_y + album_header_h;
-                            for (song, _) in alb.songs {
-                                items.push((
-                                    LibraryListItem::Song(song.id),
-                                    iced::Rectangle::new(
-                                        iced::Point::new(0.0, song_y),
-                                        iced::Size::new(lib_width, row_height),
-                                    ),
-                                ));
-                                song_y += row_height;
-                            }
-                        }
-                        current_y += block_h;
+                for (col, album_entry) in chunk.iter().enumerate() {
+                    let composite_id = format!("{}|{}", album_entry.artist, album_entry.id);
+                    let x = x_start + col as f32 * (card_inner_width + spacing);
+                    // Usamos el ancho exacto de la tarjeta (182) para una selección precisa
+                    items.push((
+                        LibraryListItem::Album(composite_id.clone()),
+                        ContentRect::new(x, current_y, card_inner_width, 252.0),
+                    ));
+
+                    if self.expanded_album.as_deref() == Some(composite_id.as_str()) {
+                        expanded_id = Some(composite_id);
                     }
                 }
-            }
-        } else {
-            // Modo Grid: Los elementos son álbumes y opcionalmente canciones si está expandido
-            let albums_to_show = self
-                .filtered_albums
-                .as_ref()
-                .or(self.cached_albums.as_ref());
 
-            if let Some(albums) = albums_to_show {
-                let per_row = self.albums_per_row.get().max(1);
-                let card_inner_width = 182.0;
-                let spacing = 5.0;
-                let x_start = 5.0; // El padding left: 5.0 definido en library.rs para content_with_deselection
+                if let Some(_exp_id) = expanded_id {
+                    if let Some(songs) = self.expanded_album_songs.as_ref() {
+                        let query = self.search_query.trim();
+                        let filtered = if query.is_empty() {
+                            songs.clone()
+                        } else {
+                            songs
+                                .iter()
+                                .filter(|s| crate::utils::song_matches_search(s, query))
+                                .cloned()
+                                .collect()
+                        };
 
-                for chunk in albums.chunks(per_row) {
-                    let mut row_h = 252.0;
-                    let mut expanded_id = None;
-
-                    for (col, album_entry) in chunk.iter().enumerate() {
-                        let composite_id = format!("{}|{}", album_entry.artist, album_entry.id);
-                        let x = x_start + col as f32 * (card_inner_width + spacing);
-                        // Usamos el ancho exacto de la tarjeta (182) para una selección precisa
-                        items.push((
-                            LibraryListItem::Album(composite_id.clone()),
-                            iced::Rectangle::new(
-                                iced::Point::new(x, current_y),
-                                iced::Size::new(card_inner_width, 252.0),
-                            ),
-                        ));
-
-                        if self.expanded_album.as_deref() == Some(composite_id.as_str()) {
-                            expanded_id = Some(composite_id);
+                        let mut song_y = current_y + 252.0 + 32.0; // aprox padding
+                        for song in filtered {
+                            items.push((
+                                LibraryListItem::Song(song.id),
+                                ContentRect::new(0.0, song_y, lib_width, 32.0),
+                            ));
+                            song_y += 32.0;
                         }
+                        row_h += 60.0 + (songs.len() as f32 * 32.0); // Ajuste de altura de fila para navegación
                     }
-
-                    if let Some(_exp_id) = expanded_id {
-                        if let Some(songs) = self.expanded_album_songs.as_ref() {
-                            let query = self.search_query.trim();
-                            let filtered = if query.is_empty() {
-                                songs.clone()
-                            } else {
-                                songs
-                                    .iter()
-                                    .filter(|s| crate::utils::song_matches_search(s, query))
-                                    .cloned()
-                                    .collect()
-                            };
-
-                            let mut song_y = current_y + 252.0 + 32.0; // aprox padding
-                            for song in filtered {
-                                items.push((
-                                    LibraryListItem::Song(song.id),
-                                    iced::Rectangle::new(
-                                        iced::Point::new(0.0, song_y),
-                                        iced::Size::new(lib_width, 32.0),
-                                    ),
-                                ));
-                                song_y += 32.0;
-                            }
-                            row_h += 60.0 + (songs.len() as f32 * 32.0); // Ajuste de altura de fila para navegación
-                        }
-                    }
-                    current_y += row_h;
                 }
+                current_y += row_h;
             }
         }
         items
@@ -1423,37 +738,23 @@ impl LibraryManager {
 
     /// Obtiene todos los items actualmente visibles en la vista (respetando colapsos y filtros) sin calcular rectángulos.
     pub fn get_all_list_items(&self) -> Vec<LibraryListItem> {
-        let mut items = Vec::new();
         if self.is_list_mode() {
             let (_total_h, v_artists) = self.get_view_structure();
-            for va in v_artists {
-                items.push(LibraryListItem::Artist(va.artist_name.clone()));
-                if !va.is_collapsed {
-                    for alb in va.albums {
-                        let composite_id = format!("{}|{}", va.artist_name, alb.album_hash);
-                        items.push(LibraryListItem::Album(composite_id.clone()));
-                        if !self.collapsed_albums.contains(&composite_id) {
-                            for (song, _) in alb.songs {
-                                items.push(LibraryListItem::Song(song.id));
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            let albums_to_show = self
-                .filtered_albums
-                .as_ref()
-                .or(self.cached_albums.as_ref());
-            if let Some(albums) = albums_to_show {
-                for album_entry in albums {
-                    let composite_id = format!("{}|{}", album_entry.artist, album_entry.id);
-                    items.push(LibraryListItem::Album(composite_id.clone()));
-                    if self.expanded_album.as_deref() == Some(composite_id.as_str()) {
-                        if let Some(songs) = &self.expanded_album_songs {
-                            for song in songs {
-                                items.push(LibraryListItem::Song(song.id));
-                            }
+            return library_geometry::list_items(&v_artists, &self.collapsed_albums);
+        }
+        let mut items = Vec::new();
+        let albums_to_show = self
+            .filtered_albums
+            .as_ref()
+            .or(self.cached_albums.as_ref());
+        if let Some(albums) = albums_to_show {
+            for album_entry in albums {
+                let composite_id = format!("{}|{}", album_entry.artist, album_entry.id);
+                items.push(LibraryListItem::Album(composite_id.clone()));
+                if self.expanded_album.as_deref() == Some(composite_id.as_str()) {
+                    if let Some(songs) = &self.expanded_album_songs {
+                        for song in songs {
+                            items.push(LibraryListItem::Song(song.id));
                         }
                     }
                 }
@@ -1473,49 +774,29 @@ impl LibraryManager {
             return None;
         }
 
-        let mut current_idx = 0;
-        let mut found = false;
-
-        // 1. Intentar encontrar por focused_item
-        if let Some(focused) = &self.focused_item {
-            if let Some(pos) = items.iter().position(|(it, _)| it == focused) {
-                current_idx = pos;
-                found = true;
-            }
-        }
-
-        // 2. Fallback a campos legados si no se encontró foco explícito
-        if !found {
-            for (i, (item, _)) in items.iter().enumerate() {
-                let match_found = match item {
-                    LibraryListItem::Song(id) => {
-                        // Si tenemos un list mode con filtered_songs, buscamos el índice
-                        if let Some(sel_idx) = self.selected_song_idx {
-                            if let Some(songs) = self.filtered_songs.as_ref() {
-                                songs.get(sel_idx).map(|s| s.id == *id).unwrap_or(false)
-                            } else if let Some(songs) = self.expanded_album_songs.as_ref() {
-                                songs.get(sel_idx).map(|s| s.id == *id).unwrap_or(false)
-                            } else {
-                                false
-                            }
+        // 1. Foco explícito; 2. fallback a campos legados; 3. primer ítem.
+        let current_idx = library_selection::current_index(
+            &items,
+            self.focused_item.as_ref(),
+            |item| match item {
+                LibraryListItem::Song(id) => {
+                    // Si tenemos un list mode con filtered_songs, buscamos el índice
+                    if let Some(sel_idx) = self.selected_song_idx {
+                        if let Some(songs) = self.filtered_songs.as_ref() {
+                            songs.get(sel_idx).map(|s| s.id == *id).unwrap_or(false)
+                        } else if let Some(songs) = self.expanded_album_songs.as_ref() {
+                            songs.get(sel_idx).map(|s| s.id == *id).unwrap_or(false)
                         } else {
                             false
                         }
+                    } else {
+                        false
                     }
-                    LibraryListItem::Album(id) => Some(id) == self.selected_album.as_ref(),
-                    LibraryListItem::Artist(name) => Some(name) == self.selected_header.as_ref(),
-                };
-                if match_found {
-                    current_idx = i;
-                    found = true;
-                    break;
                 }
-            }
-        }
-
-        if !found {
-            current_idx = 0;
-        }
+                LibraryListItem::Album(id) => Some(id) == self.selected_album.as_ref(),
+                LibraryListItem::Artist(name) => Some(name) == self.selected_header.as_ref(),
+            },
+        );
 
         // Navegación en Grid vs Lista
         let next_idx = if self.view_mode == LibraryViewMode::Grid {
@@ -1589,34 +870,23 @@ impl LibraryManager {
                 _ => current_idx,
             }
         } else {
-            match dir {
-                LibraryNavDir::Up => current_idx.saturating_sub(1),
-                LibraryNavDir::Down => (current_idx + 1).min(items.len() - 1),
-                _ => current_idx,
-            }
+            library_selection::list_nav_target(current_idx, items.len(), dir)
         };
 
-        if items.is_empty() {
-            return None;
-        }
-        let item_tuple = &items[next_idx.min(items.len() - 1)];
-        let new_item = item_tuple.0.clone();
-        let (y, h) = (item_tuple.1.y, item_tuple.1.height);
+        let target = &items[next_idx.min(items.len() - 1)].1;
+        let (y, h) = (target.y, target.height);
 
-        if modifiers.shift() {
-            let pivot = self
-                .selection_pivot
-                .clone()
-                .unwrap_or_else(|| items[current_idx].0.clone());
-            self.selection_pivot = Some(pivot.clone());
-            self.select_range(&pivot, &new_item);
-        } else {
-            self.selected_items.clear();
-            self.selected_items.insert(new_item.clone());
-            self.selection_pivot = Some(new_item.clone());
-        }
+        let mut selection = self.take_selection();
+        let new_item = selection.navigate(
+            &items,
+            current_idx,
+            next_idx,
+            select_modifiers(modifiers),
+            &self.library_data(),
+        );
+        self.restore_selection(selection);
+        let new_item = new_item?;
 
-        self.focused_item = Some(new_item.clone());
         self.selected_item_hint = Some((y, h));
 
         // Sincronizar legacy fields para compatibilidad con el resto de la app
@@ -1628,162 +898,56 @@ impl LibraryManager {
 
     pub fn select_marquee(
         &mut self,
-        marquee_rect: iced::Rectangle,
+        marquee_rect: ContentRect,
         modifiers: iced::keyboard::Modifiers,
     ) {
         let items = self.get_visible_items();
-
-        if !modifiers.shift() && !modifiers.command() && !modifiers.control() {
-            self.selected_items.clear();
-        }
-
-        for (item, bounds) in items {
-            if marquee_rect.intersects(&bounds) {
-                if (modifiers.command() || modifiers.control())
-                    && self.selected_items.contains(&item)
-                {
-                    self.selected_items.remove(&item);
-                } else {
-                    self.selected_items.insert(item);
-                }
-            }
-        }
+        let mut selection = self.take_selection();
+        selection.select_marquee(&items, marquee_rect, select_modifiers(modifiers));
+        self.restore_selection(selection);
         self.update_selection_stats();
     }
 
     /// Maneja la selección por clic, soportando modificadores para selección múltiple o por rango.
     pub fn handle_click(&mut self, item: LibraryListItem, modifiers: iced::keyboard::Modifiers) {
-        if modifiers.command() || modifiers.control() {
-            // Ctrl + Clic: alternar selección individual
-            if self.selected_items.contains(&item) {
-                self.selected_items.remove(&item);
-            } else {
-                self.selected_items.insert(item.clone());
-            }
-            self.focused_item = Some(item.clone());
-            self.selection_pivot = Some(item);
-        } else if modifiers.shift() {
-            // Shift + Clic: selección por rango
-            if let Some(pivot) = self.selection_pivot.clone() {
-                self.select_range(&pivot, &item);
-            } else {
-                self.selected_items.clear();
-                self.selected_items.insert(item.clone());
-                self.focused_item = Some(item.clone());
-                self.selection_pivot = Some(item);
-            }
-        } else {
-            // Clic normal: resetear selección
-            self.selected_items.clear();
-            self.selected_items.insert(item.clone());
-            self.focused_item = Some(item.clone());
-            self.selection_pivot = Some(item);
-        }
+        let mut selection = self.take_selection();
+        selection.click(
+            item,
+            select_modifiers(modifiers),
+            || self.get_visible_items(),
+            &self.library_data(),
+        );
+        self.restore_selection(selection);
         self.update_selection_stats();
     }
 
     /// Selecciona todos los elementos visibles (incluyendo cabeceras colapsadas) según los filtros actuales.
     pub fn select_all(&mut self) {
         let items = self.get_all_list_items();
-        self.selected_items.clear();
-        for item in items {
-            self.selected_items.insert(item);
-        }
-        self.selection_pivot = None;
-        self.focused_item = None;
+        let mut selection = self.take_selection();
+        selection.select_all(items);
+        self.restore_selection(selection);
         self.update_selection_stats();
     }
 
     pub fn select_range(&mut self, start_item: &LibraryListItem, end_item: &LibraryListItem) {
         let items = self.get_visible_items();
-        let mut start_v = None;
-        let mut end_v = None;
-
-        for (i, (it, _)) in items.iter().enumerate() {
-            if it == start_item {
-                start_v = Some(i);
-            }
-            if it == end_item {
-                end_v = Some(i);
-            }
-        }
-
-        if let (Some(s), Some(e)) = (start_v, end_v) {
-            let (min, max) = if s < e { (s, e) } else { (e, s) };
-            self.selected_items.clear();
-            for i in min..=max {
-                let (item, _) = &items[i];
-                self.selected_items.insert(item.clone());
-
-                // Si seleccionamos una cabecera, expandimos la selección a sus hijos según el requisito del usuario
-                // REGLA: Solo auto-expandir si es el inicio/fin del rango O si está colapsado (en medio).
-                // Si está expandido y en medio, dejamos que el bucle del rango seleccione los elementos naturales.
-                let is_boundary = item == start_item || item == end_item;
-
-                match item {
-                    LibraryListItem::Artist(name) => {
-                        let is_collapsed = self.collapsed_artists.contains(name);
-                        if is_boundary || is_collapsed {
-                            if let Some(group) = self.artist_groups.iter().find(|g| g.name == *name)
-                            {
-                                for song in &group.songs {
-                                    self.selected_items.insert(LibraryListItem::Song(song.id));
-                                }
-                            }
-                        }
-                    }
-                    LibraryListItem::Album(id) => {
-                        let is_collapsed = self.collapsed_albums.contains(id);
-                        if is_boundary || is_collapsed {
-                            // Intentar encontrar las canciones del álbum
-                            if let Some(songs) = self.get_songs_for_album_id(id) {
-                                for song in songs {
-                                    self.selected_items.insert(LibraryListItem::Song(song.id));
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
+        let mut selection = self.take_selection();
+        selection.select_range(&items, start_item, end_item, &self.library_data());
+        self.restore_selection(selection);
     }
 
     pub fn get_songs_for_album_id(
         &self,
         composite_id: &str,
     ) -> Option<Vec<std::sync::Arc<crate::db::database::SongData>>> {
-        let parts: Vec<&str> = composite_id.split('|').collect();
-        if parts.len() == 2 {
-            let artist = parts[0];
-            let album_id = parts[1];
-
-            // Priorizar canciones FILTRADAS (búsqueda activa) para que las estadísticas y selección sean coherentes
-            let songs_source = self
-                .filtered_songs
-                .as_ref()
-                .or(self.cached_all_songs.as_ref());
-
-            if let Some(songs) = songs_source {
-                if let Some(alb_entry) = self
-                    .cached_albums
-                    .as_ref()
-                    .and_then(|all| all.iter().find(|a| a.id == album_id && a.artist == artist))
-                {
-                    return Some(
-                        songs
-                            .iter()
-                            .filter(|s| {
-                                s.album.as_deref() == Some(&alb_entry.title)
-                                    && crate::utils::get_effective_artist(s) == artist
-                            })
-                            .cloned()
-                            .collect(),
-                    );
-                }
-            }
-        }
-        None
+        // Priorizar canciones FILTRADAS (búsqueda activa) para que las estadísticas y selección sean coherentes
+        let songs = self
+            .filtered_songs
+            .as_ref()
+            .or(self.cached_all_songs.as_ref())?;
+        let albums = self.cached_albums.as_ref()?;
+        library_groups::songs_for_album_id(composite_id, songs, albums)
     }
 
     fn sync_legacy_selection(&mut self, item: &LibraryListItem, _current_idx_in_visible: usize) {
@@ -1820,171 +984,47 @@ impl LibraryManager {
     }
 
     pub fn update_selection_stats(&mut self) {
-        let selected_songs = self.get_selected_songs();
-        if selected_songs.is_empty() {
-            self.selection_stats = None;
-            return;
-        }
-
-        let mut stats = LibraryStats::default();
-        let mut unique_albums = std::collections::HashSet::new();
-        let mut unique_artists = std::collections::HashSet::new();
-
-        for song in &selected_songs {
-            stats.songs += 1;
-            stats.duration_secs += song.duration_secs.unwrap_or(0.0);
-            stats.size_bytes += song.size.unwrap_or(0) as f64;
-
-            let art = crate::utils::get_effective_artist(song);
-            let alb = song.album.as_deref().unwrap_or("Desconocido");
-            unique_artists.insert(art.to_string());
-            unique_albums.insert((art.to_string(), alb.to_string()));
-        }
-
-        stats.albums = unique_albums.len() as u64;
-        stats.artists = unique_artists.len() as u64;
-        self.selection_stats = Some(stats);
+        self.selection_stats = library_groups::selection_stats(&self.get_selected_songs());
     }
 
     pub fn get_selected_songs(&self) -> Vec<Arc<crate::db::database::SongData>> {
-        if self.selected_items.is_empty() {
-            return Vec::new();
-        }
-
-        let mut explicit_song_ids = std::collections::HashSet::new();
-        let mut albums_to_check = Vec::new();
-        let mut artists_to_check = Vec::new();
-
-        for item in &self.selected_items {
-            match item {
-                LibraryListItem::Song(id) => {
-                    explicit_song_ids.insert(*id);
-                }
-                LibraryListItem::Album(id) => {
-                    albums_to_check.push(id);
-                }
-                LibraryListItem::Artist(name) => {
-                    artists_to_check.push(name);
-                }
-            }
-        }
-
-        let mut final_song_ids = explicit_song_ids.clone();
-
-        // Optimización: Mapa de grupos de artistas para búsqueda O(1)
-        let mut artist_map = std::collections::HashMap::new();
-        for group in &self.artist_groups {
-            artist_map.insert(&group.name, group);
-        }
-
-        // Expansión inteligente de álbumes
-        for album_id in albums_to_check {
-            if let Some(songs) = self.get_songs_for_album_id(album_id) {
-                let has_explicit_songs = songs.iter().any(|s| explicit_song_ids.contains(&s.id));
-                if !has_explicit_songs {
-                    for s in songs {
-                        final_song_ids.insert(s.id);
-                    }
-                }
-            }
-        }
-
-        // Expansión inteligente de artistas
-        for artist_name in artists_to_check {
-            if let Some(group) = artist_map.get(artist_name) {
-                let has_explicit_songs = group
-                    .songs
-                    .iter()
-                    .any(|s| explicit_song_ids.contains(&s.id));
-                if !has_explicit_songs {
-                    for s in &group.songs {
-                        final_song_ids.insert(s.id);
-                    }
-                }
-            }
-        }
-
-        // Recolectar objetos SongData (Optimizado con mapa global si existe)
-        let mut results = Vec::new();
-        let songs_source = self
+        let Some(songs) = self
             .filtered_songs
             .as_ref()
-            .or(self.cached_all_songs.as_ref());
-
-        if let Some(songs) = songs_source {
-            for song in songs {
-                if final_song_ids.contains(&song.id) {
-                    results.push(song.clone());
-                }
-            }
-        }
-        results
+            .or(self.cached_all_songs.as_ref())
+        else {
+            return Vec::new();
+        };
+        library_selection::selected_songs(&self.selected_items, &self.library_data(), songs)
     }
 
     /// Calcula la tarea de scroll para asegurar que el elemento seleccionado sea visible.
     /// Si 'force_top' es true, el elemento se moverá directamente a la parte superior.
     pub fn get_scroll_task<Message: 'static>(&self, force_top: bool) -> Task<Message> {
-        let scroll_id = LIBRARY_SCROLL_ID.clone();
-        let margin_top = match self.view_mode {
-            LibraryViewMode::DetailedList => 32.0_f32,
-            LibraryViewMode::ThumbnailList => 42.0_f32,
-            LibraryViewMode::Grid => 0.0, // Barra superior + tabs
-            _ => 32.0_f32,
+        let scroll_to_offset = |offset: Option<f32>| match offset {
+            Some(y) => iced::widget::operation::scroll_to(
+                LIBRARY_SCROLL_ID.clone(),
+                iced::widget::operation::AbsoluteOffset { x: 0.0, y },
+            ),
+            None => Task::none(),
         };
+        let viewport = self
+            .last_viewport
+            .as_ref()
+            .map(|v| (self.scroll_offset.y, v.height));
 
         // FAST PATH: use the exact hint coordinates stored during keyboard navigation.
+        // Solo los artistas (sticky headers) tienen margen 0; los álbumes y canciones
+        // respetan el margen para no quedar ocultos bajo el sticky header del artista.
         if let Some((hint_y, hint_h)) = self.selected_item_hint {
-            let is_artist = matches!(self.focused_item, Some(LibraryListItem::Artist(_)));
-            let is_song = matches!(self.focused_item, Some(LibraryListItem::Song(_)));
-            let current_margin_top = if self.view_mode == LibraryViewMode::Grid && is_song {
-                0.0
-            } else {
-                margin_top
-            };
-
-            // Solo los artistas (sticky headers) tienen margen 0.
-            // Los álbumes y canciones deben respetar el margen para no quedar ocultos bajo el sticky header del artista.
-            let effective_margin_top = if is_artist { 0.0 } else { current_margin_top };
-            let margin_bottom: f32 = 0.0; // Desactivamos el margen dinámico que causaba saltos/espacios vacíos
-
-            if force_top {
-                return iced::widget::operation::scroll_to(
-                    scroll_id,
-                    iced::widget::operation::AbsoluteOffset {
-                        x: 0.0,
-                        y: (hint_y - effective_margin_top).max(0.0),
-                    },
-                );
-            }
-
-            if let Some(viewport) = &self.last_viewport {
-                let view_min = self.scroll_offset.y;
-                let view_max = view_min + viewport.height;
-                let bottom = hint_y + hint_h;
-
-                if hint_y < view_min + effective_margin_top {
-                    return iced::widget::operation::scroll_to(
-                        scroll_id,
-                        iced::widget::operation::AbsoluteOffset {
-                            x: 0.0,
-                            y: (hint_y - effective_margin_top).max(0.0),
-                        },
-                    );
-                } else if bottom > view_max - margin_bottom {
-                    let offset = (bottom - viewport.height + margin_bottom).max(0.0);
-                    return iced::widget::operation::scroll_to(
-                        scroll_id,
-                        iced::widget::operation::AbsoluteOffset { x: 0.0, y: offset },
-                    );
-                }
-            } else {
-                let offset = (hint_y - effective_margin_top).max(0.0);
-                return iced::widget::operation::scroll_to(
-                    scroll_id,
-                    iced::widget::operation::AbsoluteOffset { x: 0.0, y: offset },
-                );
-            }
-            return Task::none();
+            return scroll_to_offset(library_geometry::scroll_offset_to_reveal(
+                hint_y,
+                hint_h,
+                self.focused_item.as_ref(),
+                self.view_mode,
+                force_top,
+                viewport,
+            ));
         }
 
         // FALLBACK: name-based search (used when clicking with mouse)
@@ -2014,60 +1054,14 @@ impl LibraryManager {
             };
 
             if is_match {
-                let is_artist = matches!(item, LibraryListItem::Artist(_));
-                let is_song = matches!(item, LibraryListItem::Song(_));
-                let current_margin_top = if self.view_mode == LibraryViewMode::Grid && is_song {
-                    0.0
-                } else {
-                    margin_top
-                };
-
-                let effective_margin_top = if is_artist { 0.0 } else { current_margin_top };
-                let margin_bottom: f32 = 0.0;
-
-                let y = bounds.y;
-                let h = bounds.height;
-
-                if force_top {
-                    return iced::widget::operation::scroll_to(
-                        scroll_id,
-                        iced::widget::operation::AbsoluteOffset {
-                            x: 0.0,
-                            y: (y - effective_margin_top).max(0.0),
-                        },
-                    );
-                }
-
-                if let Some(viewport_rect) = &self.last_viewport {
-                    let view_min = self.scroll_offset.y;
-                    let view_max = view_min + viewport_rect.height;
-                    let bottom = y + h;
-
-                    if y < view_min + effective_margin_top {
-                        return iced::widget::operation::scroll_to(
-                            scroll_id,
-                            iced::widget::operation::AbsoluteOffset {
-                                x: 0.0,
-                                y: (y - effective_margin_top).max(0.0),
-                            },
-                        );
-                    } else if bottom > view_max - margin_bottom {
-                        let offset = (bottom - viewport_rect.height + margin_bottom).max(0.0);
-                        return iced::widget::operation::scroll_to(
-                            scroll_id,
-                            iced::widget::operation::AbsoluteOffset { x: 0.0, y: offset },
-                        );
-                    }
-                } else {
-                    return iced::widget::operation::scroll_to(
-                        scroll_id,
-                        iced::widget::operation::AbsoluteOffset {
-                            x: 0.0,
-                            y: (y - effective_margin_top).max(0.0),
-                        },
-                    );
-                }
-                break;
+                return scroll_to_offset(library_geometry::scroll_offset_to_reveal(
+                    bounds.y,
+                    bounds.height,
+                    Some(item),
+                    self.view_mode,
+                    force_top,
+                    viewport,
+                ));
             }
         }
         Task::none()
@@ -2075,125 +1069,72 @@ impl LibraryManager {
 
     /// Obtiene el nombre del artista que se debe contraer/expandir según la dirección de la tecla flecha.
     pub fn get_artist_to_toggle(&self, dir: LibraryNavDir) -> Option<String> {
-        let artist_name = if let Some(h) = &self.selected_header {
-            Some(h.clone())
-        } else if let Some(song_idx) = self.selected_song_idx {
-            self.filtered_songs
-                .as_ref()
-                .and_then(|songs| songs.get(song_idx))
-                .and_then(|s| {
-                    s.artist
-                        .as_ref()
-                        .map(|s| s.to_string())
-                        .or_else(|| s.album_artist.as_ref().map(|s| s.to_string()))
-                })
-        } else {
-            None
-        };
-
-        if let Some(artist) = artist_name {
-            let is_collapsed = self.collapsed_artists.contains(&artist);
-            if (dir == LibraryNavDir::Left && !is_collapsed)
-                || (dir == LibraryNavDir::Right && is_collapsed)
-            {
-                return Some(artist);
-            }
-        }
-        None
+        library_selection::artist_to_toggle(
+            self.selected_header.as_deref(),
+            self.legacy_selected_song(),
+            dir,
+            &self.library_data(),
+        )
     }
 
     /// Obtiene listas de álbumes y artistas a contraer/expandir en bloque.
     pub fn get_bulk_toggles(&self, dir: LibraryNavDir) -> (Vec<String>, Vec<String>) {
-        let mut albums_to_toggle = std::collections::HashSet::new();
-        let mut artists_to_toggle = std::collections::HashSet::new();
-
-        let mut items_to_process = Vec::new();
-        if !self.selected_items.is_empty() {
-            items_to_process.extend(self.selected_items.iter().cloned());
-        } else if let Some(focused) = &self.focused_item {
-            items_to_process.push(focused.clone());
-        }
-
-        for item in items_to_process {
-            match item {
-                LibraryListItem::Artist(name) => {
-                    let is_collapsed = self.collapsed_artists.contains(&name);
-                    if (dir == LibraryNavDir::Left && !is_collapsed)
-                        || (dir == LibraryNavDir::Right && is_collapsed)
-                    {
-                        artists_to_toggle.insert(name);
-                    }
-                }
-                LibraryListItem::Album(id) => {
-                    let is_collapsed = self.collapsed_albums.contains(&id);
-                    if (dir == LibraryNavDir::Left && !is_collapsed)
-                        || (dir == LibraryNavDir::Right && is_collapsed)
-                    {
-                        albums_to_toggle.insert(id);
-                    }
-                }
-                LibraryListItem::Song(id) => {
-                    if let Some(composite_id) = self.find_album_id_for_song(id) {
-                        let is_collapsed = self.collapsed_albums.contains(&composite_id);
-                        if (dir == LibraryNavDir::Left && !is_collapsed)
-                            || (dir == LibraryNavDir::Right && is_collapsed)
-                        {
-                            albums_to_toggle.insert(composite_id);
-                        }
-                    }
-                }
-            }
-        }
-
-        (
-            albums_to_toggle.into_iter().collect(),
-            artists_to_toggle.into_iter().collect(),
+        library_selection::bulk_toggles(
+            &self.selected_items,
+            self.focused_item.as_ref(),
+            dir,
+            &self.library_data(),
+            |song_id| self.find_album_id_for_song(song_id),
         )
     }
 
     pub fn get_album_to_toggle(&self, dir: LibraryNavDir) -> Option<String> {
-        let album_id = if let Some(alb) = &self.selected_album {
-            Some(alb.clone())
-        } else if let Some(song_idx) = self.selected_song_idx {
-            if let Some(songs) = &self.filtered_songs {
-                if let Some(s) = songs.get(song_idx) {
-                    let art = crate::utils::get_effective_artist(s).to_string();
-                    let alb_name = s
-                        .album
-                        .as_ref()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "Desconocido".to_string());
+        library_selection::album_to_toggle(
+            self.selected_album.as_deref(),
+            self.legacy_selected_song(),
+            self.cached_albums.as_deref(),
+            dir,
+            &self.library_data(),
+        )
+    }
 
-                    // Buscar hash para ID compuesto
-                    let alb_hash = if let Some(cache) = &self.cached_albums {
-                        cache
-                            .iter()
-                            .find(|a| a.title == alb_name && a.artist == art)
-                            .map(|a| a.id.clone())
-                            .unwrap_or_else(|| alb_name.clone())
-                    } else {
-                        alb_name.clone()
-                    };
-                    Some(format!("{}|{}", art, alb_hash))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+    /// La canción de `selected_song_idx` en `filtered_songs`, si existe.
+    fn legacy_selected_song(&self) -> Option<&crate::db::database::SongData> {
+        let idx = self.selected_song_idx?;
+        self.filtered_songs
+            .as_ref()
+            .and_then(|songs| songs.get(idx))
+            .map(|s| &**s)
+    }
 
-        if let Some(id) = album_id {
-            let is_collapsed = self.collapsed_albums.contains(&id);
-            if (dir == LibraryNavDir::Left && !is_collapsed)
-                || (dir == LibraryNavDir::Right && is_collapsed)
-            {
-                return Some(id);
-            }
+    /// Vista de solo lectura de los datos de la biblioteca para la lógica de selección.
+    fn library_data(&self) -> LibraryData<'_> {
+        LibraryData {
+            artist_groups: &self.artist_groups,
+            songs: self
+                .filtered_songs
+                .as_deref()
+                .or(self.cached_all_songs.as_deref()),
+            cached_albums: self.cached_albums.as_deref(),
+            collapsed_artists: &self.collapsed_artists,
+            collapsed_albums: &self.collapsed_albums,
         }
-        None
+    }
+
+    /// Saca el estado de selección (selección, foco y pivote) para operar sobre él.
+    fn take_selection(&mut self) -> LibrarySelection {
+        LibrarySelection {
+            selected: std::mem::take(&mut self.selected_items),
+            focused: self.focused_item.take(),
+            pivot: self.selection_pivot.take(),
+        }
+    }
+
+    /// Devuelve el estado de selección sacado con `take_selection`.
+    fn restore_selection(&mut self, selection: LibrarySelection) {
+        self.selected_items = selection.selected;
+        self.focused_item = selection.focused;
+        self.selection_pivot = selection.pivot;
     }
 
     /// Actualiza la memoria de la última canción seleccionada para un artista.
@@ -2257,97 +1198,23 @@ impl LibraryManager {
             || self.filter_folder_id.is_some();
 
         // 1. Agrupación por Artistas
-        let mut groups_map: std::collections::BTreeMap<String, ArtistGroup> =
-            std::collections::BTreeMap::new();
-        for song in &songs {
-            let artist_name = crate::utils::get_effective_artist(song);
-            let key = artist_name.to_lowercase();
-
-            let group = groups_map.entry(key).or_insert(ArtistGroup {
-                name: artist_name.to_string(),
-                albums_count: 0,
-                songs_count: 0,
-                songs: Vec::new(),
-                duration_secs: 0.0,
-            });
-
-            group.duration_secs += song.duration_secs.unwrap_or(0.0);
-            group.songs.push(song.clone());
-        }
-
-        for g in groups_map.values_mut() {
-            let mut unique_albums = std::collections::HashSet::new();
-            for s in &g.songs {
-                if let Some(a) = &s.album {
-                    unique_albums.insert(a.clone());
-                }
-            }
-            g.albums_count = unique_albums.len();
-            g.songs_count = g.songs.len();
-        }
-
-        let groups: Vec<ArtistGroup> = groups_map.into_values().collect();
-        self.artist_groups = groups;
-        self.filtered_songs = Some(songs);
+        self.artist_groups = library_groups::group_by_artist(&songs);
 
         // 2. Sincronización del Grid (Álbumes)
-        if has_any_filter {
-            let mut grid_filtered = Vec::new();
-            let mut seen_albums = std::collections::HashSet::new();
-
-            if let Some(all_albums) = &self.cached_albums {
-                for group in &self.artist_groups {
-                    for song in &group.songs {
-                        if let Some(alb_title) = &song.album {
-                            let key = (group.name.to_lowercase(), alb_title.trim().to_lowercase());
-                            if !seen_albums.contains(&key) {
-                                seen_albums.insert(key);
-
-                                if let Some(entry) = all_albums
-                                    .iter()
-                                    .find(|a| {
-                                        a.title.as_str() == &**alb_title && a.artist == group.name
-                                    })
-                                    .or_else(|| {
-                                        all_albums.iter().find(|a| a.title.as_str() == &**alb_title)
-                                    })
-                                {
-                                    let mut unified_entry = entry.clone();
-                                    unified_entry.artist = group.name.clone();
-                                    grid_filtered.push(unified_entry);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            self.sort_albums(&mut grid_filtered);
-            self.filtered_albums = Some(grid_filtered);
+        self.filtered_albums = if has_any_filter {
+            Some(library_groups::filtered_albums(
+                &self.artist_groups,
+                self.cached_albums.as_deref().unwrap_or_default(),
+                self.sort_column,
+                self.sort_ascending,
+            ))
         } else {
-            self.filtered_albums = None;
-        }
+            None
+        };
 
         // 3. Estadísticas
-        if let Some(songs) = &self.filtered_songs {
-            let total_dur: f64 = songs.iter().map(|s| s.duration_secs.unwrap_or(0.0)).sum();
-            let total_size: f64 = songs.iter().map(|s| s.size.unwrap_or(0) as f64).sum();
-            let mut unique_albums: std::collections::HashSet<(String, String)> =
-                std::collections::HashSet::new();
-            let mut unique_artists = std::collections::HashSet::new();
-            for s in songs {
-                let art = crate::utils::get_effective_artist(s);
-                let alb = s.album.as_deref().unwrap_or("Desconocido");
-                unique_albums.insert((art.to_string(), alb.to_string()));
-                unique_artists.insert(art.to_string());
-            }
-            self.filter_stats = Some(LibraryStats {
-                songs: songs.len() as u64,
-                albums: unique_albums.len() as u64,
-                artists: unique_artists.len() as u64,
-                duration_secs: total_dur,
-                size_bytes: total_size,
-            });
-        }
+        self.filter_stats = Some(library_groups::compute_stats(&songs));
+        self.filtered_songs = Some(songs);
 
         self.refresh_expanded_album_songs();
     }

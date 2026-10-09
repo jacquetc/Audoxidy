@@ -1,21 +1,15 @@
 use crate::gui::app::Message;
 use crate::gui::theme::*;
 use crate::gui::widgets::{chevron_btn, standard_scrollable, standard_scrollbar};
+use crate::logic::filter_index::{self, FilterIndex};
 use iced::{
     Alignment, Color, Element, Length, Theme,
     widget::{Space, button, column, container, mouse_area, row, text},
 };
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashSet;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FilterType {
-    Folder,
-    Artist,
-    Album,
-    Genre,
-    Year,
-}
+pub use crate::logic::filter_index::{FilterType, TreeNode, VisibleTreeItem};
 
 impl FilterType {
     pub fn label(&self) -> &'static str {
@@ -27,29 +21,6 @@ impl FilterType {
             FilterType::Year => "Año",
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct TreeNode {
-    pub label: String,
-    pub id: String, // format: "FilterType|L1|L2|...". e.g. "Genre|Rock|Queen|Innuendo"
-    pub children: Vec<TreeNode>,
-}
-
-/// Índice pre-calculado de filtros. Se construye UNA sola vez al cargar canciones.
-struct FilterIndex {
-    /// Árbol completo y ordenado por cada FilterType
-    trees: HashMap<FilterType, Vec<TreeNode>>,
-    /// Letras del abecedario disponibles por cada FilterType
-    subfilters: HashMap<FilterType, Vec<String>>,
-}
-
-pub struct VisibleTreeItem {
-    pub label: String,
-    pub id: String,
-    pub depth: usize,
-    pub has_children: bool,
-    pub is_expanded: bool,
 }
 
 pub struct LibraryFiltersManager {
@@ -101,70 +72,6 @@ impl LibraryFiltersManager {
         *self.cached_flattened_tree.borrow_mut() = None;
     }
 
-    /// Obtiene el grupo inicial ("#", "•", o letra mayúscula) a partir del texto
-    fn get_group_char(s: &str) -> String {
-        let first = s
-            .chars()
-            .next()
-            .unwrap_or('?')
-            .to_uppercase()
-            .next()
-            .unwrap_or('?');
-        if first.is_numeric() {
-            "#".to_string()
-        } else if first.is_alphabetic() {
-            first.to_string()
-        } else {
-            "•".to_string()
-        }
-    }
-
-    fn sort_subfilters(chars: &mut Vec<String>) {
-        chars.sort_by(|a, b| {
-            if a == "#" && b != "#" {
-                return std::cmp::Ordering::Less;
-            }
-            if b == "#" && a != "#" {
-                return std::cmp::Ordering::Greater;
-            }
-            if a == "•" && b != "•" {
-                return std::cmp::Ordering::Less;
-            }
-            if b == "•" && a != "•" {
-                return std::cmp::Ordering::Greater;
-            }
-            a.cmp(b)
-        });
-    }
-
-    fn sort_tree(nodes: &mut Vec<TreeNode>) {
-        nodes.sort_by(|a, b| {
-            let group_a = Self::get_group_char(&a.label);
-            let group_b = Self::get_group_char(&b.label);
-            let w_a = if group_a == "#" {
-                0
-            } else if group_a == "•" {
-                1
-            } else {
-                2
-            };
-            let w_b = if group_b == "#" {
-                0
-            } else if group_b == "•" {
-                1
-            } else {
-                2
-            };
-            w_a.cmp(&w_b)
-                .then_with(|| crate::utils::compare_strings_ignore_case(&a.label, &b.label))
-        });
-        for node in nodes.iter_mut() {
-            if !node.children.is_empty() {
-                Self::sort_tree(&mut node.children);
-            }
-        }
-    }
-
     /// Construye el índice de filtros UNA sola vez. Llamar al cargar canciones o cuando el escáner detecta cambios.
     pub fn build_filter_index(
         &mut self,
@@ -178,119 +85,26 @@ impl LibraryFiltersManager {
             FilterType::Folder,
         ];
 
-        let mut trees: HashMap<FilterType, Vec<TreeNode>> = HashMap::new();
-        let mut subfilters: HashMap<FilterType, Vec<String>> = HashMap::new();
+        let mut index = FilterIndex::new();
 
         // db-lock: solo lectura — refresco best-effort, se omite si el lock falla
         if let Ok(db) = db_m.lock() {
-            for ft in &all_types {
-                let ft_label = format!("{:?}", ft);
-                let filter_str = match ft {
-                    FilterType::Genre => "Genre",
-                    FilterType::Artist => "Artist",
-                    FilterType::Album => "Album",
-                    FilterType::Year => "Year",
-                    FilterType::Folder => "Folder",
-                };
-
-                if let Ok(hierarchy) = db.get_filter_hierarchy(filter_str) {
-                    // Estructura intermedia: L1 -> L2 -> Set<L3>
-                    let mut indices: BTreeMap<String, HashMap<String, HashSet<String>>> =
-                        BTreeMap::new();
-                    let mut char_sets: HashSet<String> = HashSet::new();
-
-                    for (l1, l2, l3_opt) in hierarchy {
-                        char_sets.insert(Self::get_group_char(&l1));
-
-                        let l2_map = indices.entry(l1.to_string()).or_insert_with(HashMap::new);
-                        let l3_set = l2_map.entry(l2.to_string()).or_insert_with(HashSet::new);
-
-                        if let Some(l3) = l3_opt {
-                            l3_set.insert(l3.to_string());
-                        }
-                    }
-
-                    // Convertir a TreeNodes
-                    let mut tree: Vec<TreeNode> = Vec::with_capacity(indices.len());
-                    for (l1_label, l2_map) in indices {
-                        let id1 = format!("{}|{}", ft_label, l1_label);
-                        let mut children1: Vec<TreeNode> = Vec::with_capacity(l2_map.len());
-
-                        for (l2_label, l3_set) in l2_map {
-                            let id2 = format!("{}|{}", id1, l2_label);
-                            let mut children2: Vec<TreeNode> = Vec::with_capacity(l3_set.len());
-
-                            for l3_val in l3_set {
-                                let id3 = format!("{}|{}", id2, l3_val);
-                                children2.push(TreeNode {
-                                    label: l3_val,
-                                    id: id3,
-                                    children: Vec::new(),
-                                });
-                            }
-
-                            Self::sort_tree(&mut children2);
-                            children1.push(TreeNode {
-                                label: l2_label,
-                                id: id2,
-                                children: children2,
-                            });
-                        }
-
-                        Self::sort_tree(&mut children1);
-                        tree.push(TreeNode {
-                            label: l1_label,
-                            id: id1,
-                            children: children1,
-                        });
-                    }
-
-                    Self::sort_tree(&mut tree);
-                    trees.insert(*ft, tree);
-
-                    let mut chars: Vec<String> = char_sets.into_iter().collect();
-                    Self::sort_subfilters(&mut chars);
-                    subfilters.insert(*ft, chars);
+            for ft in all_types {
+                if let Ok(hierarchy) = db.get_filter_hierarchy(ft.name()) {
+                    index.insert(ft, hierarchy);
                 }
             }
         }
 
-        self.filter_index = Some(FilterIndex { trees, subfilters });
+        self.filter_index = Some(index);
 
         // Actualizar la vista inmediatamente
         self.apply_view();
     }
 
     pub fn refresh_flattened_tree(&self) {
-        let mut flattened = Vec::new();
-        for node in &self.tree_data {
-            Self::flatten_tree_node(node, 0, &self.expanded_nodes, &mut flattened);
-        }
+        let flattened = filter_index::flatten_tree(&self.tree_data, &self.expanded_nodes);
         *self.cached_flattened_tree.borrow_mut() = Some(flattened);
-    }
-
-    fn flatten_tree_node(
-        node: &TreeNode,
-        depth: usize,
-        expanded: &HashSet<String>,
-        result: &mut Vec<VisibleTreeItem>,
-    ) {
-        let is_expanded = expanded.contains(&node.id);
-        let has_children = !node.children.is_empty();
-
-        result.push(VisibleTreeItem {
-            label: node.label.clone(),
-            id: node.id.clone(),
-            depth,
-            has_children,
-            is_expanded,
-        });
-
-        if is_expanded && has_children {
-            for child in &node.children {
-                Self::flatten_tree_node(child, depth + 1, expanded, result);
-            }
-        }
     }
 
     pub fn get_visible_tree_items(&self) -> (f32, f32, Vec<VisibleTreeItem>) {
@@ -299,38 +113,14 @@ impl LibraryFiltersManager {
         }
 
         let flattened_borrow = self.cached_flattened_tree.borrow();
-        let flattened = flattened_borrow.as_ref().unwrap();
-
-        let item_height = 32.0;
-        let total_items = flattened.len();
+        let flattened = flattened_borrow.as_deref().unwrap_or_default();
 
         let viewport_height = self.last_viewport.map(|v| v.height).unwrap_or(800.0);
-        let scroll_y = self.scroll_offset.y;
-
-        let start_index = (scroll_y / item_height).floor() as usize;
         // D-05: Margen dinámico = max(5, total_visible_items / 2)
-        let total_visible_items = (viewport_height / item_height).ceil() as usize;
-        let margin = (total_visible_items / 2).max(5);
-        let start_index = start_index.saturating_sub(margin);
+        let (start_index, end_index, top_space, bottom_space) =
+            filter_index::tree_window(flattened.len(), self.scroll_offset.y, viewport_height);
 
-        let visible_count = (viewport_height / item_height).ceil() as usize + (margin * 2);
-
-        let end_index = (start_index + visible_count).min(total_items);
-        let start_index = start_index.min(total_items);
-
-        let top_space = start_index as f32 * item_height;
-        let bottom_space = (total_items.saturating_sub(end_index)) as f32 * item_height;
-
-        let visible_items = flattened[start_index..end_index]
-            .iter()
-            .map(|item| VisibleTreeItem {
-                label: item.label.clone(),
-                id: item.id.clone(),
-                depth: item.depth,
-                has_children: item.has_children,
-                is_expanded: item.is_expanded,
-            })
-            .collect();
+        let visible_items = flattened[start_index..end_index].to_vec();
 
         (top_space, bottom_space, visible_items)
     }
@@ -350,67 +140,22 @@ impl LibraryFiltersManager {
         };
 
         // 1. Subfilters (letras del abecedario) - directo de la caché
-        if let Some(chars) = index.subfilters.get(&self.current_filter) {
-            self.active_subfilters = chars.clone();
+        if let Some(chars) = index.subfilters(self.current_filter) {
+            self.active_subfilters = chars.to_vec();
         }
 
-        // 2. Árbol filtrado
-        if let Some(full_tree) = index.trees.get(&self.current_filter) {
-            let has_search = !self.search_query.is_empty();
-            let query_lower = self.search_query.to_lowercase();
+        // 2. Árbol filtrado (subfiltro por letra y búsqueda de texto), en paralelo por nodo raíz
+        if let Some(full_tree) = index.tree(self.current_filter) {
+            let subfilter = self.selected_subfilter.as_deref();
+            let query = self.search_query.as_str();
 
             use rayon::prelude::*;
             self.tree_data = full_tree
                 .par_iter()
-                .filter_map(|node| {
-                    // Filtro por subfiltro (letra del abecedario)
-                    if let Some(ref sub) = self.selected_subfilter {
-                        let group = Self::get_group_char(&node.label);
-                        if &group != sub {
-                            return None;
-                        }
-                    }
-
-                    // Filtro por búsqueda de texto
-                    if has_search {
-                        Self::filter_node_by_search(node, &query_lower)
-                    } else {
-                        Some(node.clone())
-                    }
-                })
+                .filter_map(|node| filter_index::filter_root(node, subfilter, query))
                 .collect();
         }
         self.refresh_flattened_tree();
-    }
-
-    /// Filtra recursivamente un nodo del árbol por búsqueda de texto.
-    /// Retorna None si ni el nodo ni sus hijos coinciden.
-    fn filter_node_by_search(node: &TreeNode, query: &str) -> Option<TreeNode> {
-        let self_matches = node.label.to_lowercase().contains(query);
-
-        use rayon::prelude::*;
-        // Filtrar hijos recursivamente en paralelo
-        let filtered_children: Vec<TreeNode> = node
-            .children
-            .par_iter()
-            .filter_map(|child| Self::filter_node_by_search(child, query))
-            .collect();
-
-        if self_matches || !filtered_children.is_empty() {
-            Some(TreeNode {
-                label: node.label.clone(),
-                id: node.id.clone(),
-                children: if self_matches {
-                    // Si el padre coincide, mostrar todos sus hijos
-                    node.children.clone()
-                } else {
-                    // Si solo coinciden hijos, mostrar solo los que coinciden
-                    filtered_children
-                },
-            })
-        } else {
-            None
-        }
     }
 }
 
