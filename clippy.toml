@@ -1,0 +1,4 @@
+# unwrap()/expect() are denied in the new module trees (src/logic, src/frontend,
+# src/teksilo_ui) outside tests; tests may use them.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

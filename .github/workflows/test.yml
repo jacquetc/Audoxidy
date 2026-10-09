@@ -8,16 +8,33 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Until teksilo 0.16.0 is released, `.cargo/config.toml` patches teksilo to
+  # `../teksilo`. Cargo resolves the patch even when no feature enables
+  # teksilo, so every job needs the checkout. Remove with the patch.
+  TEKSILO_REF: dev
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        set:
+          - { name: iced, args: "" }
+          - { name: teksilo, args: "--no-default-features --features teksilo-ui" }
+          - { name: teksilo-mocks, args: "--no-default-features --features teksilo-mocks" }
+    name: test (${{ matrix.set.name }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Install Linux deps
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libdbus-1-dev libdav1d-dev
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libasound2-dev libpipewire-0.3-dev libdbus-1-dev libdav1d-dev
+          pkg-config libgtk-3-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libxcb1-dev libx11-dev
+      - name: Check out teksilo next to the repository
+        run: git clone --depth 1 --branch "$TEKSILO_REF" https://github.com/ferntech-eu/teksilo ../teksilo
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --verbose ${{ matrix.set.args }}
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --verbose ${{ matrix.set.args }}

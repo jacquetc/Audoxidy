@@ -12,7 +12,7 @@ documentation = "https://docs.rs/audoxidy"
 license = "GPL-3.0-only"
 keywords = ["audio", "player", "dsp", "crossfade", "rust"]
 categories = ["multimedia::audio", "gui"]
-exclude = ["/.planning", "/.changelogs-crates-update", "/cache", "/logs", "/graphify-out", "/.criterion", "*.db*"]
+exclude = ["/tools", "/.planning", "/.changelogs-crates-update", "/cache", "/logs", "/graphify-out", "/.criterion", "*.db*"]
 
 [dependencies]
 async_ftp = "6.0.0"
@@ -26,7 +26,7 @@ crossbeam = "0.8"
 fast_image_resize = "6.1.0"
 fastrand = "2.3.0"
 hex = "0.4.3"
-iced = { version = "0.14.0", features = ["tokio", "image", "svg", "canvas", "advanced"] }
+iced = { version = "0.14.0", optional = true, features = ["tokio", "image", "svg", "canvas", "advanced"] }
 image = { version = "0.25.10", features = ["default", "png", "jpeg", "webp", "avif-native"] }
 kmeans_colors = "0.7.1"
 libloading = "0.9.0"
@@ -60,12 +60,28 @@ usvg = "0.46.0"
 walkdir = "2.5.0"
 wide = "1.7.0"
 zbus = "5.13.2"
+# Teksilo UI (opt-in, `teksilo-ui` feature). Built against `../teksilo` through
+# the `[patch.crates-io]` in `.cargo/config.toml` until teksilo 0.16.0 ships.
+teksilo = { version = "0.15.1", optional = true, features = ["automation", "async"] }
+# One-shot replies from the frontend DB worker, awaited on the UI thread.
+async-channel = { version = "2", optional = true }
 
 [features]
-default = []
+default = ["iced-ui"]
+# Interfaz Iced (la interfaz por defecto).
+iced-ui = ["dep:iced"]
+# Interfaz Teksilo (binario `audoxidy-teksilo`).
+teksilo-ui = ["dep:teksilo", "dep:async-channel"]
+# Interfaz Teksilo con datos simulados: sin base de datos ni dispositivo de audio.
+teksilo-mocks = ["teksilo-ui"]
 # Detección opt-in de deadlocks de parking_lot (solo builds de desarrollo;
 # nunca se activa en release).
 deadlock-detection = ["parking_lot/deadlock_detection"]
+
+[[bin]]
+name = "audoxidy"
+path = "src/main.rs"
+required-features = ["iced-ui"]
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
@@ -85,6 +101,7 @@ harness = false
 [[bench]]
 name = "covers_bench"
 harness = false
+required-features = ["iced-ui"]
 
 [[bench]]
 name = "resampler_bench"

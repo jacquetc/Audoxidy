@@ -150,8 +150,9 @@ impl Database {
         Self::open_at(path)
     }
 
-    /// Crea una base de datos en memoria para pruebas.
-    #[cfg(test)]
+    /// Crea una base de datos en memoria para pruebas y para la interfaz
+    /// Teksilo con datos simulados (`teksilo-mocks`).
+    #[cfg(any(test, feature = "teksilo-mocks"))]
     pub fn new_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.busy_timeout(std::time::Duration::from_millis(5000))?;

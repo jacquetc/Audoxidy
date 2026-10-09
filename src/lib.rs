@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod db;
+#[cfg(feature = "iced-ui")]
 pub mod gui;
 pub mod integrations;
 pub mod utils;
@@ -8,6 +9,6 @@ pub mod utils;
 #[path = "audio/dsp_tests.rs"]
 mod dsp_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "iced-ui"))]
 #[path = "gui/widgets_tests.rs"]
 mod widgets_tests;
