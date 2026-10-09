@@ -1060,3 +1060,192 @@ fn an_external_seek_is_ignored_while_the_duration_is_unknown() {
         assert!(rig.take_calls().is_empty());
     });
 }
+
+// --- Saved position after a track change --------------------------------------------
+
+/// A player whose loads take effect only when the test applies them, like
+/// the engine, whose decoder thread applies a load after `load_file` returns:
+/// until then the state still shows the previous track and its position.
+struct LaggingPlayer {
+    inner: Arc<crate::frontend::fakes::FakePlayer>,
+    pending: parking_lot::Mutex<Option<(TrackRequest, ReplayGains)>>,
+}
+
+impl LaggingPlayer {
+    fn apply_pending_load(&self) {
+        if let Some((track, gains)) = self.pending.lock().take() {
+            self.inner.load_file(&track, gains).unwrap();
+        }
+    }
+}
+
+use crate::audio::AudioError;
+use crate::audio::dsp::DspChain;
+use crate::audio::engine::{AudioDeviceInfo, AudioSettings, AudioState};
+use crate::audio::meter::MeterData;
+use crate::audio::preset::EqPreset;
+use std::sync::Arc;
+
+impl PlayerPort for LaggingPlayer {
+    fn play(&self) {
+        self.inner.play();
+    }
+    fn pause(&self) {
+        self.inner.pause();
+    }
+    fn set_playing(&self, playing: bool) {
+        self.inner.set_playing(playing);
+    }
+    fn stop(&self) {
+        self.inner.stop();
+    }
+    fn toggle_play_pause(&self) {
+        self.inner.toggle_play_pause();
+    }
+    fn is_playing(&self) -> bool {
+        self.inner.is_playing()
+    }
+    fn seek(&self, position_secs: f64) {
+        self.inner.seek(position_secs);
+    }
+    fn take_eof(&self) -> bool {
+        self.inner.take_eof()
+    }
+    fn load_file(&self, track: &TrackRequest, gains: ReplayGains) -> Result<(), AudioError> {
+        *self.pending.lock() = Some((track.clone(), gains));
+        Ok(())
+    }
+    fn preload_next(&self, track: &TrackRequest, gains: ReplayGains) -> Result<(), AudioError> {
+        self.inner.preload_next(track, gains)
+    }
+    fn purge_preload(&self) -> Result<(), AudioError> {
+        self.inner.purge_preload()
+    }
+    fn crossfade_next(&self, ms: f64) -> Result<(), AudioError> {
+        self.inner.crossfade_next(ms)
+    }
+    fn set_volume(&self, volume: f32) {
+        self.inner.set_volume(volume);
+    }
+    fn preamp_gain(&self) -> f32 {
+        self.inner.preamp_gain()
+    }
+    fn set_preamp_gain(&self, db: f32) {
+        self.inner.set_preamp_gain(db);
+    }
+    fn eq_enabled(&self) -> bool {
+        self.inner.eq_enabled()
+    }
+    fn set_eq_enabled(&self, enabled: bool) {
+        self.inner.set_eq_enabled(enabled);
+    }
+    fn eq_band_count(&self) -> usize {
+        self.inner.eq_band_count()
+    }
+    fn set_eq_mode(&self, num_bands: usize) {
+        self.inner.set_eq_mode(num_bands);
+    }
+    fn eq_band(&self, index: usize) -> Option<(f32, f32)> {
+        self.inner.eq_band(index)
+    }
+    fn set_eq_band_gain(&self, index: usize, db: f32) {
+        self.inner.set_eq_band_gain(index, db);
+    }
+    fn apply_eq_preset(&self, preset: &EqPreset) {
+        self.inner.apply_eq_preset(preset);
+    }
+    fn apply_eq_preset_gains(&self, bands_20: &[f32], bands_31: &[f32]) {
+        self.inner.apply_eq_preset_gains(bands_20, bands_31);
+    }
+    fn reset_dsp_defaults(&self) {
+        self.inner.reset_dsp_defaults();
+    }
+    fn update_dsp(&self, f: &mut dyn FnMut(&mut DspChain)) {
+        self.inner.update_dsp(f);
+    }
+    fn read_dsp(&self, f: &mut dyn FnMut(&DspChain)) {
+        self.inner.read_dsp(f);
+    }
+    fn state(&self) -> Arc<parking_lot::RwLock<AudioState>> {
+        self.inner.state()
+    }
+    fn snapshot(&self) -> AudioState {
+        self.inner.snapshot()
+    }
+    fn meter(&self) -> Arc<MeterData> {
+        self.inner.meter()
+    }
+    fn buffer_size(&self) -> u32 {
+        self.inner.buffer_size()
+    }
+    fn available_hosts(&self) -> Vec<String> {
+        self.inner.available_hosts()
+    }
+    fn devices(&self) -> Vec<AudioDeviceInfo> {
+        self.inner.devices()
+    }
+    fn apply_audio_settings(&self, settings: AudioSettings) -> Result<(), AudioError> {
+        self.inner.apply_audio_settings(settings)
+    }
+    fn purge_buffers(&self) -> Result<(), AudioError> {
+        self.inner.purge_buffers()
+    }
+}
+
+#[test]
+fn quirk_29_a_track_change_saves_position_zero_before_the_engine_applies_the_load() {
+    use crate::db::Database;
+    use crate::db::scanner::Scanner;
+    use crate::frontend::app_context::Parts;
+    use crate::frontend::db_worker::SharedDatabase;
+    use crate::frontend::fakes::{FakeMediaControls, FakeMemoryProbe, FakePlayer, FakeSystemAudio};
+    use crate::integrations::control::external_control_channel;
+    use crate::utils::config::AppConfig;
+
+    with_timeout(TEST_TIMEOUT, || {
+        let database: SharedDatabase =
+            Arc::new(std::sync::Mutex::new(Database::new_memory().unwrap()));
+        let player = Arc::new(LaggingPlayer {
+            inner: Arc::new(FakePlayer::new()),
+            pending: parking_lot::Mutex::new(None),
+        });
+        let (_external_tx, external_rx) = external_control_channel();
+        let ctx = AppContext::assemble(Parts {
+            scanner: Arc::new(Scanner::new(Arc::clone(&database))),
+            database,
+            player: player.clone(),
+            media: Arc::new(FakeMediaControls::new()),
+            system_audio: Arc::new(FakeSystemAudio::new()),
+            external: external_rx,
+            probe: Arc::new(FakeMemoryProbe::new()),
+            config: AppConfig::default(),
+        })
+        .unwrap();
+        let seeded = fixture().seed_on(&ctx.db).recv_blocking().unwrap();
+        let list = seeded.playlist("List").unwrap().id;
+        let mut cursor = PlaybackCursor::new(load_playlist(&ctx, list).recv_blocking().unwrap());
+        let one = seeded.song_id(&path(1)).unwrap();
+        play_song(&ctx, &mut cursor, one).unwrap();
+        player.apply_pending_load();
+        player.inner.advance(80.0);
+
+        next(&ctx, &mut cursor).unwrap();
+        assert_eq!(
+            player.snapshot().current_pos_sec,
+            80.0,
+            "the load is pending"
+        );
+        flush(&ctx);
+        let stored = ctx
+            .db
+            .read(move |db| Ok(db.get_playlist_by_id(list)?))
+            .recv_blocking()
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.last_song_id, seeded.song_id(&path(2)));
+        assert_eq!(
+            stored.last_pos_sec, 0.0,
+            "not the previous track's 80 s, which Iced would save"
+        );
+    });
+}
