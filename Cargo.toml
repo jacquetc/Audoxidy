@@ -16,6 +16,8 @@ exclude = ["/tools", "/.planning", "/.changelogs-crates-update", "/cache", "/log
 
 [dependencies]
 async_ftp = "6.0.0"
+# One-shot replies from the frontend workers (src/frontend), awaitable by a UI.
+async-channel = "2"
 audioadapter = "5.0"
 audioadapter-buffers = "5.2.0"
 audioadapter-sample = "5.2"
@@ -62,15 +64,13 @@ wide = "1.7.0"
 zbus = "5.13.2"
 # Teksilo UI (opt-in, `teksilo-ui` feature; binary `audoxidy-teksilo`).
 teksilo = { version = "0.16.0", optional = true, features = ["automation", "async"] }
-# One-shot replies from the frontend DB worker, awaited on the UI thread.
-async-channel = { version = "2", optional = true }
 
 [features]
 default = ["iced-ui"]
 # Interfaz Iced (la interfaz por defecto).
 iced-ui = ["dep:iced"]
 # Interfaz Teksilo (binario `audoxidy-teksilo`).
-teksilo-ui = ["dep:teksilo", "dep:async-channel"]
+teksilo-ui = ["dep:teksilo"]
 # Interfaz Teksilo con datos simulados: sin base de datos ni dispositivo de audio.
 teksilo-mocks = ["teksilo-ui"]
 # Detección opt-in de deadlocks de parking_lot (solo builds de desarrollo;

@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod db;
+pub mod frontend;
 #[cfg(feature = "iced-ui")]
 pub mod gui;
 pub mod integrations;
