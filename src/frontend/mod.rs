@@ -22,10 +22,12 @@
 
 pub mod db_worker;
 pub mod error;
+pub mod events;
 pub mod reply;
 pub mod threading;
 
 pub use db_worker::DbWorker;
 pub use error::FrontendError;
+pub use events::{Event, EventHub, Origin, SubscriptionToken};
 pub use reply::{Latest, Reply, Ticket, TrackedReply};
 pub use threading::{is_ui_thread, mark_ui_thread};
