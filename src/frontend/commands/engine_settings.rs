@@ -25,7 +25,8 @@
 //!
 //! Iced reads the volume-and-mix keys a second time at startup; that second
 //! pass changes nothing and is not repeated (quirk fix 6). The session restore
-//! (playlist, track, position) runs after this one and is not part of it.
+//! ([`session::restore`](crate::frontend::session::restore)) runs this restore
+//! first, then puts back the playlist, the track and its position.
 
 #![warn(missing_docs)]
 

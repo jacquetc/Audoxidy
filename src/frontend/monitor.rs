@@ -424,7 +424,10 @@ fn purge_trigger(
 ///
 /// The purge frees the preloaded track. Without forgetting it, the playback
 /// commands would still count the next track as preloaded and never preload
-/// it again, so the transition would not be gapless (quirk fix 26). The
+/// it again, so the transition would not be gapless (quirk fix 26). Iced keeps
+/// that bookkeeping on purpose, because its hard cap purged on every tick and
+/// a re-created preload would be dropped again at once; with the hard cap's
+/// cooldown, a preload re-created here lives at least 10 s. The
 /// bookkeeping is cleared after the purge, on the same worker; a preload the
 /// commands record in between is simply requested again, which the engine
 /// ignores for a track already preloaded. The reply is the buffer purge's
