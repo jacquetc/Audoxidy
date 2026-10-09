@@ -21,10 +21,16 @@
 #![deny(warnings, clippy::all, clippy::unwrap_used, clippy::expect_used)]
 
 pub mod adapters;
+pub mod app_context;
+pub mod commands;
 pub mod db_worker;
+pub mod engine_worker;
 pub mod error;
 pub mod events;
+#[cfg(any(test, feature = "teksilo-mocks"))]
+pub mod fakes;
 pub mod long_ops;
+pub mod monitor;
 pub mod ports;
 pub mod preload;
 pub mod reply;
@@ -32,7 +38,9 @@ pub mod reply;
 pub mod test_fixtures;
 pub mod threading;
 
+pub use app_context::AppContext;
 pub use db_worker::DbWorker;
+pub use engine_worker::EngineWorker;
 pub use error::FrontendError;
 pub use events::{Event, EventHub, Origin, SubscriptionToken};
 pub use long_ops::{LongOperations, OpContext};
