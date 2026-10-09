@@ -5,6 +5,7 @@
 //! `update_selection_stats` and `get_songs_for_album_id`.
 
 use crate::db::database::SongData;
+use crate::logic::id_codec;
 use crate::logic::library_sort::sort_albums;
 use crate::utils::{SortColumn, get_effective_artist};
 use std::collections::{BTreeMap, HashSet};
@@ -60,9 +61,21 @@ pub struct AlbumEntry {
     pub cover_path: Option<String>,
 }
 
-/// The composite id of an album in the list views: `"{artist}|{album_hash}"`.
+/// The composite id of an album in the list views: `"{artist}|{album_hash}"`,
+/// with `|` and `\` escaped inside each part by [`id_codec::join_parts`]. For
+/// names without those characters it is the plain `"{artist}|{album_hash}"`.
 pub fn album_composite_id(artist: &str, album_hash: &str) -> String {
-    format!("{}|{}", artist, album_hash)
+    id_codec::join_parts(&[artist, album_hash])
+}
+
+/// The `(artist, album_hash)` of a composite album id made by
+/// [`album_composite_id`]; `None` unless the id has exactly two parts.
+pub fn parse_album_composite_id(composite_id: &str) -> Option<(String, String)> {
+    let mut parts = id_codec::split_parts(composite_id).into_iter();
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(artist), Some(album_hash), None) => Some((artist, album_hash)),
+        _ => None,
+    }
 }
 
 /// Groups songs by effective artist, case-insensitively.
@@ -202,31 +215,29 @@ pub fn selection_stats(selected_songs: &[Arc<SongData>]) -> Option<LibraryStats>
     }
 }
 
-/// The songs of the album with composite id `"{artist}|{album_hash}"`.
+/// The songs of the album with composite id `"{artist}|{album_hash}"` (as
+/// made by [`album_composite_id`]).
 ///
-/// The id must contain exactly one `|`. The album is looked up in
-/// `cached_albums` by hash and artist; the result is every song of `songs`
-/// whose album tag equals the album title and whose effective artist equals
-/// the id's artist, in `songs` order. Returns `None` for a malformed id or an
-/// album that is not in the cache.
+/// The id must have exactly two parts (see [`parse_album_composite_id`]). The
+/// album is looked up in `cached_albums` by hash and artist; the result is
+/// every song of `songs` whose album tag equals the album title and whose
+/// effective artist equals the id's artist, in `songs` order. Returns `None`
+/// for a malformed id or an album that is not in the cache.
 pub fn songs_for_album_id(
     composite_id: &str,
     songs: &[Arc<SongData>],
     cached_albums: &[AlbumEntry],
 ) -> Option<Vec<Arc<SongData>>> {
-    let parts: Vec<&str> = composite_id.split('|').collect();
-    let [artist, album_id] = parts.as_slice() else {
-        return None;
-    };
+    let (artist, album_id) = parse_album_composite_id(composite_id)?;
     let album = cached_albums
         .iter()
-        .find(|a| a.id == *album_id && a.artist == *artist)?;
+        .find(|a| a.id == album_id && a.artist == artist)?;
     Some(
         songs
             .iter()
             .filter(|s| {
                 s.album.as_deref() == Some(album.title.as_str())
-                    && get_effective_artist(s) == *artist
+                    && get_effective_artist(s) == artist
             })
             .cloned()
             .collect(),
@@ -453,5 +464,58 @@ mod tests {
             songs_for_album_id("Queen|h1", &[], &cached).map(|v| v.len()),
             Some(0)
         );
+    }
+
+    #[test]
+    fn d4_songs_for_album_id_finds_the_album_of_an_artist_named_with_a_pipe() {
+        // Before the fix the id `A|B|h1` had three parts, so the lookup failed.
+        let songs = vec![
+            song(1, Some("A|B"), Some("Live"), None),
+            song(2, Some("A"), Some("Live"), None),
+            song(3, Some("A|B"), Some("Other"), None),
+        ];
+        let cached = vec![album("h1", "Live", "A|B", ""), album("h2", "Live", "A", "")];
+        let id = album_composite_id("A|B", "h1");
+        assert_eq!(id, r"A\|B|h1");
+        let found = songs_for_album_id(&id, &songs, &cached).expect("album in cache");
+        assert_eq!(found.iter().map(|s| s.id).collect::<Vec<_>>(), vec![1]);
+        // The id built from the song's tags is the same one.
+        assert_eq!(album_composite_id_for_song(&songs[0], Some(&cached)), id);
+    }
+
+    #[test]
+    fn d4_album_ids_with_pipes_and_backslashes_round_trip() {
+        for (artist, hash) in [
+            ("A|B", "h1"),
+            (r"AC\DC", "h2"),
+            (r"x\|y|", r"Album|Name\"),
+            ("Queen", "abc123"),
+        ] {
+            let id = album_composite_id(artist, hash);
+            assert_eq!(
+                parse_album_composite_id(&id),
+                Some((artist.to_string(), hash.to_string())),
+                "id {id:?}"
+            );
+        }
+        // An untagged album falls back to its name as the hash, which is escaped too.
+        let untagged = song(1, Some("A|B"), Some("C|D"), None);
+        let id = album_composite_id_for_song(&untagged, None);
+        assert_eq!(
+            parse_album_composite_id(&id),
+            Some(("A|B".to_string(), "C|D".to_string()))
+        );
+        assert_eq!(parse_album_composite_id("Queen"), None);
+        assert_eq!(parse_album_composite_id("Queen|h1|extra"), None);
+    }
+
+    #[test]
+    fn d4_album_ids_without_pipes_or_backslashes_are_unchanged() {
+        for (artist, hash) in [("Queen", "abc123"), ("AC/DC", "Back in Black"), ("", "")] {
+            assert_eq!(
+                album_composite_id(artist, hash),
+                format!("{}|{}", artist, hash)
+            );
+        }
     }
 }

@@ -8,6 +8,7 @@
 //! the `SelectTreeNode` / `SelectSubfilter` handlers. The database query stays
 //! with the caller, which passes the hierarchy rows in.
 
+use crate::logic::id_codec;
 use crate::utils::compare_strings_ignore_case;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -184,7 +185,8 @@ pub fn sort_tree(nodes: &mut [TreeNode]) {
 ///
 /// Rows sharing a level-1 label become one node, and likewise for level 2
 /// under the same level 1; level-3 labels are deduplicated. Node ids are
-/// `"<FilterType name>|L1"`, `"…|L1|L2"` and `"…|L1|L2|L3"`.
+/// `"<FilterType name>|L1"`, `"…|L1|L2"` and `"…|L1|L2|L3"`, joined with
+/// [`id_codec::join_parts`] so that a `|` or `\` in a label is escaped.
 pub fn build_tree(
     filter_type: FilterType,
     rows: impl IntoIterator<Item = HierarchyRow>,
@@ -205,15 +207,16 @@ pub fn build_tree(
     }
 
     let mut tree: Vec<TreeNode> = Vec::with_capacity(levels.len());
+    let type_name = filter_type.name();
     for (l1_label, l2_map) in levels {
-        let id1 = format!("{}|{}", filter_type.name(), l1_label);
+        let id1 = id_codec::join_parts(&[type_name, &l1_label]);
         let mut children1: Vec<TreeNode> = Vec::with_capacity(l2_map.len());
         for (l2_label, l3_set) in l2_map {
-            let id2 = format!("{}|{}", id1, l2_label);
+            let id2 = id_codec::join_parts(&[type_name, &l1_label, &l2_label]);
             let mut children2: Vec<TreeNode> = l3_set
                 .into_iter()
                 .map(|l3| TreeNode {
-                    id: format!("{}|{}", id2, l3),
+                    id: id_codec::join_parts(&[type_name, &l1_label, &l2_label, &l3]),
                     label: l3,
                     children: Vec::new(),
                 })
@@ -377,7 +380,8 @@ pub struct NodeFilters {
 
 /// The library filters for the node `node_id` of a `filter_type` tree.
 ///
-/// The id is split on `|`; parts 1, 2 and 3 are the node's level labels.
+/// The id is split into its parts with [`id_codec::split_parts`]; parts 1, 2
+/// and 3 are the node's level labels.
 /// - Artist: level 1 = artist, level 2 = album.
 /// - Album: level 1 = album, level 2 = artist.
 /// - Genre / Year: level 1 = genre / year, level 2 = artist, level 3 = album.
@@ -385,7 +389,7 @@ pub struct NodeFilters {
 ///   `SelectTreeNode` handler leaves folder nodes to a `SelectFolder` message
 ///   that nothing emits, so a folder node selects but filters nothing.
 pub fn filters_for_node(filter_type: FilterType, node_id: &str) -> NodeFilters {
-    let mut parts = node_id.split('|').skip(1).map(str::to_string);
+    let mut parts = id_codec::split_parts(node_id).into_iter().skip(1);
     let (l1, l2, l3) = (parts.next(), parts.next(), parts.next());
     match filter_type {
         FilterType::Artist => NodeFilters {
@@ -667,14 +671,78 @@ mod tests {
     }
 
     #[test]
-    fn a_label_containing_a_pipe_shifts_the_levels_like_the_original_ui() {
+    fn d4_a_label_containing_a_pipe_selects_the_right_filters() {
+        // Before the fix the id was `Artist|AC|DC|Back in Black`, which
+        // selected artist "AC" and album "DC".
+        let (tree, _) = build_tree(
+            FilterType::Artist,
+            vec![row("AC|DC", "Back in Black", None), row("AC", "DC", None)],
+        );
+        assert_eq!(labels(&tree), vec!["AC", "AC|DC"]);
+        let acdc = &tree[1];
+        assert_eq!(acdc.id, r"Artist|AC\|DC");
+        let album = &acdc.children[0];
+        assert_eq!(album.id, r"Artist|AC\|DC|Back in Black");
         assert_eq!(
-            filters_for_node(FilterType::Artist, "Artist|AC|DC|Back in Black"),
+            filters_for_node(FilterType::Artist, &album.id),
+            NodeFilters {
+                artist: Some("AC|DC".into()),
+                album: Some("Back in Black".into()),
+                ..NodeFilters::default()
+            }
+        );
+        // The plain `AC` → `DC` node is a different one.
+        assert_eq!(
+            filters_for_node(FilterType::Artist, &tree[0].children[0].id),
             NodeFilters {
                 artist: Some("AC".into()),
                 album: Some("DC".into()),
                 ..NodeFilters::default()
             }
         );
+    }
+
+    #[test]
+    fn d4_three_level_labels_with_pipes_and_backslashes_round_trip() {
+        let (tree, _) = build_tree(
+            FilterType::Genre,
+            vec![row(r"Rock|Pop", r"A\B|C", Some(r"Live | \ Studio"))],
+        );
+        let leaf = &tree[0].children[0].children[0];
+        assert_eq!(
+            filters_for_node(FilterType::Genre, &leaf.id),
+            NodeFilters {
+                genre: Some("Rock|Pop".into()),
+                artist: Some(r"A\B|C".into()),
+                album: Some(r"Live | \ Studio".into()),
+                year: None,
+            }
+        );
+        let (tree, _) = build_tree(FilterType::Album, vec![row("x|y", r"z\", None)]);
+        assert_eq!(
+            filters_for_node(FilterType::Album, &tree[0].children[0].id),
+            NodeFilters {
+                album: Some("x|y".into()),
+                artist: Some(r"z\".into()),
+                ..NodeFilters::default()
+            }
+        );
+    }
+
+    #[test]
+    fn d4_node_ids_without_pipes_or_backslashes_are_unchanged() {
+        let (tree, _) = build_tree(FilterType::Genre, genre_rows());
+        for l1 in &tree {
+            assert_eq!(l1.id, format!("Genre|{}", l1.label));
+            for l2 in &l1.children {
+                assert_eq!(l2.id, format!("Genre|{}|{}", l1.label, l2.label));
+                for l3 in &l2.children {
+                    assert_eq!(
+                        l3.id,
+                        format!("Genre|{}|{}|{}", l1.label, l2.label, l3.label)
+                    );
+                }
+            }
+        }
     }
 }

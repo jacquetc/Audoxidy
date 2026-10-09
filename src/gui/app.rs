@@ -2929,7 +2929,9 @@ impl AudoxidyApp {
                                 if let Some(album_entry) =
                                     self.library_manager.cached_albums.as_ref().and_then(|all| {
                                         all.iter().find(|a| {
-                                            (format!("{}|{}", a.artist, a.id) == album_id)
+                                            (crate::logic::library_groups::album_composite_id(
+                                                &a.artist, &a.id,
+                                            ) == album_id)
                                                 || (a.id == album_id)
                                         })
                                     })
@@ -2954,9 +2956,10 @@ impl AudoxidyApp {
 
                         // Fallback a Base de Datos: Si no está en caché o el GC limpió la RAM
                         if !found_in_cache {
-                            if let Some(pos) = album_id.find('|') {
-                                let artist = &album_id[..pos];
-                                let hash = &album_id[pos + 1..];
+                            if let Some((artist, hash)) =
+                                crate::logic::library_groups::parse_album_composite_id(&album_id)
+                            {
+                                let (artist, hash) = (artist.as_str(), hash.as_str());
                                 // db-lock: solo lectura — refresco best-effort, se omite si el lock falla
                                 if let Ok(db) = self.database.lock() {
                                     if let Ok(songs) =
@@ -3772,7 +3775,8 @@ impl AudoxidyApp {
                     let alb_name = song.album.as_deref().unwrap_or("Desconocido");
                     if let Some(hash) = album_hash_map.get(&(art.to_string(), alb_name.to_string()))
                     {
-                        let composite_id = format!("{}|{}", art, hash);
+                        let composite_id =
+                            crate::logic::library_groups::album_composite_id(art, hash);
                         if sel_albums.contains(&composite_id) {
                             ids_to_delete_set.insert(song.id);
                         }
@@ -6133,7 +6137,11 @@ impl AudoxidyApp {
                                     .find(|a| a.title == album_name && a.artist == artist_name)
                                 {
                                     let hash_id = album_info.id.clone();
-                                    let composite_id = format!("{}|{}", artist_name, hash_id);
+                                    let composite_id =
+                                        crate::logic::library_groups::album_composite_id(
+                                            artist_name,
+                                            &hash_id,
+                                        );
 
                                     if self.library_manager.expanded_album.as_deref()
                                         != Some(&composite_id)
@@ -6165,7 +6173,10 @@ impl AudoxidyApp {
                                         let mut row_h = 252.0;
                                         let mut _has_expanded_here = false;
                                         for a in chunk {
-                                            let comp = format!("{}|{}", a.artist, a.id);
+                                            let comp =
+                                                crate::logic::library_groups::album_composite_id(
+                                                    &a.artist, &a.id,
+                                                );
                                             if self.library_manager.expanded_album.as_deref()
                                                 == Some(&comp)
                                             {
@@ -6274,7 +6285,10 @@ impl AudoxidyApp {
                                             a.title == album_name && a.artist == artist_name
                                         }) {
                                             let composite_id =
-                                                format!("{}|{}", artist_name, album_info.id);
+                                                crate::logic::library_groups::album_composite_id(
+                                                    &artist_name,
+                                                    &album_info.id,
+                                                );
                                             self.library_manager
                                                 .collapsed_albums
                                                 .remove(&composite_id);

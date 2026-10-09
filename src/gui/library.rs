@@ -457,14 +457,13 @@ impl LibraryManager {
         let mut rows_data = Vec::with_capacity(albums.len() / columns + 1);
 
         // Optimización: Desglosar el ID expandido para evitar format! en el bucle
-        let (exp_art, exp_alb) = if let Some(exp) = self.expanded_album.as_deref() {
-            if let Some(pos) = exp.find('|') {
-                (Some(&exp[..pos]), Some(&exp[pos + 1..]))
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
+        let expanded_parts = self
+            .expanded_album
+            .as_deref()
+            .and_then(library_groups::parse_album_composite_id);
+        let (exp_art, exp_alb) = match &expanded_parts {
+            Some((artist, album)) => (Some(artist.as_str()), Some(album.as_str())),
+            None => (None, None),
         };
 
         // 1. Calcular estructura completa (Altura de cada fila)
@@ -693,7 +692,8 @@ impl LibraryManager {
                 let mut expanded_id = None;
 
                 for (col, album_entry) in chunk.iter().enumerate() {
-                    let composite_id = format!("{}|{}", album_entry.artist, album_entry.id);
+                    let composite_id =
+                        library_groups::album_composite_id(&album_entry.artist, &album_entry.id);
                     let x = x_start + col as f32 * (card_inner_width + spacing);
                     // Usamos el ancho exacto de la tarjeta (182) para una selección precisa
                     items.push((
@@ -749,7 +749,8 @@ impl LibraryManager {
             .or(self.cached_albums.as_ref());
         if let Some(albums) = albums_to_show {
             for album_entry in albums {
-                let composite_id = format!("{}|{}", album_entry.artist, album_entry.id);
+                let composite_id =
+                    library_groups::album_composite_id(&album_entry.artist, &album_entry.id);
                 items.push(LibraryListItem::Album(composite_id.clone()));
                 if self.expanded_album.as_deref() == Some(composite_id.as_str()) {
                     if let Some(songs) = &self.expanded_album_songs {
@@ -1231,7 +1232,8 @@ impl LibraryManager {
             if let Some(songs) = &self.filtered_songs {
                 if let Some(album_entry) = self.cached_albums.as_ref().and_then(|all| {
                     all.iter().find(|a| {
-                        (format!("{}|{}", a.artist, a.id) == album_id) || (a.id == album_id)
+                        (library_groups::album_composite_id(&a.artist, &a.id) == album_id)
+                            || (a.id == album_id)
                     })
                 }) {
                     let mut alb_songs: Vec<_> = songs
@@ -1544,7 +1546,8 @@ pub fn view<'a>(
                                     let year_str = album_entry.year.clone();
                                     let cover_path = album_entry.cover_path.clone();
 
-                                    let composite_id = format!("{}|{}", artist_name, album_id);
+                                    let composite_id =
+                                        library_groups::album_composite_id(&artist_name, &album_id);
                                     let is_expanded = active_expansion_id.as_deref()
                                         == Some(composite_id.as_str());
                                     let is_selected = manager
