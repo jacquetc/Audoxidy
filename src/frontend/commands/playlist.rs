@@ -119,7 +119,7 @@ fn read_gains(db: &Database, groups: &[PlaylistFolderGroup]) -> HashMap<i64, Rep
                 gains.insert(song.song_id, ReplayGains { track, album });
             }
             Err(e) => {
-                tracing::error!("Error consultando ReplayGain en BD: {e}");
+                tracing::error!("the ReplayGain values could not be read: {e}");
             }
         }
     }
@@ -903,7 +903,7 @@ fn write_export(
         op.check_cancelled()?;
         if let Err(e) = std::fs::create_dir_all(&copy.target_dir) {
             tracing::warn!(
-                "No se pudo crear el directorio {:?}: {}",
+                "the folder {:?} could not be created: {}",
                 copy.target_dir,
                 e
             );
@@ -912,7 +912,7 @@ fn write_export(
             Ok(_) => copied += 1,
             Err(e) => {
                 tracing::warn!(
-                    "No se pudo copiar {:?} a {:?}: {}",
+                    "{:?} could not be copied to {:?}: {}",
                     copy.source,
                     copy.target_file,
                     e
@@ -929,7 +929,7 @@ fn write_export(
     op.check_cancelled()?;
     std::fs::write(&plan.playlist_path, bytes).map_err(|e| {
         tracing::warn!(
-            "No se pudo escribir la lista M3U en {:?}: {}",
+            "the playlist file {:?} could not be written: {}",
             plan.playlist_path,
             e
         );
