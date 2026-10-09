@@ -34,15 +34,11 @@ pub static GLOBAL_STEPPER_HOLD: AtomicI8 = AtomicI8::new(0);
 // ==============================
 // Helper: strip unit suffixes from numeric strings before parsing (D-45)
 // Used by CustomSlider and NumberStepper for keyboard input.
+// The stepper rules live in `logic::stepper`.
 // ==============================
-pub(crate) fn strip_suffix(s: &str) -> &str {
-    s.trim()
-        .trim_end_matches(" dB")
-        .trim_end_matches(" ms")
-        .trim_end_matches(" Hz")
-        .trim_end_matches(" %")
-        .trim()
-}
+pub(crate) use crate::logic::stepper::{
+    accepts_input, format_stepper_value, parse_commit, step_value, strip_suffix,
+};
 
 // ==============================
 // StandardCheckbox — 12×12 px custom checkbox (D-31)
@@ -219,41 +215,7 @@ impl<'a, Message: 'a> From<StandardCheckbox<'a, Message>> for Element<'a, Messag
 // NumberStepper — 96×13 px with "<" / ">" glyph arrows + manual input (D-32, D-33, D-34, D-35)
 // ==============================
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum StepperUnit {
-    /// Step 0.25, suffix "dB"
-    Decibels,
-    /// Step 50, suffix "ms"
-    Milliseconds,
-}
-
-impl StepperUnit {
-    pub(crate) fn step(&self) -> f64 {
-        match self {
-            StepperUnit::Decibels => 0.25,
-            StepperUnit::Milliseconds => 50.0,
-        }
-    }
-
-    fn suffix(&self) -> &'static str {
-        match self {
-            StepperUnit::Decibels => "dB",
-            StepperUnit::Milliseconds => "ms",
-        }
-    }
-}
-
-/// Format a numeric value with unit suffix, stripping trailing zeros but keeping
-/// minimum 2 decimal places. Examples: -50.00 dB → "-50 dB", -14.25 dB stays, 1000.00 ms → "1000 ms".
-pub(crate) fn format_stepper_value(value: f64, unit: &StepperUnit) -> String {
-    let formatted = format!("{:.2}", value);
-    let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
-    format!(
-        "{} {}",
-        if trimmed.is_empty() { "0" } else { trimmed },
-        unit.suffix()
-    )
-}
+pub use crate::logic::stepper::StepperUnit;
 
 /// Custom stepper widget: 96×13 px (15px arrow zones + 66px input + 15px arrow zone)
 /// with "<" / ">" text glyph arrows (16px) and manual numeric input (D-32).
@@ -430,9 +392,7 @@ impl<'a, Message: 'a + Clone> NumberStepperWidget<'a, Message> {
     }
 
     fn step_value_from(&self, base: f64, dir: i8, shell: &mut iced::advanced::Shell<'_, Message>) {
-        let step = self.unit.step();
-        let new_val = base + dir as f64 * step;
-        let clamped = new_val.clamp(*self.range.start(), *self.range.end());
+        let clamped = step_value(base, dir, &self.unit, &self.range);
         shell.publish((self.on_change)(clamped));
     }
 
@@ -448,10 +408,7 @@ impl<'a, Message: 'a + Clone> NumberStepperWidget<'a, Message> {
         if !state.is_input_editing {
             return None;
         }
-        let committed = strip_suffix(&state.input_value_text)
-            .parse::<f64>()
-            .ok()
-            .map(|v| v.clamp(*self.range.start(), *self.range.end()));
+        let committed = parse_commit(&state.input_value_text, &self.range);
         if let Some(v) = committed {
             shell.publish((self.on_change)(v));
         }
@@ -575,9 +532,7 @@ impl<'a, Message: 'a + Clone> iced::advanced::Widget<Message, Theme, iced::Rende
             iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_))
                 if !is_focus && state.input_has_focus =>
             {
-                let stripped = strip_suffix(&state.input_value_text);
-                if let Ok(v) = stripped.parse::<f64>() {
-                    let clamped = v.clamp(*self.range.start(), *self.range.end());
+                if let Some(clamped) = parse_commit(&state.input_value_text, &self.range) {
                     shell.publish((self.on_change)(clamped));
                 }
                 state.is_input_editing = false;
@@ -614,10 +569,8 @@ impl<'a, Message: 'a + Clone> iced::advanced::Widget<Message, Theme, iced::Rende
                     state.last_step_at = None;
                     GLOBAL_STEPPER_HOLD.store(1, Ordering::Relaxed);
                 } else if in_center && !state.is_input_editing {
-                    state.input_value_text = match &self.unit {
-                        StepperUnit::Decibels => format!("{:.2}", self.value),
-                        StepperUnit::Milliseconds => format!("{:.0}", self.value),
-                    };
+                    state.input_value_text =
+                        crate::logic::stepper::edit_seed(self.value, &self.unit);
                     // Position the text cursor at the exact click x within the center
                     // zone (mirrors CustomSlider's input cursor placement).
                     let font_size: f32 = 12.0;
@@ -685,9 +638,7 @@ impl<'a, Message: 'a + Clone> iced::advanced::Widget<Message, Theme, iced::Rende
                 match key {
                     iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter) => {
                         shell.capture_event();
-                        let stripped = strip_suffix(&state.input_value_text);
-                        if let Ok(v) = stripped.parse::<f64>() {
-                            let clamped = v.clamp(*self.range.start(), *self.range.end());
+                        if let Some(clamped) = parse_commit(&state.input_value_text, &self.range) {
                             shell.publish((self.on_change)(clamped));
                         }
                         state.is_input_editing = false;
@@ -730,12 +681,10 @@ impl<'a, Message: 'a + Clone> iced::advanced::Widget<Message, Theme, iced::Rende
                         }
                     }
                     iced::keyboard::Key::Character(c) => {
-                        if state.input_value_text.len() < 20 {
-                            let ch = c.chars().next().unwrap_or(' ');
-                            if ch.is_ascii_digit() || ch == '.' || ch == '-' || ch.is_whitespace() {
-                                state.input_value_text.insert(state.input_cursor_pos, ch);
-                                state.input_cursor_pos += 1;
-                            }
+                        let ch = c.chars().next().unwrap_or(' ');
+                        if accepts_input(&state.input_value_text, ch) {
+                            state.input_value_text.insert(state.input_cursor_pos, ch);
+                            state.input_cursor_pos += 1;
                         }
                     }
                     _ => {}
@@ -1718,37 +1667,9 @@ pub fn standard_scrollbar() -> iced::widget::scrollable::Scrollbar {
 }
 
 /// Aplica un efecto de rotación tipo "Marquesina" sobre una cadena de texto dada una longitud límite.
-/// Devuelve el string recortado o rotado en función de un "tick" temporal global.
-pub fn apply_marquee(text_str: &str, limit: usize, tick: u64) -> String {
-    // Optimización rápida: si es corto, no procesar nada
-    if text_str.len() <= limit && text_str.is_ascii() {
-        return text_str.to_string();
-    }
-
-    let chars: Vec<char> = text_str.chars().collect();
-    if chars.len() <= limit {
-        return text_str.to_string();
-    }
-
-    // Suavizamos el movimiento dividiendo el tick
-    let offset = (tick / 3) as usize % (chars.len() + 10);
-    if offset < chars.len() {
-        let end = (offset + limit).min(chars.len());
-        let mut s: String = chars[offset..end].iter().collect();
-        // Si llegamos al final, mostramos la separación invisible y empalmamos el inicio
-        if offset + limit > chars.len() {
-            s.push_str("   ");
-            let needed = (offset + limit) - chars.len();
-            if needed > 3 {
-                let rem = needed - 3;
-                s.push_str(&chars[0..rem.min(chars.len())].iter().collect::<String>());
-            }
-        }
-        s
-    } else {
-        chars[0..limit.min(chars.len())].iter().collect()
-    }
-}
+/// Devuelve el string recortado o rotado en función de un "tick" temporal global
+/// (ver `logic::marquee::apply_marquee`).
+pub use crate::logic::marquee::apply_marquee;
 
 /// Construye una barra de ordenamiento interactiva, reciclable para cualquier tabla.
 pub fn build_sort_bar<'a, Message: Clone + 'a>(
@@ -4092,12 +4013,10 @@ impl<'a, Message: 'a> iced::advanced::Widget<Message, Theme, iced::Renderer>
                         }
                     }
                     iced::keyboard::Key::Character(c) => {
-                        if state.input_value_text.len() < 20 {
-                            let ch = c.chars().next().unwrap_or(' ');
-                            if ch.is_ascii_digit() || ch == '.' || ch == '-' || ch.is_whitespace() {
-                                state.input_value_text.insert(state.input_cursor_pos, ch);
-                                state.input_cursor_pos += 1;
-                            }
+                        let ch = c.chars().next().unwrap_or(' ');
+                        if accepts_input(&state.input_value_text, ch) {
+                            state.input_value_text.insert(state.input_cursor_pos, ch);
+                            state.input_cursor_pos += 1;
                         }
                     }
                     _ => {}
@@ -4620,7 +4539,7 @@ impl<'a, Message: 'a> From<CustomSlider<'a, Message>> for Element<'a, Message> {
 // Display-only: no event handling, no state tree.
 // ==============================
 
-pub const METER_MIN_DB: f32 = -60.0;
+pub use crate::logic::meter::METER_MIN_DB;
 const METER_MAX_DB: f32 = 6.0;
 const METER_TOTAL_RANGE: f32 = 66.0;
 /// Base height for compact mode (bars + scale only).

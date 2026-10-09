@@ -80,10 +80,10 @@ mod tests {
     // NumberStepper character filter tests (D-34)
     // ========================================================================
 
-    /// Replicates the character filter from NumberStepper's on_event handler
-    /// (widgets.rs:500-506): only accept digits, '.', '-', whitespace.
+    /// The character filter used by NumberStepper's keyboard handler: only
+    /// digits, '.', '-' and whitespace are accepted.
     fn accepts_char(ch: char) -> bool {
-        ch.is_ascii_digit() || ch == '.' || ch == '-' || ch.is_whitespace()
+        crate::logic::stepper::accepts_input_char(ch)
     }
 
     #[test]

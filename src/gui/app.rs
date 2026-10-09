@@ -20,6 +20,12 @@ use iced::widget::operation::{AbsoluteOffset, focus, scroll_to};
 use iced::{Color, Element, Task, Theme};
 use std::sync::{Arc, Mutex};
 
+pub use crate::logic::playlist_export::{ExportFormat, ExportMode};
+pub(crate) use crate::logic::transport::fine_seek_enabled;
+use crate::logic::transport::{
+    TransportAction, clamp_volume, external_control_action, gc_blocked_by_preload, seek_target,
+};
+
 /// Registra en el log un fallo al persistir un ajuste, indicando la clave afectada.
 fn log_persist(key: &str, result: rusqlite::Result<()>) {
     if let Err(e) = result {
@@ -341,18 +347,6 @@ pub enum Message {
     NoOp,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportFormat {
-    M3U,
-    M3U8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportMode {
-    SingleFile,
-    PortableFolder,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum ActiveDialog {
     None,
@@ -391,168 +385,33 @@ pub enum AppFocus {
     AudioCenter,
 }
 
-/// Ventana de seguridad (segundos) tras el fin de la pre-carga durante la cual
-/// el GC global no corre: la transición de canciones aún está consumiendo el
-/// audio pre-cargado (drenado + mezcla cruzada), y una purga la interrumpiría.
-const PRELOAD_GC_SAFETY_SECS: u64 = 20;
-
-/// Indica si el GC global debe quedar bloqueado por la pre-carga: activa o
-/// dentro de la ventana de seguridad posterior a su fin.
-fn gc_blocked_by_preload(
-    now_secs: u64,
-    preload_active: bool,
-    preload_finished_at: Option<u64>,
-) -> bool {
-    preload_active
-        || preload_finished_at
-            .map(|t| now_secs.saturating_sub(t) < PRELOAD_GC_SAFETY_SECS)
-            .unwrap_or(false)
-}
-
-/// Salto fijo (segundos) que aplican los eventos `Seek` sin desplazamiento.
-/// `SeekBy` lleva su propio desplazamiento y no usa este valor.
-const SEEK_STEP_SECS: f64 = 10.0;
-
-/// Calcula el destino de una búsqueda relativa, acotado al rango válido.
-///
-/// Las posiciones llegan del servicio multimedia del sistema, por lo que son
-/// entrada no confiable: una entrada no finita se resuelve a `0.0`, y el
-/// resultado nunca sale de `[0, total]` (o de `[0, ∞)` si la duración aún no
-/// se conoce).
-fn seek_target(current: f64, delta: f64, total: f64) -> f64 {
-    let target = current + delta;
-    if !target.is_finite() {
-        return 0.0;
-    }
-    if total > 0.0 {
-        target.clamp(0.0, total)
-    } else {
-        target.max(0.0)
-    }
-}
-
-/// Indica si la búsqueda fina está habilitada para una duración dada.
-///
-/// La búsqueda fina solo tiene sentido cuando se conoce la duración de la
-/// pista: si la duración no puede derivarse (`0.0`), la posición queda
-/// indeterminada y cualquier salto debe ignorarse. Un valor negativo o no
-/// finito (`NaN`) también devuelve `false`, porque la comparación es falsa.
-pub(crate) fn fine_seek_enabled(total_duration: f64) -> bool {
-    total_duration.is_finite() && total_duration > 0.0
-}
-
-/// Acota el volumen recibido del sistema a `[0.0, 1.0]`.
-///
-/// Un valor no finito se resuelve a `0.0` para que nunca se propague al motor
-/// de audio ni al reflejo en el panel.
-fn clamp_volume(v: f64) -> f32 {
-    if !v.is_finite() {
-        return 0.0;
-    }
-    v.clamp(0.0, 1.0) as f32
-}
-
 /// Traduce un evento externo a su mensaje interno equivalente.
 ///
 /// Reutiliza los mensajes existentes para que el comportamiento (mezcla
 /// cruzada, persistencia, recarga de carátulas) sea idéntico al de los
-/// controles propios de la aplicación.
+/// controles propios de la aplicación. La traducción del evento a una acción
+/// de transporte vive en `logic::transport`.
 fn external_control_to_message(
     event: ExternalControlEvent,
     current_pos: f64,
     total_duration: f64,
     is_playing: bool,
 ) -> Message {
-    match event {
-        ExternalControlEvent::Play => Message::SetPlaying(true),
-        ExternalControlEvent::Pause => Message::SetPlaying(false),
-        ExternalControlEvent::Toggle => Message::SetPlaying(!is_playing),
-        ExternalControlEvent::Stop => Message::Stop,
-        ExternalControlEvent::Next => Message::NextTrack,
-        ExternalControlEvent::Previous => Message::PreviousTrack,
-        ExternalControlEvent::SeekForward | ExternalControlEvent::SeekBackward => {
-            let delta = if matches!(event, ExternalControlEvent::SeekForward) {
-                SEEK_STEP_SECS
-            } else {
-                -SEEK_STEP_SECS
-            };
+    match external_control_action(&event) {
+        TransportAction::Play => Message::SetPlaying(true),
+        TransportAction::Pause => Message::SetPlaying(false),
+        TransportAction::Toggle => Message::SetPlaying(!is_playing),
+        TransportAction::Stop => Message::Stop,
+        TransportAction::Next => Message::NextTrack,
+        TransportAction::Previous => Message::PreviousTrack,
+        TransportAction::SeekBy(delta) => {
             Message::SeekTo(seek_target(current_pos, delta, total_duration) as f32)
         }
-        ExternalControlEvent::SeekRelative(delta) => {
-            Message::SeekTo(seek_target(current_pos, delta, total_duration) as f32)
-        }
-        ExternalControlEvent::SeekTo(target) => {
+        TransportAction::SeekTo(target) => {
             Message::SeekTo(seek_target(target, 0.0, total_duration) as f32)
         }
-        ExternalControlEvent::SetVolume(volume) => Message::VolumeChanged(clamp_volume(volume)),
+        TransportAction::SetVolume(volume) => Message::VolumeChanged(volume),
     }
-}
-
-// ---------------------------------------------------------------------------
-// VU Meter animation constants and helpers
-// ---------------------------------------------------------------------------
-
-/// Duración del hold de pico antes de comenzar el decaimiento (segundos).
-const METER_HOLD_TIME_SECS: f32 = 1.5;
-/// Tasa de decaimiento del hold de pico (dB por segundo).
-const METER_DECAY_RATE_DB_PER_SEC: f32 = 1.8;
-/// Coeficiente de suavizado de ataque (rise rápido, ~5 ms a 30 ms de tick).
-const METER_ATTACK_ALPHA: f32 = 0.85;
-/// Coeficiente de suavizado de release (caída lenta, ~600 ms a 30 ms de tick).
-const METER_RELEASE_ALPHA: f32 = 0.05;
-/// Duración del fade-out al pausar (segundos).
-const METER_FADE_OUT_SECS: f32 = 0.4;
-
-/// Paso de la máquina de estados de hold de pico.
-///
-/// Retorna `(new_hold_value, new_hold_start, new_decay_value)`.
-fn peak_hold_step(
-    hold_value: f32,
-    hold_start: Option<std::time::Instant>,
-    decay_value: f32,
-    raw_peak: f32,
-) -> (f32, Option<std::time::Instant>, f32) {
-    let (mut new_hold, mut new_start, mut new_decay) = (hold_value, hold_start, decay_value);
-
-    if let Some(start) = new_start {
-        // Estado Holding — el hold está activo
-        if start.elapsed().as_secs_f32() > METER_HOLD_TIME_SECS {
-            // Transición Holding → Decaying
-            new_decay = new_hold;
-            new_start = None;
-        }
-    }
-
-    if new_start.is_none() && new_decay > 0.0 {
-        // Estado Decaying — decaer a METER_DECAY_RATE_DB_PER_SEC por tick
-        new_decay -= METER_DECAY_RATE_DB_PER_SEC * 0.030;
-        if new_decay <= raw_peak {
-            // Transición Decaying → Idle
-            new_decay = 0.0;
-        }
-    }
-
-    // Si la señal supera el hold actual, snap hacia arriba (re-entrar Holding)
-    if raw_peak > new_hold {
-        new_hold = raw_peak;
-        new_start = Some(std::time::Instant::now());
-        new_decay = 0.0;
-    } else if new_start.is_none() && new_decay <= 0.0 {
-        // Idle — el hold sigue al nivel del decay o es cero
-        new_hold = raw_peak.max(new_decay);
-    }
-
-    (new_hold, new_start, new_decay)
-}
-
-/// Paso de ballistics asimétrico: ataque rápido, release lento.
-fn ballistic_step(current: f32, target: f32) -> f32 {
-    let alpha = if target > current {
-        METER_ATTACK_ALPHA
-    } else {
-        METER_RELEASE_ALPHA
-    };
-    current + alpha * (target - current)
 }
 
 pub struct AudoxidyApp {
@@ -684,31 +543,19 @@ impl AudoxidyApp {
             let device_id = db_lock
                 .get_setting("audio_device_id")
                 .filter(|s| !s.is_empty());
-            let sample_rate = db_lock.get_setting("audio_sample_rate").and_then(|s| {
-                if s == "auto" {
-                    None
-                } else {
-                    s.parse::<u32>().ok()
-                }
-            });
+            use crate::logic::audio_settings as codec;
+            let sample_rate = db_lock
+                .get_setting("audio_sample_rate")
+                .and_then(|s| codec::decode_auto_u32(&s));
             let bit_depth = db_lock
                 .get_setting("audio_bit_depth")
-                .and_then(|s| match s.as_str() {
-                    "16" => Some(crate::audio::engine::BitDepth::Bits16),
-                    "24" => Some(crate::audio::engine::BitDepth::Bits24),
-                    "32" => Some(crate::audio::engine::BitDepth::Bits32Float),
-                    _ => None,
-                });
+                .and_then(|s| codec::decode_bit_depth(&s));
             let channels_val = db_lock
                 .get_setting("audio_channels")
-                .and_then(|s| s.parse::<u16>().ok());
-            let buffer_size = db_lock.get_setting("audio_buffer_size").and_then(|s| {
-                if s == "auto" {
-                    None
-                } else {
-                    s.parse::<u32>().ok()
-                }
-            });
+                .and_then(|s| codec::decode_channels(&s));
+            let buffer_size = db_lock
+                .get_setting("audio_buffer_size")
+                .and_then(|s| codec::decode_auto_u32(&s));
             // SIEMPRE aplicar settings: en instalación fresca usa defaults (48000 Hz,
             // 32-bit Float, 2ch), en reinstalación carga desde DB.
             // Solo aplicar si hay al menos un ajuste guardado o es reinstalación.
@@ -727,7 +574,7 @@ impl AudoxidyApp {
                     sample_rate, // None → auto → 48000 en resolve_settings
                     bit_depth,   // None → fallback del device
                     channels: crate::audio::engine::ChannelConfig::Manual(
-                        channels_val.unwrap_or(2),
+                        channels_val.unwrap_or(codec::DEFAULT_CHANNELS),
                     ),
                     buffer_size,
                 };
@@ -752,64 +599,30 @@ impl AudoxidyApp {
             //     Si no se aplican aquí, el stream se conecta al sink con la configuración
             //     anterior y la reconfiguración llega tarde (después de la primera nota).
             {
-                let parse_system_sel = |s: &str| -> crate::gui::audio_center::SystemSelection<u32> {
-                    match s {
-                        "default" => crate::gui::audio_center::SystemSelection::Default,
-                        "auto" => crate::gui::audio_center::SystemSelection::Automatic,
-                        s if s.starts_with("fixed:") => s["fixed:".len()..]
-                            .parse::<u32>()
-                            .map(crate::gui::audio_center::SystemSelection::Fixed)
-                            .unwrap_or(crate::gui::audio_center::SystemSelection::Default),
-                        _ => crate::gui::audio_center::SystemSelection::Default,
-                    }
-                };
                 let sys_rate = db_lock
                     .get_setting("audio_system_rate")
-                    .map(|s| parse_system_sel(&s))
-                    .unwrap_or(crate::gui::audio_center::SystemSelection::Default);
+                    .map(|s| codec::decode_system_selection(&s))
+                    .unwrap_or(codec::SystemSelection::Default);
                 let sys_quantum = db_lock
                     .get_setting("audio_system_quantum")
-                    .map(|s| parse_system_sel(&s))
-                    .unwrap_or(crate::gui::audio_center::SystemSelection::Default);
+                    .map(|s| codec::decode_system_selection(&s))
+                    .unwrap_or(codec::SystemSelection::Default);
 
-                let rate_val = match sys_rate {
-                    crate::gui::audio_center::SystemSelection::Default => None,
-                    crate::gui::audio_center::SystemSelection::Automatic => {
-                        // Usar la tasa del reproductor si está configurada, sino 48000.
-                        db_lock
-                            .get_setting("audio_sample_rate")
-                            .and_then(|s| {
-                                if s == "auto" {
-                                    None
-                                } else {
-                                    s.parse::<u32>().ok()
-                                }
-                            })
-                            .or(Some(48000))
-                    }
-                    crate::gui::audio_center::SystemSelection::Fixed(r) => Some(r),
+                // En modo automático se usa la tasa del reproductor si está
+                // configurada, sino 48000 (solo se lee si hace falta).
+                let automatic_rate = if sys_rate == codec::SystemSelection::Automatic {
+                    db_lock
+                        .get_setting("audio_sample_rate")
+                        .and_then(|s| codec::decode_auto_u32(&s))
+                        .or(Some(codec::DEFAULT_SAMPLE_RATE))
+                } else {
+                    None
                 };
-                let quantum_val = match sys_quantum {
-                    crate::gui::audio_center::SystemSelection::Default => None,
-                    crate::gui::audio_center::SystemSelection::Automatic => {
-                        let sr = rate_val.unwrap_or(48000);
-                        let frames = (sr as f64 * 10.0 / 1000.0) as u32;
-                        Some(if frames < 256 {
-                            256
-                        } else if frames < 512 {
-                            512
-                        } else if frames < 1024 {
-                            1024
-                        } else if frames < 2048 {
-                            2048
-                        } else if frames < 4096 {
-                            4096
-                        } else {
-                            8192
-                        })
-                    }
-                    crate::gui::audio_center::SystemSelection::Fixed(q) => Some(q),
-                };
+                let rate_val = codec::resolve_system_rate(sys_rate, automatic_rate);
+                let quantum_val = codec::resolve_system_quantum(
+                    sys_quantum,
+                    rate_val.unwrap_or(codec::DEFAULT_SAMPLE_RATE),
+                );
 
                 let has_pw = crate::integrations::system_audio::is_pipewire_active();
                 if has_pw {
@@ -1041,13 +854,11 @@ impl AudoxidyApp {
             // EQ band gains (20 y 31)
             let bands_20: Vec<f32> = db_lock
                 .get_setting("eq_band_gains_20")
-                .map(|v| v.split(',').filter_map(|s| s.parse::<f32>().ok()).collect())
-                .filter(|v: &Vec<f32>| v.len() == 20)
+                .and_then(|v| crate::logic::eq::decode_band_gains(&v, 20))
                 .unwrap_or_else(|| vec![0.0; 20]);
             let bands_31: Vec<f32> = db_lock
                 .get_setting("eq_band_gains_31")
-                .map(|v| v.split(',').filter_map(|s| s.parse::<f32>().ok()).collect())
-                .filter(|v: &Vec<f32>| v.len() == 31)
+                .and_then(|v| crate::logic::eq::decode_band_gains(&v, 31))
                 .unwrap_or_else(|| vec![0.0; 31]);
 
             // Aplicar al motor de audio inmediatamente
@@ -1642,14 +1453,20 @@ impl AudoxidyApp {
                 if state.title != self.player_ui_state.last_title {
                     self.player_ui_state.last_title = state.title.clone();
                     self.player_ui_state.title_chars = state.title.chars().collect();
-                    if self.player_ui_state.title_chars.len() <= 39 {
+                    if !crate::logic::marquee::needs_marquee(
+                        self.player_ui_state.title_chars.len(),
+                        crate::logic::marquee::TITLE_MARQUEE_WIDTH,
+                    ) {
                         self.player_ui_state.display_title = state.title.clone();
                     }
                 }
                 if state.artist != self.player_ui_state.last_artist {
                     self.player_ui_state.last_artist = state.artist.clone();
                     self.player_ui_state.artist_chars = state.artist.chars().collect();
-                    if self.player_ui_state.artist_chars.len() <= 40 {
+                    if !crate::logic::marquee::needs_marquee(
+                        self.player_ui_state.artist_chars.len(),
+                        crate::logic::marquee::ARTIST_MARQUEE_WIDTH,
+                    ) {
                         self.player_ui_state.display_artist = state.artist.clone();
                     }
                 }
@@ -1852,61 +1669,23 @@ impl AudoxidyApp {
 
                 let state = self.audio_manager.get_state();
 
-                // Cálculo de marquesina cada 500ms
-                let limit_t = 39;
-                let limit_a = 40;
-
-                self.player_ui_state.display_title = if self.player_ui_state.title_chars.len()
-                    > limit_t
-                {
-                    let chars = &self.player_ui_state.title_chars;
-                    let offset = (self.player_ui_state.tick_count as usize) % (chars.len() + 10);
-                    if offset < chars.len() {
-                        let end = (offset + limit_t).min(chars.len());
-                        let mut s: String = chars[offset..end].iter().collect();
-                        if offset + limit_t > chars.len() {
-                            s.push_str("   ");
-                            let needed = (offset + limit_t) - chars.len();
-                            if needed > 3 {
-                                let rem = needed - 3;
-                                s.push_str(
-                                    &chars[0..rem.min(chars.len())].iter().collect::<String>(),
-                                );
-                            }
-                        }
-                        s
-                    } else {
-                        chars[0..limit_t.min(chars.len())].iter().collect()
-                    }
-                } else {
-                    state.title.clone()
+                // Cálculo de marquesina cada 500ms (ver `logic::marquee`)
+                use crate::logic::marquee::{
+                    ARTIST_MARQUEE_WIDTH, TITLE_MARQUEE_WIDTH, player_marquee,
                 };
-
-                self.player_ui_state.display_artist = if self.player_ui_state.artist_chars.len()
-                    > limit_a
-                {
-                    let chars = &self.player_ui_state.artist_chars;
-                    let offset = (self.player_ui_state.tick_count as usize) % (chars.len() + 10);
-                    if offset < chars.len() {
-                        let end = (offset + limit_a).min(chars.len());
-                        let mut s: String = chars[offset..end].iter().collect();
-                        if offset + limit_a > chars.len() {
-                            s.push_str("   ");
-                            let needed = (offset + limit_a) - chars.len();
-                            if needed > 3 {
-                                let rem = needed - 3;
-                                s.push_str(
-                                    &chars[0..rem.min(chars.len())].iter().collect::<String>(),
-                                );
-                            }
-                        }
-                        s
-                    } else {
-                        chars[0..limit_a.min(chars.len())].iter().collect()
-                    }
-                } else {
-                    state.artist.clone()
-                };
+                let tick = self.player_ui_state.tick_count;
+                self.player_ui_state.display_title = player_marquee(
+                    &state.title,
+                    &self.player_ui_state.title_chars,
+                    TITLE_MARQUEE_WIDTH,
+                    tick,
+                );
+                self.player_ui_state.display_artist = player_marquee(
+                    &state.artist,
+                    &self.player_ui_state.artist_chars,
+                    ARTIST_MARQUEE_WIDTH,
+                    tick,
+                );
 
                 if self.player_ui_state.is_active
                     && self.player_ui_state.tick_count > self.player_ui_state.active_until_tick
@@ -2566,10 +2345,7 @@ impl AudoxidyApp {
                                         }
                                     }
                                     ExportMode::SingleFile => {
-                                        let ext = match format {
-                                            ExportFormat::M3U => "m3u",
-                                            ExportFormat::M3U8 => "m3u8",
-                                        };
+                                        let ext = format.extension();
                                         if let Some(file) = rfd::AsyncFileDialog::new()
                                             .set_title("Guardar lista de reproducción")
                                             .add_filter("Lista de reproducción", &[ext])
@@ -2659,12 +2435,6 @@ impl AudoxidyApp {
 
                 return Task::perform(
                     async move {
-                        let sanitize_name = |s: &str| {
-                            s.chars()
-                                .map(|c| if "/\\?%*:|\"<>".contains(c) { '_' } else { c })
-                                .collect::<String>()
-                        };
-
                         // db-lock: solo lectura — refresco best-effort, se omite si el lock falla
                         let songs = if let Ok(db_lock) = db.lock() {
                             db_lock.search_playlist_songs(id, "").unwrap_or_default()
@@ -2679,70 +2449,47 @@ impl AudoxidyApp {
                                 .ok()
                                 .flatten()
                                 .map(|p| p.name)
-                                .unwrap_or_else(|| "Playlist_Exportada".to_string().into())
+                                .unwrap_or_else(|| {
+                                    crate::logic::playlist_export::FALLBACK_PLAYLIST_NAME
+                                        .to_string()
+                                })
                         } else {
-                            "Playlist_Exportada".into()
+                            crate::logic::playlist_export::FALLBACK_PLAYLIST_NAME.into()
                         };
 
-                        let is_portable = mode == ExportMode::PortableFolder;
-                        let mut m3u_content = String::from("#EXTM3U\n");
-                        let base_target_path = std::path::PathBuf::from(target_path);
+                        // El contenido y las copias se planifican en `logic::playlist_export`;
+                        // aquí solo se ejecuta la E/S en el mismo orden.
+                        let plan = crate::logic::playlist_export::plan_export(
+                            &songs,
+                            &p_name,
+                            std::path::Path::new(&target_path),
+                            format,
+                            mode,
+                        );
 
-                        for song in songs {
-                            let path_to_write = if is_portable {
-                                let artist_dir = sanitize_name(&song.artist_name);
-                                let album_dir = sanitize_name(&song.album_title);
-                                let song_file = std::path::Path::new(song.file_path.as_ref())
-                                    .file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy();
-
-                                let relative_path =
-                                    format!("{}/{}/{}", artist_dir, album_dir, song_file);
-                                let full_target_dir =
-                                    base_target_path.join(&artist_dir).join(&album_dir);
-                                let full_target_path = full_target_dir.join(song_file.as_ref());
-
-                                if let Err(e) = std::fs::create_dir_all(&full_target_dir) {
-                                    tracing::warn!(
-                                        "No se pudo crear el directorio {:?}: {}",
-                                        full_target_dir,
-                                        e
-                                    );
-                                }
-                                if let Err(e) = std::fs::copy(&*song.file_path, &full_target_path) {
-                                    tracing::warn!(
-                                        "No se pudo copiar {:?} a {:?}: {}",
-                                        song.file_path,
-                                        full_target_path,
-                                        e
-                                    );
-                                }
-                                relative_path
-                            } else {
-                                song.file_path.to_string()
-                            };
-
-                            m3u_content.push_str(&format!(
-                                "#EXTINF:{},{}\n{}\n",
-                                song.duration as i32, song.title, path_to_write
-                            ));
+                        for copy in &plan.copies {
+                            if let Err(e) = std::fs::create_dir_all(&copy.target_dir) {
+                                tracing::warn!(
+                                    "No se pudo crear el directorio {:?}: {}",
+                                    copy.target_dir,
+                                    e
+                                );
+                            }
+                            if let Err(e) = std::fs::copy(&copy.source, &copy.target_file) {
+                                tracing::warn!(
+                                    "No se pudo copiar {:?} a {:?}: {}",
+                                    copy.source,
+                                    copy.target_file,
+                                    e
+                                );
+                            }
                         }
 
                         // Escribir el archivo
-                        let final_m3u_path = if is_portable {
-                            let ext = match format {
-                                ExportFormat::M3U => "m3u",
-                                ExportFormat::M3U8 => "m3u8",
-                            };
-                            base_target_path.join(format!("{}.{}", sanitize_name(&p_name), ext))
-                        } else {
-                            base_target_path
-                        };
-                        if let Err(e) = std::fs::write(&final_m3u_path, m3u_content) {
+                        if let Err(e) = std::fs::write(&plan.playlist_path, plan.content) {
                             tracing::warn!(
                                 "No se pudo escribir la lista M3U en {:?}: {}",
-                                final_m3u_path,
+                                plan.playlist_path,
                                 e
                             );
                         }
@@ -5398,12 +5145,7 @@ impl AudoxidyApp {
                 Task::none()
             }
             Message::MeterResetPeak => {
-                self.player_ui_state.meter.peak_hold_l = crate::gui::widgets::METER_MIN_DB;
-                self.player_ui_state.meter.peak_hold_r = crate::gui::widgets::METER_MIN_DB;
-                self.player_ui_state.meter.peak_hold_start_l = None;
-                self.player_ui_state.meter.peak_hold_start_r = None;
-                self.player_ui_state.meter.peak_decay_l = 0.0;
-                self.player_ui_state.meter.peak_decay_r = 0.0;
+                self.player_ui_state.meter.reset_peaks();
                 Task::none()
             }
             Message::MeterToggleEnabled(v) => {
@@ -6341,8 +6083,13 @@ impl AudoxidyApp {
 
         // 3. UI/Marquee Tick: 500ms
         // Solo se activa si la UI está activa (controles) o si algún texto requiere efecto marquesina
-        let needs_marquee = self.player_ui_state.title_chars.len() > 39
-            || self.player_ui_state.artist_chars.len() > 40;
+        let needs_marquee = crate::logic::marquee::needs_marquee(
+            self.player_ui_state.title_chars.len(),
+            crate::logic::marquee::TITLE_MARQUEE_WIDTH,
+        ) || crate::logic::marquee::needs_marquee(
+            self.player_ui_state.artist_chars.len(),
+            crate::logic::marquee::ARTIST_MARQUEE_WIDTH,
+        );
 
         if self.player_ui_state.is_active
             || (self.audio_manager.get_state().is_playing && needs_marquee)
@@ -6470,133 +6217,25 @@ impl AudoxidyApp {
         self.library_manager.update_selection_stats();
     }
 
-    /// Lee los 4 atómicos del data layer (MeterData), aplica ballistics,
-    /// peak hold, pause fade y track reset, y escribe en
-    /// `player_ui_state.meter`. Incluye cómputo M/S, correlación de fase,
-    /// crest factor y hold infinito.
+    /// Lee los 4 atómicos del data layer (MeterData) y avanza el estado del
+    /// medidor en `player_ui_state.meter` (ballistics, peak hold, pause fade,
+    /// track reset, M/S, correlación de fase, crest factor y hold infinito;
+    /// ver `logic::meter`).
     fn update_meter(&mut self) {
         let state = self.audio_manager.get_state();
-        let is_playing = state.is_playing;
-        let current_path = state.path.clone();
-        let infinite_hold = state.meter_infinite_hold;
-
-        let m = &mut self.player_ui_state.meter;
-
-        // Track change reset — also resets infinite hold values
-        if current_path != m.last_track_path {
-            let ms_mode = m.ms_mode;
-            let show_numeric = m.show_numeric;
-            *m = crate::gui::player::MeterUiState::default();
-            m.last_track_path = current_path;
-            m.ms_mode = ms_mode;
-            m.show_numeric = show_numeric;
-            return;
-        }
-
-        // Read atomics from data layer
         let meter_data = self.audio_manager.meter();
-        let raw_peak_l = meter_data.read_peak_l();
-        let raw_peak_r = meter_data.read_peak_r();
-        let raw_rms_l = meter_data.read_rms_l();
-        let raw_rms_r = meter_data.read_rms_r();
-
-        // ── M/S computation: Mid = (L+R)/2, Side = (L-R)/2 ──
-        let (display_peak_l, display_peak_r, display_rms_l, display_rms_r) = if m.ms_mode {
-            let mid_peak = (raw_peak_l + raw_peak_r) / 2.0;
-            let side_peak = (raw_peak_l - raw_peak_r) / 2.0;
-            let mid_rms = (raw_rms_l + raw_rms_r) / 2.0;
-            let side_rms = (raw_rms_l - raw_rms_r) / 2.0;
-            (mid_peak, side_peak, mid_rms, side_rms)
-        } else {
-            (raw_peak_l, raw_peak_r, raw_rms_l, raw_rms_r)
+        let reading = crate::logic::meter::MeterReading {
+            track_path: &state.path,
+            is_playing: state.is_playing,
+            infinite_hold: state.meter_infinite_hold,
+            peak_l: meter_data.read_peak_l(),
+            peak_r: meter_data.read_peak_r(),
+            rms_l: meter_data.read_rms_l(),
+            rms_r: meter_data.read_rms_r(),
         };
-
-        if is_playing {
-            m.is_fading_out = false;
-
-            // Peak hold state machine per channel
-            if infinite_hold {
-                // Infinite hold: hold values only increase, never decay
-                m.peak_hold_l = m.peak_hold_l.max(display_peak_l);
-                m.peak_hold_r = m.peak_hold_r.max(display_peak_r);
-                m.peak_hold_start_l = None;
-                m.peak_hold_start_r = None;
-                m.peak_decay_l = 0.0;
-                m.peak_decay_r = 0.0;
-            } else {
-                // Normal hold: existing hold timer + decay logic
-                let (new_hold_l, new_start_l, new_decay_l) = peak_hold_step(
-                    m.peak_hold_l,
-                    m.peak_hold_start_l,
-                    m.peak_decay_l,
-                    display_peak_l,
-                );
-                m.peak_hold_l = new_hold_l;
-                m.peak_hold_start_l = new_start_l;
-                m.peak_decay_l = new_decay_l;
-
-                let (new_hold_r, new_start_r, new_decay_r) = peak_hold_step(
-                    m.peak_hold_r,
-                    m.peak_hold_start_r,
-                    m.peak_decay_r,
-                    display_peak_r,
-                );
-                m.peak_hold_r = new_hold_r;
-                m.peak_hold_start_r = new_start_r;
-                m.peak_decay_r = new_decay_r;
-            }
-
-            // Asymmetric ballistics — target is max of raw peak and held peak
-            let target_l = display_peak_l.max(m.peak_hold_l);
-            let target_r = display_peak_r.max(m.peak_hold_r);
-            m.display_l = ballistic_step(m.display_l, target_l);
-            m.display_r = ballistic_step(m.display_r, target_r);
-
-            // ── Phase correlation: corr = (L·R) / (|L|·|R|) ──
-            // Use RMS-weighted correlation for smoother readout
-            m.phase_corr = if raw_rms_l.abs() > 0.001 && raw_rms_r.abs() > 0.001 {
-                let corr = (raw_rms_l * raw_rms_r) / (raw_rms_l.abs() * raw_rms_r.abs());
-                corr.clamp(-1.0, 1.0)
-            } else {
-                0.0 // Undefined for silence
-            };
-
-            // ── Crest factor: peak_dBFS - RMS_dBFS ──
-            m.crest_l = if raw_rms_l > crate::gui::widgets::METER_MIN_DB + 1.0 {
-                raw_peak_l - raw_rms_l
-            } else {
-                0.0
-            };
-            m.crest_r = if raw_rms_r > crate::gui::widgets::METER_MIN_DB + 1.0 {
-                raw_peak_r - raw_rms_r
-            } else {
-                0.0
-            };
-        } else if !m.is_fading_out {
-            // Transition to pause — capture current display values
-            m.last_playing_l = m.display_l;
-            m.last_playing_r = m.display_r;
-            m.is_fading_out = true;
-            m.fade_out_start = Some(std::time::Instant::now());
-        }
-        // Note: fade-out animation continues even when !is_playing,
-        // because the subscription stays active while is_fading_out == true.
-
-        // Pause fade animation
-        if m.is_fading_out {
-            if let Some(start) = m.fade_out_start {
-                let elapsed = start.elapsed().as_secs_f32();
-                let fade_secs = METER_FADE_OUT_SECS;
-                let factor = (1.0 - elapsed / fade_secs).clamp(0.0, 1.0);
-                m.display_l = m.last_playing_l * factor;
-                m.display_r = m.last_playing_r * factor;
-                if factor <= 0.0 {
-                    m.is_fading_out = false;
-                    m.display_l = 0.0;
-                    m.display_r = 0.0;
-                }
-            }
-        }
+        self.player_ui_state
+            .meter
+            .update(&reading, std::time::Instant::now());
     }
 
     fn handle_library_reveal(&mut self, path_opt: Option<String>) -> Task<Message> {
@@ -6877,10 +6516,11 @@ impl AudoxidyApp {
 #[cfg(test)]
 mod app_tests {
     use super::{
-        Message, PRELOAD_GC_SAFETY_SECS, SEEK_STEP_SECS, clamp_volume, external_control_to_message,
-        fine_seek_enabled, gc_blocked_by_preload, seek_target,
+        Message, clamp_volume, external_control_to_message, fine_seek_enabled,
+        gc_blocked_by_preload, seek_target,
     };
     use crate::integrations::control::ExternalControlEvent;
+    use crate::logic::transport::{PRELOAD_GC_SAFETY_SECS, SEEK_STEP_SECS};
 
     #[test]
     fn gc_blocked_while_preload_active() {

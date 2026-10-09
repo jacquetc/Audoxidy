@@ -137,12 +137,7 @@ impl<T> std::fmt::Display for OptionWrapper<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SystemSelection<Val> {
-    Default,
-    Automatic,
-    Fixed(Val),
-}
+pub use crate::logic::audio_settings::SystemSelection;
 
 /// Backup del estado del EQ antes de aplicar un preset en preview.
 /// Se restaura si el usuario cancela el diálogo de carga.
@@ -321,28 +316,11 @@ impl AudioCenterManager {
     /// 2. Custom presets (A-Z, case-insensitive)
     /// 3. Built-in presets (A-Z, excluding Default and hidden)
     pub fn get_unified_presets(&self) -> Vec<&crate::audio::preset::EqPreset> {
-        let mut all: Vec<&crate::audio::preset::EqPreset> = Vec::new();
-
-        // 1. "Default" always first
-        if let Some(default) = self.equalizer_presets.iter().find(|p| p.name == "Default") {
-            all.push(default);
-        }
-
-        // 2. Custom presets (sorted A-Z)
-        let mut custom: Vec<&crate::audio::preset::EqPreset> = self.custom_presets.iter().collect();
-        custom.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        all.extend(custom);
-
-        // 3. Built-in presets excluding Default and hidden
-        let mut builtin: Vec<&crate::audio::preset::EqPreset> = self
-            .equalizer_presets
-            .iter()
-            .filter(|p| p.name != "Default" && !self.hidden_builtins.contains(&p.name))
-            .collect();
-        builtin.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        all.extend(builtin);
-
-        all
+        crate::logic::eq::unified_presets(
+            &self.equalizer_presets,
+            &self.custom_presets,
+            &self.hidden_builtins,
+        )
     }
 
     /// Apply an EQ preset to the manager state and AudioManager/DSP.
@@ -360,8 +338,7 @@ impl AudioCenterManager {
             preset.get_gains_20()
         };
         // Round to 1 decimal place
-        let rounded: Vec<f32> = gains.iter().map(|&g| (g * 10.0).round() / 10.0).collect();
-        self.eq_band_gains = rounded;
+        self.eq_band_gains = crate::logic::eq::rounded_gains(&gains);
     }
 
     /// Guarda todos los ajustes del ecualizador en la base de datos.
@@ -381,7 +358,10 @@ impl AudioCenterManager {
             );
             log_persist(
                 "preamp_gain",
-                db_lock.set_setting("preamp_gain", &format!("{:.1}", self.preamp_gain)),
+                db_lock.set_setting(
+                    "preamp_gain",
+                    &crate::logic::eq::encode_preamp_gain(self.preamp_gain),
+                ),
             );
             // Save selected preset name
             let preset_name = self
@@ -394,24 +374,13 @@ impl AudioCenterManager {
                 db_lock.set_setting("eq_selected_preset", &preset_name),
             );
             // Guardar gains de 20 y 31 bandas como CSV
-            let bands_20_str = self
-                .eq_band_gains
-                .iter()
-                .take(20)
-                .map(|g| format!("{:.1}", g))
-                .collect::<Vec<_>>()
-                .join(",");
+            let (bands_20_str, bands_31_str) =
+                crate::logic::eq::encode_band_gain_settings(&self.eq_band_gains);
             log_persist(
                 "eq_band_gains_20",
                 db_lock.set_setting("eq_band_gains_20", &bands_20_str),
             );
-            if self.eq_band_gains.len() > 20 {
-                let bands_31_str = self
-                    .eq_band_gains
-                    .iter()
-                    .map(|g| format!("{:.1}", g))
-                    .collect::<Vec<_>>()
-                    .join(",");
+            if let Some(bands_31_str) = bands_31_str {
                 log_persist(
                     "eq_band_gains_31",
                     db_lock.set_setting("eq_band_gains_31", &bands_31_str),
@@ -844,54 +813,26 @@ impl AudioCenterManager {
                 if self.selected_device.is_none() {
                     self.selected_device = db.get_setting("audio_device").filter(|s| !s.is_empty());
                 }
-                if let Some(bd_str) = db.get_setting("audio_bit_depth") {
-                    if let Some(bd) = match bd_str.as_str() {
-                        "16" => Some(BitDepth::Bits16),
-                        "24" => Some(BitDepth::Bits24),
-                        "32" => Some(BitDepth::Bits32Float),
-                        _ => None,
-                    } {
-                        self.selected_bit_depth = bd;
-                    }
+                if let Some(bd_str) = db.get_setting("audio_bit_depth")
+                    && let Some(bd) = crate::logic::audio_settings::decode_bit_depth(&bd_str)
+                {
+                    self.selected_bit_depth = bd;
                 }
                 if self.system_rate == SystemSelection::Default {
                     if let Some(sr_str) = db.get_setting("audio_system_rate") {
-                        self.system_rate = match sr_str.as_str() {
-                            "default" => SystemSelection::Default,
-                            "auto" => SystemSelection::Automatic,
-                            s if s.starts_with("fixed:") => {
-                                if let Ok(val) = s["fixed:".len()..].parse::<u32>() {
-                                    SystemSelection::Fixed(val)
-                                } else {
-                                    SystemSelection::Default
-                                }
-                            }
-                            _ => SystemSelection::Default,
-                        };
+                        self.system_rate =
+                            crate::logic::audio_settings::decode_system_selection(&sr_str);
                     }
                 }
                 if self.system_quantum == SystemSelection::Default {
                     if let Some(sq_str) = db.get_setting("audio_system_quantum") {
-                        self.system_quantum = match sq_str.as_str() {
-                            "default" => SystemSelection::Default,
-                            "auto" => SystemSelection::Automatic,
-                            s if s.starts_with("fixed:") => {
-                                if let Ok(val) = s["fixed:".len()..].parse::<u32>() {
-                                    SystemSelection::Fixed(val)
-                                } else {
-                                    SystemSelection::Default
-                                }
-                            }
-                            _ => SystemSelection::Default,
-                        };
+                        self.system_quantum =
+                            crate::logic::audio_settings::decode_system_selection(&sq_str);
                     }
                 }
                 if let Some(buf_str) = db.get_setting("audio_buffer_size") {
-                    self.selected_buffer_size = if buf_str == "auto" {
-                        None
-                    } else {
-                        buf_str.parse::<u32>().ok()
-                    };
+                    self.selected_buffer_size =
+                        crate::logic::audio_settings::decode_auto_u32(&buf_str);
                 }
                 // Load EQ settings from DB
                 if let Some(val) = db.get_setting("eq_enabled") {
@@ -905,25 +846,16 @@ impl AudioCenterManager {
                         self.preamp_gain = g;
                     }
                 }
-                if let Some(val) = db.get_setting("eq_band_gains_20") {
-                    let gains: Vec<f32> = val
-                        .split(',')
-                        .filter_map(|s| s.parse::<f32>().ok())
-                        .collect();
-                    if gains.len() == 20 {
-                        self.eq_band_gains = gains;
-                    }
+                if let Some(val) = db.get_setting("eq_band_gains_20")
+                    && let Some(gains) = crate::logic::eq::decode_band_gains(&val, 20)
+                {
+                    self.eq_band_gains = gains;
                 }
-                if self.equalizer_bands_31 {
-                    if let Some(val) = db.get_setting("eq_band_gains_31") {
-                        let gains: Vec<f32> = val
-                            .split(',')
-                            .filter_map(|s| s.parse::<f32>().ok())
-                            .collect();
-                        if gains.len() == 31 {
-                            self.eq_band_gains = gains;
-                        }
-                    }
+                if self.equalizer_bands_31
+                    && let Some(val) = db.get_setting("eq_band_gains_31")
+                    && let Some(gains) = crate::logic::eq::decode_band_gains(&val, 31)
+                {
+                    self.eq_band_gains = gains;
                 }
                 // Load selected preset name from DB
                 if let Some(preset_name) = db.get_setting("eq_selected_preset") {
@@ -953,24 +885,12 @@ impl AudioCenterManager {
         if let Some(ref db_arc) = db_arc_apply {
             // db-lock: solo lectura — refresco best-effort, se omite si el lock falla
             if let Ok(db) = db_arc.try_lock() {
-                if let Some(val) = db.get_setting("eq_band_gains_20") {
-                    let g: Vec<f32> = val
-                        .split(',')
-                        .filter_map(|s| s.parse::<f32>().ok())
-                        .collect();
-                    if g.len() == 20 {
-                        bands_20 = Some(g);
-                    }
-                }
-                if let Some(val) = db.get_setting("eq_band_gains_31") {
-                    let g: Vec<f32> = val
-                        .split(',')
-                        .filter_map(|s| s.parse::<f32>().ok())
-                        .collect();
-                    if g.len() == 31 {
-                        bands_31 = Some(g);
-                    }
-                }
+                bands_20 = db
+                    .get_setting("eq_band_gains_20")
+                    .and_then(|val| crate::logic::eq::decode_band_gains(&val, 20));
+                bands_31 = db
+                    .get_setting("eq_band_gains_31")
+                    .and_then(|val| crate::logic::eq::decode_band_gains(&val, 31));
             }
         }
         let b20 = bands_20.unwrap_or_else(|| vec![0.0; 20]);
@@ -1314,38 +1234,19 @@ impl AudioCenterManager {
                 self.apply_enabled = true;
             }
             AudioCenterMessage::ResetToDefaults => {
-                self.selected_sample_rate = Some(48000);
-                self.selected_bit_depth = BitDepth::Bits32Float;
-                self.selected_buffer_size = None;
-                self.selected_channels_manual = 2;
+                use crate::logic::audio_settings as defaults;
+                self.selected_sample_rate = Some(defaults::DEFAULT_SAMPLE_RATE);
+                self.selected_bit_depth = defaults::DEFAULT_BIT_DEPTH;
+                self.selected_buffer_size = defaults::DEFAULT_BUFFER_SIZE;
+                self.selected_channels_manual = defaults::DEFAULT_CHANNELS;
                 self.system_rate = SystemSelection::Default;
                 self.system_quantum = SystemSelection::Default;
 
-                if self.cached_hosts.contains(&"ALSA".to_string()) {
-                    self.selected_host = Some("ALSA".to_string());
-                } else if let Some(first) = self.cached_hosts.first() {
-                    self.selected_host = Some(first.clone());
+                if let Some(host) = defaults::default_host(&self.cached_hosts) {
+                    self.selected_host = Some(host.to_string());
                 }
-
-                let target = self
-                    .cached_devices
-                    .iter()
-                    .find(|d| d.name.to_lowercase().contains("pipewire"))
-                    .or_else(|| {
-                        self.cached_devices
-                            .iter()
-                            .find(|d| d.name.to_lowercase().contains("pulse"))
-                    })
-                    .or_else(|| {
-                        self.cached_devices
-                            .iter()
-                            .find(|d| d.name.to_lowercase().contains("default"))
-                    });
-
-                if let Some(d) = target {
+                if let Some(d) = defaults::default_device(&self.cached_devices) {
                     self.selected_device = Some(d.name.clone());
-                } else if let Some(first) = self.cached_devices.first() {
-                    self.selected_device = Some(first.name.clone());
                 }
 
                 self.apply_enabled = true;
@@ -1356,34 +1257,17 @@ impl AudioCenterManager {
                 //    PipeWire reconfigura el grafo en caliente y el stream existente
                 //    queda desconectado del sink — su callback sigue drenando el
                 //    ringbuf pero el audio nunca llega al dispositivo.
-                let rate_val = match self.system_rate {
-                    SystemSelection::Default => None,
-                    SystemSelection::Automatic => self.selected_sample_rate,
-                    SystemSelection::Fixed(r) => Some(r),
-                };
-                let quantum_val = match self.system_quantum {
-                    SystemSelection::Default => None,
-                    SystemSelection::Automatic => {
-                        // Quantum estimado: tasa × 10ms de latencia base (no se puede
-                        // esperar el negociado real porque el stream aún no existe).
-                        let rate = self.selected_sample_rate.unwrap_or(48000);
-                        let frames = (rate as f64 * 10.0 / 1000.0) as u32;
-                        Some(if frames < 256 {
-                            256
-                        } else if frames < 512 {
-                            512
-                        } else if frames < 1024 {
-                            1024
-                        } else if frames < 2048 {
-                            2048
-                        } else if frames < 4096 {
-                            4096
-                        } else {
-                            8192
-                        })
-                    }
-                    SystemSelection::Fixed(q) => Some(q),
-                };
+                let rate_val = crate::logic::audio_settings::resolve_system_rate(
+                    self.system_rate,
+                    self.selected_sample_rate,
+                );
+                // Quantum estimado: tasa × 10ms de latencia base (no se puede
+                // esperar el negociado real porque el stream aún no existe).
+                let quantum_val = crate::logic::audio_settings::resolve_system_quantum(
+                    self.system_quantum,
+                    self.selected_sample_rate
+                        .unwrap_or(crate::logic::audio_settings::DEFAULT_SAMPLE_RATE),
+                );
                 let has_pw = crate::integrations::system_audio::is_pipewire_active();
                 if has_pw {
                     crate::integrations::system_audio::apply_pipewire_clock(rate_val, quantum_val);
@@ -1456,59 +1340,42 @@ impl AudioCenterManager {
                                 selected_device_id.as_deref().unwrap_or(""),
                             ),
                         );
+                        use crate::logic::audio_settings as codec;
                         log_persist(
                             "audio_sample_rate",
                             db.set_setting(
                                 "audio_sample_rate",
-                                &self
-                                    .selected_sample_rate
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_else(|| "auto".to_string()),
+                                &codec::encode_auto_u32(self.selected_sample_rate),
                             ),
                         );
                         log_persist(
                             "audio_bit_depth",
                             db.set_setting(
                                 "audio_bit_depth",
-                                match self.selected_bit_depth {
-                                    BitDepth::Bits16 => "16",
-                                    BitDepth::Bits24 => "24",
-                                    BitDepth::Bits32Float => "32",
-                                },
+                                codec::encode_bit_depth(self.selected_bit_depth),
                             ),
                         );
                         log_persist(
                             "audio_channels",
                             db.set_setting(
                                 "audio_channels",
-                                &self.selected_channels_manual.to_string(),
+                                &codec::encode_channels(self.selected_channels_manual),
                             ),
                         );
                         log_persist(
                             "audio_buffer_size",
                             db.set_setting(
                                 "audio_buffer_size",
-                                &self
-                                    .selected_buffer_size
-                                    .map(|b| b.to_string())
-                                    .unwrap_or_else(|| "auto".to_string()),
+                                &codec::encode_auto_u32(self.selected_buffer_size),
                             ),
                         );
-                        let sys_rate_str = match self.system_rate {
-                            SystemSelection::Default => "default".to_string(),
-                            SystemSelection::Automatic => "auto".to_string(),
-                            SystemSelection::Fixed(r) => format!("fixed:{}", r),
-                        };
+                        let sys_rate_str = codec::encode_system_selection(self.system_rate);
                         log_persist(
                             "audio_system_rate",
                             db.set_setting("audio_system_rate", &sys_rate_str),
                         );
 
-                        let sys_quantum_str = match self.system_quantum {
-                            SystemSelection::Default => "default".to_string(),
-                            SystemSelection::Automatic => "auto".to_string(),
-                            SystemSelection::Fixed(q) => format!("fixed:{}", q),
-                        };
+                        let sys_quantum_str = codec::encode_system_selection(self.system_quantum);
                         log_persist(
                             "audio_system_quantum",
                             db.set_setting("audio_system_quantum", &sys_quantum_str),
@@ -1549,16 +1416,14 @@ impl AudioCenterManager {
                 self.eq_band_gains = bands;
             }
             AudioCenterMessage::EqPreampChanged(val) => {
-                let rounded = (val * 10.0).round() / 10.0;
-                let clamped = rounded.clamp(-9.0, 9.0);
+                let clamped = crate::logic::eq::slider_gain(val);
                 self.preamp_gain = clamped;
                 if self.equalizer_enabled {
                     audio_manager.set_preamp_gain(clamped);
                 }
             }
             AudioCenterMessage::EqBandChanged(idx, val) => {
-                let rounded = (val * 10.0).round() / 10.0;
-                let clamped = rounded.clamp(-9.0, 9.0);
+                let clamped = crate::logic::eq::slider_gain(val);
                 if idx < self.eq_band_gains.len() {
                     self.eq_band_gains[idx] = clamped;
                     audio_manager.set_eq_band_gain(idx, clamped);
@@ -1640,14 +1505,13 @@ impl AudioCenterManager {
                 }
             }
             AudioCenterMessage::EqPresetDelete(name) => {
-                let is_builtin = crate::audio::preset::EqPreset::default_presets()
-                    .iter()
-                    .any(|p| p.name == name)
-                    && !self.custom_presets.iter().any(|p| p.name == name);
-                if is_builtin {
-                    if !self.hidden_builtins.contains(&name) {
-                        self.hidden_builtins.push(name.clone());
-                    }
+                let action = crate::logic::eq::preset_delete_action(
+                    &name,
+                    &crate::audio::preset::EqPreset::default_presets(),
+                    &self.custom_presets,
+                );
+                if action == crate::logic::eq::PresetDeleteAction::HideBuiltin {
+                    crate::logic::eq::hide_builtin(&mut self.hidden_builtins, &name);
                 } else {
                     // db-lock: persistencia — el guardado se omite si el lock falla
                     if let Ok(db_lock) = db.lock() {
@@ -1711,11 +1575,7 @@ impl AudioCenterManager {
             }
             AudioCenterMessage::EqPresetFileExported(Some(path)) => {
                 // Extract filename from path to use as preset name (issue #4)
-                let file_name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("Custom")
-                    .to_string();
+                let file_name = crate::logic::eq::export_preset_name(&path);
                 // Build preset with BOTH band sets at correct sizes (issue #3)
                 let bands_20 = if self.equalizer_bands_31 {
                     Some(crate::audio::preset::EqPreset::convert_31_to_20(
@@ -2193,7 +2053,7 @@ fn view_audio_config<'a>(
         .as_ref()
         .map(|d| OptionWrapper::new(d, d.clone()));
 
-    let rates = [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000];
+    let rates = crate::logic::audio_settings::SAMPLE_RATE_OPTIONS;
     let rate_options: Vec<_> = rates
         .iter()
         .map(|&r| OptionWrapper::new(format!("{} Hz", r), Some(r)))
@@ -2202,45 +2062,30 @@ fn view_audio_config<'a>(
         .selected_sample_rate
         .map(|r| OptionWrapper::new(format!("{} Hz", r), Some(r)));
 
-    let bits = [BitDepth::Bits16, BitDepth::Bits24, BitDepth::Bits32Float];
+    let bits = crate::logic::audio_settings::BIT_DEPTH_OPTIONS;
     let bit_options: Vec<_> = bits
         .iter()
-        .map(|b| {
-            let label = match b {
-                BitDepth::Bits16 => "16 bits Int",
-                BitDepth::Bits24 => "24 bits Int",
-                BitDepth::Bits32Float => "32 bits Float",
-            };
-            OptionWrapper::new(label, b.clone())
-        })
+        .map(|b| OptionWrapper::new(crate::logic::audio_settings::bit_depth_label(*b), *b))
         .collect();
     let selected_bit_opt = {
-        let label = match manager.selected_bit_depth {
-            BitDepth::Bits16 => "16 bits Int",
-            BitDepth::Bits24 => "24 bits Int",
-            BitDepth::Bits32Float => "32 bits Float",
-        };
+        let label = crate::logic::audio_settings::bit_depth_label(manager.selected_bit_depth);
         Some(OptionWrapper::new(
             label,
             manager.selected_bit_depth.clone(),
         ))
     };
 
-    let channels_options = vec![
-        OptionWrapper::new("1.0 Mono", 1),
-        OptionWrapper::new("2.0 Stereo", 2),
-        OptionWrapper::new("2.1 Stereo + Sub", 3),
-        OptionWrapper::new("4.0 Quad", 4),
-        OptionWrapper::new("5.1 Surround", 6),
-        OptionWrapper::new("7.1 Surround", 8),
-    ];
+    let channels_options: Vec<_> = crate::logic::audio_settings::OUTPUT_CHANNEL_OPTIONS
+        .iter()
+        .map(|&(label, ch)| OptionWrapper::new(label, ch))
+        .collect();
     let selected_ch_opt = channels_options
         .iter()
         .find(|o| o.value == manager.selected_channels_manual)
         .cloned();
 
     let mut buffer_options = vec![OptionWrapper::new("Automático", None)];
-    let sizes = [256, 512, 1024, 2048, 4096, 8192];
+    let sizes = crate::logic::audio_settings::BUFFER_SIZE_OPTIONS;
     for &s in &sizes {
         buffer_options.push(OptionWrapper::new(format!("{}", s), Some(s)));
     }
@@ -2310,7 +2155,7 @@ fn view_audio_config<'a>(
         OptionWrapper::new("Default", SystemSelection::Default),
         OptionWrapper::new("Automatico", SystemSelection::Automatic),
     ];
-    let sys_rates = [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000];
+    let sys_rates = crate::logic::audio_settings::SYSTEM_RATE_OPTIONS;
     for &r in &sys_rates {
         system_rate_options.push(OptionWrapper::new(
             format!("{} Hz", r),
@@ -2330,7 +2175,7 @@ fn view_audio_config<'a>(
         OptionWrapper::new("Default", SystemSelection::Default),
         OptionWrapper::new("Automatico", SystemSelection::Automatic),
     ];
-    let sys_quantums = [256, 512, 1024, 2048, 4096, 8192];
+    let sys_quantums = crate::logic::audio_settings::SYSTEM_QUANTUM_OPTIONS;
     for &q in &sys_quantums {
         system_quantum_options.push(OptionWrapper::new(
             format!("{}", q),
@@ -2539,17 +2384,7 @@ fn view_audio_config<'a>(
         "--".to_string()
     };
 
-    let format_channels = |ch: u16| -> String {
-        match ch {
-            1 => "Mono".to_string(),
-            2 => "Stereo".to_string(),
-            3 => "Stereo + Sub".to_string(),
-            4 => "4.0 Quad".to_string(),
-            6 => "5.1 Surround".to_string(),
-            8 => "7.1 Surround".to_string(),
-            other => format!("{} canales", other),
-        }
-    };
+    let format_channels = crate::logic::audio_settings::channel_count_label;
 
     let file_ch_str = if file_channels > 0 {
         format_channels(file_channels as u16)
@@ -2563,12 +2398,8 @@ fn view_audio_config<'a>(
         "--".to_string()
     };
 
-    let bit_depth_display_clean = match bit_depth_display.as_str() {
-        "24/32-bit Int" | "24/32-bits Int" | "24-bit Int" | "24 bits Int" => {
-            "24 bits Int".to_string()
-        }
-        other => other.replace("-bit", " bits"),
-    };
+    let bit_depth_display_clean =
+        crate::logic::audio_settings::bit_depth_display(&bit_depth_display);
 
     let gain_str = match (album_gain, track_gain) {
         (Some(ag), Some(tg)) => format!("{:.2} dB | {:.2} dB", ag, tg),
@@ -3121,11 +2952,7 @@ fn view_equalizer<'a>(
         let freq = info.0;
         let gain = manager.eq_band_gains.get(i).copied().unwrap_or(0.0);
 
-        let freq_label = if freq >= 1000.0 {
-            format!("{:.1}k", freq / 1000.0).replace(".0k", "k")
-        } else {
-            format!("{:.0}", freq)
-        };
+        let freq_label = crate::logic::eq::band_frequency_label(freq);
         let show_top = i % 2 == 0;
 
         let label_top = if show_top {
