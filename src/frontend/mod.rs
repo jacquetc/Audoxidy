@@ -20,10 +20,12 @@
 
 #![deny(warnings, clippy::all, clippy::unwrap_used, clippy::expect_used)]
 
+pub mod adapters;
 pub mod db_worker;
 pub mod error;
 pub mod events;
 pub mod long_ops;
+pub mod ports;
 pub mod preload;
 pub mod reply;
 #[cfg(any(test, feature = "teksilo-mocks"))]
