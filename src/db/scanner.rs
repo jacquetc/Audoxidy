@@ -311,15 +311,14 @@ impl Scanner {
     ///
     /// Las canciones que no existen en la BD se procesan como externas.
     pub fn import_m3u(db_m: &Arc<Mutex<Database>>, m3u_path: &str) -> Option<i64> {
-        use std::io::BufRead;
         let path = Path::new(m3u_path);
         let playlist_name = path.file_stem()?.to_string_lossy().to_string();
 
-        let file = std::fs::File::open(path).ok()?;
-        let reader = std::io::BufReader::new(file);
+        let bytes = std::fs::read(path).ok()?;
+        let text = decode_playlist_text(&bytes);
 
         let mut paths = Vec::new();
-        for line in reader.lines().filter_map(|l| l.ok()) {
+        for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
@@ -471,5 +470,97 @@ impl Scanner {
             }
             db.flush_prepared_statements();
         }
+    }
+}
+
+/// Decodes the text of a playlist file (`.m3u` / `.m3u8`).
+///
+/// UTF-8 is tried first, with a leading byte-order mark skipped: that covers
+/// `.m3u8` and most modern `.m3u` files. Anything that is not valid UTF-8 is
+/// decoded as Latin-1 (ISO-8859-1), the traditional `.m3u` encoding and the one
+/// the Teksilo UI writes; every Latin-1 byte maps to the code point of the same
+/// value, so decoding cannot fail. Before this, `import_m3u` read the file line
+/// by line as UTF-8 and silently dropped every line that was not valid UTF-8.
+pub(crate) fn decode_playlist_text(bytes: &[u8]) -> String {
+    let without_bom = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    match std::str::from_utf8(without_bom) {
+        Ok(text) => text.to_string(),
+        Err(_) => without_bom.iter().map(|&b| char::from(b)).collect(),
+    }
+}
+
+#[cfg(test)]
+mod playlist_text_tests {
+    use super::decode_playlist_text;
+
+    #[test]
+    fn utf8_playlists_decode_unchanged() {
+        let text = "#EXTM3U\n/música/Canción.flac\n";
+        assert_eq!(decode_playlist_text(text.as_bytes()), text);
+    }
+
+    #[test]
+    fn a_utf8_byte_order_mark_is_skipped() {
+        let mut bytes = b"\xEF\xBB\xBF".to_vec();
+        bytes.extend_from_slice("/a/Ñu.mp3\n".as_bytes());
+        assert_eq!(decode_playlist_text(&bytes), "/a/Ñu.mp3\n");
+    }
+
+    #[test]
+    fn latin1_playlists_decode_to_the_same_characters() {
+        // "Canción Ñ" in ISO-8859-1: ó = 0xF3, Ñ = 0xD1.
+        let bytes = b"/m\xFAsica/Canci\xF3n \xD1.flac\r\n";
+        assert_eq!(decode_playlist_text(bytes), "/música/Canción Ñ.flac\r\n");
+    }
+
+    #[test]
+    fn import_m3u_reads_a_latin1_playlist_with_accented_paths() {
+        use crate::db::database::{Database, SongData, SongMetadataExtended};
+        use std::sync::{Arc, Mutex};
+
+        let dir = std::env::temp_dir().join(format!("audoxidy_m3u_latin1_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let names = ["Canción Ñ.flac", "été.mp3"];
+        let mut db = Database::new_memory().unwrap();
+        for name in names {
+            let path = dir.join(name);
+            std::fs::write(&path, b"").unwrap();
+            let song = SongData {
+                full_file_path: Arc::from(path.to_str().unwrap().to_string().into_boxed_str()),
+                ..Default::default()
+            };
+            db.insert_song_full(&song, &SongMetadataExtended::default(), None, vec![], false)
+                .unwrap();
+        }
+        // The playlist as the Teksilo UI writes a `.m3u`: Latin-1 bytes.
+        let mut m3u = b"#EXTM3U\r\n".to_vec();
+        for name in names {
+            let line = dir.join(name).to_str().unwrap().to_string();
+            m3u.extend(line.chars().map(|c| u8::try_from(u32::from(c)).unwrap()));
+            m3u.extend_from_slice(b"\r\n");
+        }
+        let m3u_path = dir.join("latin1.m3u");
+        std::fs::write(&m3u_path, &m3u).unwrap();
+
+        let db = Arc::new(Mutex::new(db));
+        let playlist_id =
+            super::Scanner::import_m3u(&db, m3u_path.to_str().unwrap()).expect("imported");
+        let ids = db
+            .lock()
+            .unwrap()
+            .get_playlist_all_song_ids(playlist_id)
+            .unwrap();
+        assert_eq!(ids.len(), 2, "both accented entries are imported");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_latin1_file_keeps_every_line() {
+        let bytes = b"#EXTM3U\r\n/a/\xE9t\xE9.mp3\r\n/b/plain.mp3\r\n";
+        let text = decode_playlist_text(bytes);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines, vec!["#EXTM3U", "/a/été.mp3", "/b/plain.mp3"]);
     }
 }

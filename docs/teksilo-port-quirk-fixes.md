@@ -366,9 +366,10 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Why:** M3U is read as Latin-1 by the players that tell the two formats apart; UTF-8 bytes in an
   `.m3u` show up as mojibake there. M3U8 exists for UTF-8. Truncating durations under-reports
   every track by up to a second.
-- **Known limit:** the M3U import (`Scanner::import_m3u`, `src/db/scanner.rs:322`, shared with
-  Iced) reads every line as UTF-8 and skips a line that is not, so an `.m3u` with non-ASCII paths
-  exported here does not import back completely; `.m3u8` round-trips.
+- **Round trip:** the M3U import (`Scanner::import_m3u`, shared with Iced) used to read every line
+  as UTF-8 and silently skip a line that was not, so an `.m3u` with non-ASCII paths exported here
+  did not import back. That is defect D27, fixed for both UIs: the import now decodes the file as
+  UTF-8 and falls back to Latin-1 (`db::scanner::decode_playlist_text`).
 - **Pinned by:** `frontend::commands::playlist::tests::quirk_25_an_m3u_export_is_latin_1_with_rounded_durations`, `frontend::commands::playlist::tests::quirk_25_an_entry_outside_latin_1_fails_the_m3u_export_without_writing`, `frontend::commands::playlist::tests::quirk_25_an_m3u8_export_is_utf_8` and `frontend::commands::playlist::tests::rounded_durations_never_go_negative`.
 
 ## 26. The RAM hard-cap purge has a 10 s cooldown and the next track is preloaded again

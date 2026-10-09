@@ -2116,12 +2116,15 @@ impl Database {
 
             // Insertar shuffle_order (canciones pendientes)
             for (i, &song_id) in session.shuffle_order.iter().enumerate() {
-                // play_order negativo para diferenciar de history
+                // play_order negativo para diferenciar de history. Empieza en -1:
+                // el 0 pertenece a history (`load_shuffle_session` lee
+                // `play_order >= 0` como history), así que con -(i) la primera
+                // canción pendiente pasaba a history en cada guardado (D26).
                 stmt.execute(params![
                     playlist_id,
                     session.session_id,
                     song_id,
-                    -(i as i64)
+                    -(i as i64 + 1)
                 ])?;
             }
 
@@ -2844,5 +2847,78 @@ mod db_round_trip_tests {
         drop(db);
 
         remove_db_files(&path);
+    }
+}
+
+#[cfg(test)]
+mod shuffle_session_tests {
+    use super::*;
+
+    /// Inserts `count` songs and returns their ids, in insertion order. The
+    /// shuffle table references SONGS, so its rows need real song ids.
+    fn seed_songs(db: &mut Database, count: usize) -> Vec<i64> {
+        for i in 0..count {
+            let song = SongData {
+                full_file_path: Arc::from(format!("/music/shuffle_{i}.flac").into_boxed_str()),
+                title: Some(Arc::from(format!("Song {i}").into_boxed_str())),
+                ..Default::default()
+            };
+            db.insert_song_full(&song, &SongMetadataExtended::default(), None, vec![], false)
+                .unwrap();
+        }
+        let mut ids: Vec<i64> = db.get_all_songs().unwrap().iter().map(|s| s.id).collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    fn session(order: &[i64], history: &[i64], position: usize) -> ShuffleSession {
+        ShuffleSession {
+            session_id: "sess-test".to_string(),
+            shuffle_order: order.to_vec(),
+            current_position: position,
+            history: history.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_saved_shuffle_session_loads_back_unchanged() {
+        // D26: the first pending song used to be stored at play_order 0 and was
+        // read back as history, so each save/load moved one song to "played".
+        let mut db = Database::new_memory().unwrap();
+        let ids = seed_songs(&mut db, 6);
+        let playlist_id = db.create_playlist("Shuffle", false).unwrap();
+        let saved = session(&[ids[0], ids[1], ids[2], ids[3]], &[ids[4], ids[5]], 2);
+        db.save_shuffle_session(playlist_id, &saved).unwrap();
+
+        let loaded = db.load_shuffle_session(playlist_id).unwrap().unwrap();
+        assert_eq!(loaded.session_id, saved.session_id);
+        assert_eq!(loaded.shuffle_order, saved.shuffle_order);
+        assert_eq!(loaded.history, saved.history);
+    }
+
+    #[test]
+    fn repeated_save_and_load_cycles_do_not_move_pending_songs_into_history() {
+        let mut db = Database::new_memory().unwrap();
+        let ids = seed_songs(&mut db, 3);
+        let playlist_id = db.create_playlist("Shuffle", false).unwrap();
+        let mut current = session(&ids, &[], 0);
+        for _ in 0..5 {
+            db.save_shuffle_session(playlist_id, &current).unwrap();
+            current = db.load_shuffle_session(playlist_id).unwrap().unwrap();
+        }
+        assert_eq!(current.shuffle_order, ids);
+        assert!(current.history.is_empty());
+    }
+
+    #[test]
+    fn a_session_with_an_empty_pending_order_keeps_its_history() {
+        let mut db = Database::new_memory().unwrap();
+        let ids = seed_songs(&mut db, 3);
+        let playlist_id = db.create_playlist("Shuffle", false).unwrap();
+        db.save_shuffle_session(playlist_id, &session(&[], &ids, 3))
+            .unwrap();
+        let loaded = db.load_shuffle_session(playlist_id).unwrap().unwrap();
+        assert!(loaded.shuffle_order.is_empty());
+        assert_eq!(loaded.history, ids);
     }
 }

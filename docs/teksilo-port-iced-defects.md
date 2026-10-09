@@ -40,6 +40,8 @@ Line numbers refer to the code before Wave A (commit `288477a`). Decisions were 
 | D23 | The 75 % RAM hard cap purges on every tick, with no cooldown | **fix (Teksilo)**: the frontend monitor applies a cooldown |
 | D24 | Startup applies the stream settings before the PipeWire clock | **fix (Teksilo)**: the Teksilo restore sets the clock first, like Apply |
 | D25 | Restored compressor intensity and reverb room size wait for a stream rebuild | **fix (Teksilo)**: the Teksilo startup restore applies their derived parameters |
+| D26 | Each shuffle save/load moves one pending song into the history | **fix (both)**, in `src/db` with a regression test |
+| D27 | The M3U import silently drops lines that are not UTF-8 | **fix (both)**: UTF-8 with a Latin-1 fallback, with tests |
 | **No decision needed** | | |
 | D20 | Iced grid navigation y-positions use the unfiltered song count | not applicable |
 | D21 | `widgets::apply_marquee` is never called | not applicable |
@@ -181,6 +183,20 @@ M3U and M3U8 differ only by extension. Durations are truncated with `as i32`.
 - **Where:** the startup restore (`AudoxidyApp::new`, the `dsp_compressor_intensity` and `dsp_reverb_room_size` keys).
 - **Defect:** the restore assigns the two fields directly. It does not call `Compressor::update_intensity_params` or `Reverb::set_room_size`, which compute the parameters the DSP actually uses (ratio, attack, release; the room size). The saved values therefore only take effect after the next stream rebuild or the next change of those controls.
 - **Found by:** Wave B2a, which reproduced it in `frontend::commands::engine_settings::restore_persisted`.
+
+### D26. Each shuffle save/load moves one pending song into the history
+
+- **Where:** `Database::save_shuffle_session` / `load_shuffle_session` (`src/db/database.rs`).
+- **Defect:** the pending shuffle order was stored with `play_order = -(i)`, so its first song got 0. The load reads `play_order >= 0` as history, so every save and reload moved one song from "to play" to "played", and it collided with the first history entry (also 0). After a restart, shuffle could skip a song.
+- **Found by:** Wave B2b.
+- **Fixed:** the pending order is stored from -1 down (`-(i + 1)`), for both UIs. A session saved the old way is ambiguous once and is rewritten correctly by the next save. Pinned by `db::database::shuffle_session_tests::{a_saved_shuffle_session_loads_back_unchanged, repeated_save_and_load_cycles_do_not_move_pending_songs_into_history, a_session_with_an_empty_pending_order_keeps_its_history}`; the first two fail without the fix.
+
+### D27. The M3U import silently drops lines that are not UTF-8
+
+- **Where:** `Scanner::import_m3u` (`src/db/scanner.rs`).
+- **Defect:** the file was read line by line as UTF-8, and `filter_map(|l| l.ok())` dropped every line that was not valid UTF-8 without a word. A Latin-1 `.m3u` (the traditional encoding, and what the Teksilo UI writes since quirk fix #25) lost every entry with a non-ASCII path.
+- **Found by:** Wave B2b, as the import side of D19.
+- **Fixed:** for both UIs, the file is decoded by `decode_playlist_text`: UTF-8 (a BOM is skipped), else Latin-1, which cannot fail. Pinned by `db::scanner::playlist_text_tests::*`, including `import_m3u_reads_a_latin1_playlist_with_accented_paths`.
 
 ## No decision needed
 
