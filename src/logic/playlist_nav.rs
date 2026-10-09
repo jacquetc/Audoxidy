@@ -1089,6 +1089,64 @@ pub fn step_prev(
         .find(|&idx| song_at(groups, idx).is_some_and(|s| s.enabled))
 }
 
+/// Goes back one song, like [`step_prev`] with defects D14 and D15 fixed.
+/// Returns the linear index to load and play; the caller sets the playing
+/// index to the result. [`step_prev`] keeps the original behaviour for the
+/// Iced UI.
+///
+/// - **Shuffle**, with more than one song in the history: the most recent
+///   earlier history entry whose song is still in the list is played. The
+///   current song and every entry skipped on the way (songs that left the
+///   list) are popped from the history, and the position moves back one per
+///   popped entry. If no earlier entry is still in the list, the session is
+///   left as it is and the sequential rule applies. (D15: [`step_prev`] pops
+///   the current song and moves the position back even when the previous
+///   song left the list, then falls back to the sequential rule.)
+/// - **Sequential**: the previous enabled song in playlist order. When there
+///   is none (the playing song is the first enabled one, or nothing plays),
+///   Repeat All wraps to the last enabled song, which can be the playing song
+///   itself. (D14: [`step_prev`] wraps only when nothing plays.)
+pub fn step_prev_fixed(
+    groups: &[PlaylistFolderGroup],
+    playing: Option<usize>,
+    repeat: RepeatMode,
+    shuffle_active: bool,
+    session: Option<&mut ShuffleSession>,
+) -> Option<usize> {
+    if shuffle_active
+        && let Some(session) = session
+        && let Some(current) = session.history.len().checked_sub(1)
+        && current > 0
+    {
+        let earlier = session.history[..current]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(entry, &song_id)| {
+                linear_index_of_song_id(groups, song_id)
+                    .filter(|&idx| song_at(groups, idx).is_some())
+                    .map(|idx| (entry, idx))
+            });
+        if let Some((entry, idx)) = earlier {
+            let popped = current - entry;
+            session.history.truncate(entry + 1);
+            session.current_position = session.current_position.saturating_sub(popped);
+            return Some(idx);
+        }
+    }
+
+    let previous = playing.and_then(|current| {
+        (0..current)
+            .rev()
+            .find(|&idx| song_at(groups, idx).is_some_and(|s| s.enabled))
+    });
+    match previous {
+        Some(idx) => Some(idx),
+        None if repeat == RepeatMode::All => find_last_enabled(groups),
+        None => None,
+    }
+}
+
 /// A new shuffle session over the enabled songs: a Fisher–Yates shuffle of
 /// their ids drawn from `rng`, with the playing song removed from the order
 /// and seeded as the history. The id is `sess-<random u64>`, drawn after the
@@ -1145,6 +1203,22 @@ pub fn activate_shuffle(
         }
         None => *shuffle_active = false,
     }
+}
+
+/// Turns shuffle on with a new session, like [`activate_shuffle`] with defect
+/// D16 fixed: with no enabled song, shuffle is turned off **and the previous
+/// session is dropped**, so a stale order is never kept or saved again.
+/// [`activate_shuffle`] keeps the original behaviour (the previous session is
+/// left as it was) for the Iced UI.
+pub fn activate_shuffle_fixed(
+    groups: &[PlaylistFolderGroup],
+    playing: Option<usize>,
+    shuffle_active: &mut bool,
+    session: &mut Option<ShuffleSession>,
+    rng: &mut fastrand::Rng,
+) {
+    *session = new_shuffle_session(groups, playing, rng);
+    *shuffle_active = session.is_some();
 }
 
 /// Records a song started by hand (double click, Enter) in a shuffle session:
