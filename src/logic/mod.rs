@@ -11,3 +11,13 @@
 //! / `expect()` are only allowed in tests (see `clippy.toml`).
 
 #![deny(warnings, clippy::all, clippy::unwrap_used, clippy::expect_used)]
+
+pub mod audio_settings;
+pub mod eq;
+pub mod marquee;
+pub mod meter;
+pub mod playlist_export;
+pub mod playlist_nav;
+pub mod selection_modifiers;
+pub mod stepper;
+pub mod transport;
