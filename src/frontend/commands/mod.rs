@@ -5,3 +5,6 @@
 //! One module per area lives here (playback, playlist, library, filters,
 //! audio settings, EQ, DSP, mix, meter, files); wave B2 of the Teksilo port
 //! adds them on top of the facade's workers, ports and event hub.
+
+pub mod audio_settings;
+pub mod engine_settings;
