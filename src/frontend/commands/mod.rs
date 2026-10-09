@@ -15,3 +15,5 @@ pub mod filters;
 pub mod library;
 pub mod meter;
 pub mod mix;
+pub mod playback;
+pub mod playlist;
