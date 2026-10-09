@@ -21,12 +21,22 @@ from __future__ import annotations
 
 import collections
 import json
+import os
 import pathlib
 import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE_DIR = ROOT / "tools" / "clippy-baseline"
+
+# The mocks build gets its own target directory so its binary never replaces
+# the real one. With CARGO_TARGET_DIR set (worktrees sharing one target), it
+# goes under that directory instead of under the checkout.
+MOCKS_TARGET_DIR = (
+    str(pathlib.Path(os.environ["CARGO_TARGET_DIR"]) / "mocks")
+    if os.environ.get("CARGO_TARGET_DIR")
+    else "target/mocks"
+)
 
 SETS: dict[str, list[str]] = {
     "default": [],
@@ -36,7 +46,7 @@ SETS: dict[str, list[str]] = {
         "--features",
         "teksilo-mocks",
         "--target-dir",
-        "target/mocks",
+        MOCKS_TARGET_DIR,
     ],
 }
 
