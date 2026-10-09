@@ -19,3 +19,13 @@
 //! / `expect()` are only allowed in tests (see `clippy.toml`).
 
 #![deny(warnings, clippy::all, clippy::unwrap_used, clippy::expect_used)]
+
+pub mod db_worker;
+pub mod error;
+pub mod reply;
+pub mod threading;
+
+pub use db_worker::DbWorker;
+pub use error::FrontendError;
+pub use reply::{Latest, Reply, Ticket, TrackedReply};
+pub use threading::{is_ui_thread, mark_ui_thread};
