@@ -3,6 +3,7 @@ pub mod db;
 #[cfg(feature = "iced-ui")]
 pub mod gui;
 pub mod integrations;
+pub mod logic;
 pub mod utils;
 
 #[cfg(test)]

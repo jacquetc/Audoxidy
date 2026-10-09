@@ -324,7 +324,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
  "wl-clipboard-rs",
  "x11rb",
 ]
@@ -2543,6 +2543,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "generator"
+version = "0.8.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54ade96dc9003043bce7c035c85a9df5a858bfb2039c5a2e6fdf00f324f6c551"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "log",
+ "rustversion",
+ "windows-link",
+ "windows-result 0.4.1",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4284,6 +4299,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "419e0dc8046cb947daa77eb95ae174acfbddb7673b4151f56d1eed8e93fbfaca"
+dependencies = [
+ "cfg-if",
+ "generator",
+ "scoped-tls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "loop9"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5016,6 +5044,7 @@ checksum = "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807"
 dependencies = [
  "bitflags 2.13.1",
  "dispatch2",
+ "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-io-surface",
@@ -7654,7 +7683,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "teksilo"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "teksilo-app",
  "teksilo-async",
@@ -7676,7 +7705,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-app"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "base64",
  "png 0.18.1",
@@ -7698,7 +7727,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-async"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "async-channel 2.5.0",
  "teksilo-app",
@@ -7708,7 +7737,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-automation"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -7719,10 +7748,12 @@ dependencies = [
 
 [[package]]
 name = "teksilo-canvas"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "bytemuck",
  "image-webp",
+ "loom",
+ "parking_lot",
  "png 0.18.1",
  "quick-xml",
  "serde",
@@ -7734,7 +7765,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-core"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -7749,7 +7780,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-data"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "slotmap",
  "teksilo-core",
@@ -7757,7 +7788,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-i18n"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "fixed_decimal",
  "fluent-bundle",
@@ -7780,7 +7811,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-i18n-macros"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "fluent-syntax",
  "proc-macro2",
@@ -7790,7 +7821,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-inspector"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "serde_json",
  "teksilo-app",
@@ -7806,7 +7837,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-macros"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7816,7 +7847,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-parse"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "proc-macro2",
  "syn 3.0.4",
@@ -7824,15 +7855,18 @@ dependencies = [
 
 [[package]]
 name = "teksilo-platform"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "accesskit",
  "accesskit_winit",
  "arboard",
  "async-std",
+ "dispatch2",
  "libc",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "pollster 1.0.1",
  "raw-window-handle",
@@ -7856,7 +7890,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-render"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "bytemuck",
  "pollster 1.0.1",
@@ -7868,7 +7902,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-resources"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7878,7 +7912,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-settings"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "etcetera",
  "fs2",
@@ -7893,7 +7927,7 @@ dependencies = [
 
 [[package]]
 name = "teksilo-text"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "teksilo-canvas",
  "teksilo-tokens",
@@ -7903,14 +7937,14 @@ dependencies = [
 
 [[package]]
 name = "teksilo-tokens"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "teksilo-widgets"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "jiff",
  "open",

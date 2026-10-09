@@ -51,8 +51,8 @@
 # ── Teksilo ──────────────────────────────────────────────────
 #
 # The Teksilo UI (`teksilo-ui` feature) builds against a local checkout of
-# teksilo until 0.16.0 is released; the fixes it needs land there first.
-# Remove this block and bump `teksilo` in Cargo.toml to 0.16.0 once released.
+# teksilo (0.16.0) until 0.16.0 is published on crates.io. Remove this block
+# once it is; Cargo.toml already requires 0.16.0.
 # The checkout must sit next to this repository (`../teksilo`).
 
 [patch.crates-io]

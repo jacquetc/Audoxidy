@@ -15,6 +15,6 @@ edition = "2024"
 publish = false
 
 [dependencies]
-teksilo = { version = "0.15.1", features = ["automation", "async"] }
+teksilo = { version = "0.16.0", features = ["automation", "async"] }
 
 [workspace]
