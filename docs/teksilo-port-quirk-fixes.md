@@ -30,6 +30,9 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 14 | Hidden built-in EQ presets stay hidden across restarts |
 | 15 | Spanish plurals and typos are corrected |
 | 16 | "Eliminar lista" is disabled on system playlists |
+| 17 | Apply and startup resolve "Automatic" sound-server rate and quantum the same way |
+| 18 | Both EQ band sets are saved, the inactive one converted |
+| 19 | The startup restore sets the PipeWire clock before rebuilding the stream |
 
 ---
 
@@ -132,7 +135,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   then, multichannel files play with the default mix.
 - **Teksilo:** the startup restore applies them with the other DSP settings.
 - **Why:** the saved mix should apply to everything played.
-- **Pinned by:** to be filled by the frontend wave (session restore test).
+- **Pinned by:** `frontend::commands::engine_settings::tests::every_persisted_setting_reaches_the_engine` (the startup restore applies the downmix) and `frontend::commands::audio_settings::tests::the_audio_center_state_reads_everything_and_changes_nothing` (opening the configuration tab pushes nothing into the engine).
 
 ## 10. The VU meter can be enabled on a fresh install; its popup stays open
 
@@ -183,7 +186,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:** the hidden list is saved under the new settings key `eq_hidden_builtin_presets`.
   The Iced UI ignores that key.
 - **Why:** a preset the user deleted should stay deleted.
-- **Pinned by:** to be filled by the EQ wave.
+- **Pinned by:** `frontend::commands::eq::tests::deleting_a_builtin_hides_it_across_restarts` and `frontend::commands::eq::tests::restoring_the_default_presets_clears_customs_and_the_hidden_list`; the JSON encoding (names may contain commas) by `frontend::settings::tests::hidden_preset_names_with_commas_survive_the_json_encoding`.
 
 ## 15. Spanish plurals and typos are corrected
 
@@ -217,3 +220,58 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:** the entry is disabled on system playlists.
 - **Why:** the user confirmed a deletion that never happened.
 - **Pinned by:** to be filled by the playlist wave.
+
+## 17. Apply and startup resolve "Automatic" sound-server rate and quantum the same way
+
+- **Iced:** the sound-server clock is resolved by two different rules (defect D18):
+  - Apply (`src/gui/audio_center.rs:1260-1270`): an Automatic rate is the player's selected rate,
+    or none (the server's own) when the player rate is automatic; an Automatic quantum is estimated
+    from the player rate.
+  - Startup (`src/gui/app.rs:609-623`): an Automatic rate is the saved player rate, or 48 kHz when
+    it is automatic; an Automatic quantum is estimated from the resolved system rate, or from
+    48 kHz when the rate is left to the server.
+  - With a fixed system rate of 192 kHz, an Automatic quantum and a 44.1 kHz player, Apply forces
+    a 512-frame quantum and the next startup a 2048-frame one.
+- **Teksilo:** Apply and the startup restore share one rule
+  (`frontend::commands::audio_settings::resolve_system_clock`), the Iced startup rule:
+  - Automatic rate: the rate the player stream opens at, that is the configured player rate, or
+    48 kHz when it is automatic (the rate the engine picks for an automatic stream).
+  - Automatic quantum: 10 ms of graph frames (`logic::audio_settings::estimate_quantum`) at the
+    graph rate, that is the rate forced above, or 48 kHz (the server default) when the rate is
+    left to the server.
+  - The defect's rounding remark (exactly 256 frames rounds up to 512) is kept: no rate the UI
+    offers gives a frame count on a boundary.
+- **Why:** the quantum is counted in frames of the graph, which runs at the system rate, not at the
+  player rate; and "follow the player" should mean the rate the player stream really uses. Using
+  the startup rule also keeps what Iced does on every start, so a database written by either UI
+  gives the same clock at startup.
+- **Pinned by:** `frontend::commands::engine_settings::tests::startup_and_apply_resolve_automatic_with_the_same_rule`, `frontend::commands::audio_settings::tests::automatic_follows_the_player_rate_and_estimates_the_quantum_from_the_graph_rate` and `frontend::commands::audio_settings::tests::no_selectable_rate_lands_on_a_quantum_boundary`.
+
+## 18. Both EQ band sets are saved, the inactive one converted
+
+- **Iced:** `save_eq_settings_to_db` (`src/gui/audio_center.rs:376-388`, through
+  `logic::eq::encode_band_gain_settings`) saves the active gains badly (defect D17):
+  - in 31-band mode, `eq_band_gains_20` gets the first 20 of the 31 gains, which belong to other
+    frequencies;
+  - in 20-band mode, `eq_band_gains_31` is not written at all, so it keeps an older set.
+- **Teksilo:** every EQ save writes both keys. The active set is stored as it is; the other set is
+  converted from it with the log-frequency interpolation of `audio::preset::EqPreset`
+  (`convert_31_to_20` or `convert_20_to_31`), the rule Iced already uses to save and export a
+  preset. At the next startup both band sets of the engine are restored from those keys. The
+  string format (`{:.1}` per band, comma-separated) is unchanged, so the Iced UI reads them.
+- **Why:** after a restart in the other mode, the equalizer should sound like the curve the user
+  set, not like a shifted or stale one.
+- **Pinned by:** `frontend::commands::eq::tests::both_band_sets_are_persisted_with_a_converted_inactive_set`.
+
+## 19. The startup restore sets the PipeWire clock before rebuilding the stream
+
+- **Iced:** `AudoxidyApp::new` rebuilds the stream with the saved device settings
+  (`src/gui/app.rs:557-594`), then forces the PipeWire clock and persists the server configuration
+  (`src/gui/app.rs:596-633`) (defect D24). `system_audio::apply_pipewire_clock` documents that it
+  must run before the stream is built, and Apply follows that order.
+- **Teksilo:** the startup restore (`frontend::commands::engine_settings::restore_persisted`) runs
+  Apply's order: force the clock, wait 250 ms, persist the PipeWire configuration (or persist the
+  PulseAudio one), then rebuild the stream.
+- **Why:** with the clock forced after the stream exists, PipeWire reconfigures the graph under a
+  live stream, which can leave it at the old rate or disconnected from the sink.
+- **Pinned by:** `frontend::commands::engine_settings::tests::the_clock_is_applied_before_the_stream_is_rebuilt`.
