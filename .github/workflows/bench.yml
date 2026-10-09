@@ -8,9 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # See test.yml: the teksilo checkout is needed while `.cargo/config.toml`
-  # patches teksilo to `../teksilo` (until teksilo 0.16.0 is released).
-  TEKSILO_REF: dev
 
 jobs:
   benchmark:
@@ -23,8 +20,6 @@ jobs:
           sudo apt-get update && sudo apt-get install -y
           libasound2-dev libpipewire-0.3-dev libdbus-1-dev libdav1d-dev
           pkg-config libgtk-3-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libxcb1-dev libx11-dev
-      - name: Check out teksilo next to the repository
-        run: git clone --depth 1 --branch "$TEKSILO_REF" https://github.com/ferntech-eu/teksilo ../teksilo
       - name: Run benchmarks
         run: cargo bench --no-run
       - name: Benchmarks build without the Iced UI

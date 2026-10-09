@@ -60,8 +60,7 @@ usvg = "0.46.0"
 walkdir = "2.5.0"
 wide = "1.7.0"
 zbus = "5.13.2"
-# Teksilo UI (opt-in, `teksilo-ui` feature). Built against `../teksilo` through
-# the `[patch.crates-io]` in `.cargo/config.toml` until teksilo 0.16.0 ships.
+# Teksilo UI (opt-in, `teksilo-ui` feature; binary `audoxidy-teksilo`).
 teksilo = { version = "0.16.0", optional = true, features = ["automation", "async"] }
 # One-shot replies from the frontend DB worker, awaited on the UI thread.
 async-channel = { version = "2", optional = true }
