@@ -13,6 +13,10 @@
 //! click resets to [`MixValue::reset_value`]. Those reset values are the Iced
 //! steppers' and differ from the startup defaults for the two fade lengths
 //! (1000 and 2000 ms, against 2000 and 3000 ms when the key is missing).
+//!
+//! [`current`] reads the engine state, so the tab shows the values in effect
+//! (quirk fix 21: on a fresh install the Iced tab shows 1000 and 2000 ms while
+//! the engine fades over 2000 and 3000 ms).
 
 #![warn(missing_docs)]
 
@@ -438,6 +442,19 @@ mod tests {
             assert_eq!(raw(&ctx, keys::CROSSFADE_AUTO_MS).as_deref(), Some("250"));
             assert_eq!(MixValue::FadeInMs.unit(), StepperUnit::Milliseconds);
             assert_eq!(MixValue::RgOffsetRtDb.unit(), StepperUnit::Decibels);
+        });
+    }
+
+    #[test]
+    fn after_a_fresh_install_restore_the_tab_shows_the_fade_lengths_in_effect() {
+        with_timeout(TEST_TIMEOUT, || {
+            let (ctx, _fakes) = context();
+            crate::frontend::commands::engine_settings::restore_persisted(&ctx)
+                .recv_blocking()
+                .unwrap();
+            let state = current(&ctx);
+            assert_eq!(state.mix.fade_in_ms, 2000.0);
+            assert_eq!(state.mix.fade_out_ms, 3000.0);
         });
     }
 

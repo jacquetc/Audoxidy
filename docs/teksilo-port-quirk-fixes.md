@@ -33,6 +33,8 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 17 | Apply and startup resolve "Automatic" sound-server rate and quantum the same way |
 | 18 | Both EQ band sets are saved, the inactive one converted |
 | 19 | The startup restore sets the PipeWire clock before rebuilding the stream |
+| 20 | Cancelling an EQ preset preview restores both band sets |
+| 21 | The volume-and-mix tab shows the fade lengths in effect |
 
 ---
 
@@ -275,3 +277,28 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Why:** with the clock forced after the stream exists, PipeWire reconfigures the graph under a
   live stream, which can leave it at the old rate or disconnected from the sink.
 - **Pinned by:** `frontend::commands::engine_settings::tests::the_clock_is_applied_before_the_stream_is_rebuilt`.
+
+## 20. Cancelling an EQ preset preview restores both band sets
+
+- **Iced:** a click in the Load dialog previews the preset with `apply_eq_preset`, which sets the
+  preamp and **both** band sets (20 and 31). Cancel (`CloseDialog`, `src/gui/app.rs:2163-2176`)
+  restores the preamp and the gains of the **active** set only, from `EqStateBackup`; the other
+  set keeps the previewed preset's gains, which show up after a switch to the other mode.
+- **Teksilo:** the snapshot taken when the dialog opens (`frontend::commands::eq::capture`) holds
+  the preamp, the selected preset and both band sets read from the engine, and Cancel
+  (`frontend::commands::eq::restore`) puts all of them back.
+- **Why:** a cancelled preview should leave the equalizer exactly as it was.
+- **Pinned by:** `frontend::commands::eq::tests::a_cancelled_preview_restores_both_band_sets_the_preamp_and_the_preset`.
+
+## 21. The volume-and-mix tab shows the fade lengths in effect
+
+- **Iced:** on a fresh install (no `vol_fade_in_ms` or `vol_fade_out_ms` key), the startup puts
+  2000 ms and 3000 ms in the engine (`src/gui/app.rs:730-737`), but the Audio Center's own fields
+  start at 1000 ms and 2000 ms (`src/gui/audio_center.rs:270-271`) and are only overwritten from
+  saved keys. The tab shows 1000 and 2000 ms while the engine fades over 2000 and 3000 ms, until a
+  restart after the first change.
+- **Teksilo:** the tab's values come from the engine state (`frontend::commands::mix::current`),
+  so it shows the lengths in effect. The secondary-click reset values stay Iced's (1000 and
+  2000 ms).
+- **Why:** the tab showed values that were not the ones applied.
+- **Pinned by:** `frontend::commands::mix::tests::after_a_fresh_install_restore_the_tab_shows_the_fade_lengths_in_effect`.

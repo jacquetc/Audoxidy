@@ -8,13 +8,15 @@
 //! coalesced writes. The engine calls are quick lock operations, made on the
 //! caller's thread; the database work runs on the database worker.
 //!
-//! Two Teksilo-only changes (see `docs/teksilo-port-quirk-fixes.md`):
+//! Three Teksilo-only changes (see `docs/teksilo-port-quirk-fixes.md`):
 //!
 //! - both `eq_band_gains_20` and `eq_band_gains_31` are written, the inactive
 //!   set converted from the active one with `EqPreset`'s log-frequency
 //!   interpolation (quirk fix 18, Iced defect D17);
 //! - deleting a built-in preset hides it persistently, under
-//!   `eq_hidden_builtin_presets` (quirk fix 14).
+//!   `eq_hidden_builtin_presets` (quirk fix 14);
+//! - cancelling a preset preview restores both band sets, not only the active
+//!   one (quirk fix 20).
 
 #![warn(missing_docs)]
 
