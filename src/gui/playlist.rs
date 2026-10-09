@@ -367,6 +367,13 @@ impl PlaylistManager {
         nav::selected_song_ids(self.active_groups(), &self.selected_idxs)
     }
 
+    /// Song ids targeted by a playlist action (send to a list, delete) on the
+    /// item at `linear_idx`, resolved over the displayed groups (see
+    /// `logic::playlist_nav::action_target_song_ids`).
+    pub fn action_target_song_ids(&self, linear_idx: usize) -> Vec<i64> {
+        nav::action_target_song_ids(self.active_groups(), &self.selected_idxs, linear_idx)
+    }
+
     /// Obtiene el índice lineal de una canción por su song_id de base de datos.
     pub fn get_linear_index_by_song_id(&self, song_id: i64) -> Option<usize> {
         nav::linear_index_of_song_id(self.active_groups(), song_id)
@@ -1378,5 +1385,26 @@ mod tests {
         });
         pm.playing_song_idx = Some(1);
         assert!(pm.get_next_song_ref().is_none());
+    }
+
+    #[test]
+    fn test_action_targets_follow_the_search_results() {
+        // D2 regression: with a search active, send-to and delete target what is shown.
+        let mut songs = vec![
+            make_song(1, "/a.flac"),
+            make_song(2, "/b.flac"),
+            make_song(3, "/c.flac"),
+        ];
+        songs[1].title = "Buscada".into();
+        songs[2].title = "Buscada".into();
+        let mut pm = manager_with_songs(songs);
+        assert_eq!(pm.action_target_song_ids(0), vec![1, 2, 3]);
+        pm.search_query = "buscada".into();
+        pm.apply_filter();
+        // Shown: 0 separator, 1 song 2, 2 song 3.
+        assert_eq!(pm.action_target_song_ids(1), vec![2]);
+        assert_eq!(pm.action_target_song_ids(0), vec![2, 3]);
+        pm.selected_idxs.extend([1, 2]);
+        assert_eq!(pm.action_target_song_ids(2), vec![2, 3]);
     }
 }

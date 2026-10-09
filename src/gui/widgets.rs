@@ -2668,7 +2668,8 @@ where
                 duration_secs,
                 ..
             } => {
-                let composite_id = format!("{}|{}", artist_name, album_hash);
+                let composite_id =
+                    crate::logic::library_groups::album_composite_id(&artist_name, &album_hash);
                 let is_album_selected =
                     manager
                         .selected_items
@@ -2923,7 +2924,8 @@ where
                 .spacing(2)
                 .width(Length::Fill);
 
-                let composite_id = format!("{}|{}", artist_name, album_hash);
+                let composite_id =
+                    crate::logic::library_groups::album_composite_id(&artist_name, &album_hash);
                 let is_album_explicitly_selected =
                     manager
                         .selected_items

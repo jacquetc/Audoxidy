@@ -436,6 +436,66 @@ fn a_selected_separator_expands_to_its_songs_without_duplicates() {
     assert_eq!(selected_song_ids(&g, &set(&[99])), Vec::<i64>::new());
 }
 
+/// [`two_groups`] searched for "keep", which matches songs 2, 4 and 5.
+/// Displayed linear: 0 sep A, 1 s2, 2 sep B, 3 s4, 4 s5.
+fn searched_two_groups() -> (Vec<PlaylistFolderGroup>, Vec<PlaylistFolderGroup>) {
+    let mut g = two_groups();
+    for (gi, si) in [(0, 1), (1, 1), (1, 2)] {
+        g[gi].songs[si].title = "Keep me".into();
+    }
+    let filtered = filter_groups(&g, "keep").unwrap_or_default();
+    (g, filtered)
+}
+
+#[test]
+fn d2_an_action_under_a_search_targets_the_visible_song() {
+    // Before the fix, send-to looked up the song's position in the filtered
+    // group inside the full group: clicking song 2 sent song 1.
+    let (_, shown) = searched_two_groups();
+    let none = set(&[]);
+    assert_eq!(action_target_song_ids(&shown, &none, 1), vec![2]);
+    assert_eq!(action_target_song_ids(&shown, &none, 3), vec![4]);
+    assert_eq!(action_target_song_ids(&shown, &none, 4), vec![5]);
+}
+
+#[test]
+fn d2_a_separator_under_a_search_targets_only_its_visible_songs() {
+    // Before the fix, deleting separator B removed song 3 too, which the
+    // search hides.
+    let (_, shown) = searched_two_groups();
+    assert_eq!(action_target_song_ids(&shown, &set(&[]), 2), vec![4, 5]);
+    assert_eq!(action_target_song_ids(&shown, &set(&[2]), 2), vec![4, 5]);
+    assert_eq!(action_target_song_ids(&shown, &set(&[]), 0), vec![2]);
+}
+
+#[test]
+fn d2_a_clicked_item_in_the_selection_targets_the_whole_visible_selection() {
+    let (_, shown) = searched_two_groups();
+    let selection = set(&[4, 0]);
+    assert_eq!(action_target_song_ids(&shown, &selection, 4), vec![2, 5]);
+    // A click outside the selection targets only the clicked item.
+    assert_eq!(action_target_song_ids(&shown, &selection, 3), vec![4]);
+    // A separator selected with one of its songs counts each song once.
+    assert_eq!(action_target_song_ids(&shown, &set(&[2, 4]), 2), vec![4, 5]);
+}
+
+#[test]
+fn d2_without_a_search_the_targets_are_unchanged() {
+    let g = two_groups();
+    let none = set(&[]);
+    assert_eq!(action_target_song_ids(&g, &none, 1), vec![1]);
+    assert_eq!(action_target_song_ids(&g, &none, 5), vec![4]);
+    assert_eq!(action_target_song_ids(&g, &none, 3), vec![3, 4, 5]);
+    assert_eq!(action_target_song_ids(&g, &none, 99), Vec::<i64>::new());
+    let selection = set(&[6, 0]);
+    assert_eq!(action_target_song_ids(&g, &selection, 6), vec![1, 2, 5]);
+    assert_eq!(action_target_song_ids(&g, &selection, 4), vec![3]);
+    assert_eq!(
+        action_target_song_ids(&g, &selection, 6),
+        selected_song_ids(&g, &selection)
+    );
+}
+
 // ------------------------------------------------------------
 // Collapsing
 // ------------------------------------------------------------
@@ -1005,6 +1065,130 @@ fn a_reshuffle_with_nothing_enabled_turns_shuffle_off_and_plays_nothing() {
     assert!(!shuffle);
     // The previous session is left untouched.
     assert_eq!(sess.map(|s| s.session_id), Some("s1".to_string()));
+}
+
+/// Song 1 listed twice: its first copy (group A, item 1) is disabled and its
+/// second copy (group B, item 11) is enabled. Song 2 is disabled.
+/// Linear: 0 sep A, 1 s1 (off), 2 s2 (off), 3 sep B, 4 s1 copy (on).
+fn duplicate_with_disabled_first_copy() -> Vec<PlaylistFolderGroup> {
+    let mut copy = song(1, true);
+    copy.item_id = 11;
+    vec![
+        group(10, vec![song(1, false), song(2, false)]),
+        group(20, vec![copy]),
+    ]
+}
+
+#[test]
+fn the_enabled_copy_of_a_song_is_found_when_its_first_copy_is_disabled() {
+    let g = duplicate_with_disabled_first_copy();
+    assert_eq!(linear_index_of_song_id(&g, 1), Some(1));
+    assert_eq!(enabled_linear_index_of_song_id(&g, 1), Some(4));
+    assert_eq!(enabled_linear_index_of_song_id(&g, 2), None);
+    // When the first copy is enabled, it is the one found.
+    let g = two_groups();
+    assert_eq!(enabled_linear_index_of_song_id(&g, 4), Some(5));
+}
+
+#[test]
+fn d1_shuffle_plays_the_enabled_copy_of_a_song_whose_first_copy_is_disabled() {
+    let g = duplicate_with_disabled_first_copy();
+    let sess = session(&[1], 0, &[]);
+    assert_eq!(
+        peek_next(&g, None, RepeatMode::Off, true, Some(&sess)),
+        NextStep::Shuffle {
+            linear_idx: 4,
+            song_id: 1,
+            next_position: 1
+        }
+    );
+    let next = next_song_ref(&g, Some(2), RepeatMode::Off, true, Some(&sess));
+    assert_eq!(next.map(|s| s.item_id), Some(11));
+}
+
+#[test]
+fn d1_repeat_all_reshuffle_plays_the_enabled_copy_instead_of_recursing() {
+    // Before the fix, every re-shuffle resolved song 1 to its disabled first
+    // copy, so `advance_next` re-shuffled until the stack overflowed.
+    let mut rng = fastrand::Rng::with_seed(5);
+    let g = duplicate_with_disabled_first_copy();
+    let (mut playing, mut shuffle) = (Some(2), true);
+    let mut sess = Some(session(&[1], 1, &[1]));
+    let target = advance_next(
+        &g,
+        &mut playing,
+        RepeatMode::All,
+        &mut shuffle,
+        &mut sess,
+        &mut rng,
+    );
+    assert_eq!(target, Some(4));
+    assert_eq!(playing, Some(4));
+    assert!(shuffle);
+    let s = sess.unwrap_or_else(|| session(&[], 0, &[]));
+    assert_ne!(s.session_id, "s1");
+    assert_eq!(s.shuffle_order, [1]);
+    assert_eq!(s.current_position, 1);
+}
+
+#[test]
+fn d1_repeat_all_keeps_reshuffling_and_playing_enabled_copies() {
+    let mut rng = fastrand::Rng::with_seed(11);
+    let mut g = duplicate_with_disabled_first_copy();
+    let mut copy = song(2, true);
+    copy.item_id = 12;
+    g[1].songs.push(copy); // Linear 5: song 2's enabled copy.
+    let (mut playing, mut shuffle, mut sess) = (None, false, None);
+    activate_shuffle(&g, playing, &mut shuffle, &mut sess, &mut rng);
+    for round in 0..20 {
+        let preview =
+            next_song_ref(&g, playing, RepeatMode::All, shuffle, sess.as_ref()).map(|s| s.item_id);
+        let target = advance_next(
+            &g,
+            &mut playing,
+            RepeatMode::All,
+            &mut shuffle,
+            &mut sess,
+            &mut rng,
+        );
+        let played = target.and_then(|idx| song_at(&g, idx));
+        assert!(
+            played.is_some_and(|s| s.enabled),
+            "round {round}: {target:?}"
+        );
+        // Whenever the preload knows the next song, it is the one played.
+        if playing.is_some() && preview.is_some() {
+            assert_eq!(preview, played.map(|s| s.item_id), "round {round}");
+        }
+        assert!(shuffle);
+    }
+}
+
+#[test]
+fn d1_nothing_enabled_returns_no_next_without_looping() {
+    let mut rng = fastrand::Rng::with_seed(3);
+    let mut g = duplicate_with_disabled_first_copy();
+    g[1].songs[0].enabled = false;
+    // An order that still names the (now disabled) songs.
+    for order in [&[1, 2, 1][..], &[][..]] {
+        let (mut playing, mut shuffle) = (Some(4), true);
+        let mut sess = Some(session(order, 0, &[]));
+        assert_eq!(
+            peek_next(&g, playing, RepeatMode::All, true, sess.as_ref()),
+            NextStep::Reshuffle
+        );
+        let target = advance_next(
+            &g,
+            &mut playing,
+            RepeatMode::All,
+            &mut shuffle,
+            &mut sess,
+            &mut rng,
+        );
+        assert_eq!(target, None, "order {order:?}");
+        assert_eq!(playing, Some(4));
+        assert!(!shuffle);
+    }
 }
 
 #[test]

@@ -23,7 +23,8 @@ use std::sync::Arc;
 pub enum LibraryListItem {
     /// An artist header, by group name.
     Artist(String),
-    /// An album, by composite id `"{artist}|{album_hash}"`.
+    /// An album, by composite id `"{artist}|{album_hash}"` (see
+    /// [`album_composite_id`](crate::logic::library_groups::album_composite_id)).
     Album(String),
     /// A song, by database id.
     Song(i64),

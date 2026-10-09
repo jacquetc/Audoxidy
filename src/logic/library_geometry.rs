@@ -14,6 +14,7 @@
 //! plus a 10 px gap.
 
 use crate::db::database::SongData;
+use crate::logic::id_codec;
 use crate::logic::library_groups::{AlbumEntry, ArtistGroup, UNKNOWN_ALBUM, album_composite_id};
 use crate::logic::library_selection::LibraryListItem;
 use std::collections::{HashMap, HashSet};
@@ -726,8 +727,9 @@ pub fn list_items(
 ///
 /// - Artist: the header of the first artist with that name.
 /// - Album: the header of the first album with that hash in the first artist
-///   with the id's artist name. The id is split on `|`; the first two parts
-///   are used. The album is found even when its artist is collapsed.
+///   with the id's artist name. The id is split into its parts with
+///   [`id_codec::split_parts`]; the first two are used. The album is found
+///   even when its artist is collapsed.
 /// - Song: the first row of that song in an expanded album of an expanded artist.
 pub fn item_y_range(
     item: &LibraryListItem,
@@ -742,7 +744,7 @@ pub fn item_y_range(
             .find(|va| va.artist_name == *name)
             .map(|va| (va.top_y, metrics.artist_header_h)),
         LibraryListItem::Album(composite_id) => {
-            let mut parts = composite_id.split('|');
+            let mut parts = id_codec::split_parts(composite_id).into_iter();
             let (artist_name, album_hash) = (parts.next()?, parts.next()?);
             let va = artists.iter().find(|va| va.artist_name == artist_name)?;
             let mut current_y = va.top_y + metrics.artist_header_h;
@@ -1308,6 +1310,52 @@ mod tests {
             Some((224.0, 32.0)),
             "only the first two parts of the id are used"
         );
+    }
+
+    #[test]
+    fn d4_album_ids_with_pipes_in_the_artist_or_album_stay_distinct() {
+        // Without escaping, artist "A|B" + album "X" and artist "A" + album
+        // "B|X" both gave the id `A|B|X`, and the y lookup split it wrongly.
+        let songs = vec![
+            song(1, "A|B", Some("X")),
+            song(2, "A|B", Some("Y|Z")),
+            song(3, "A", Some("B|X")),
+        ];
+        let albums = vec![cached("X", "X", "A|B")];
+        let groups = group_by_artist(&songs);
+        let mode = LibraryViewMode::SimpleList;
+        let a_bx = album_composite_id("A", "B|X");
+        let ab_x = album_composite_id("A|B", "X");
+        assert_ne!(a_bx, ab_x);
+        let collapsed: HashSet<String> = [a_bx.clone()].into_iter().collect();
+        let (_, artists) =
+            build_view_structure(&groups, Some(&albums), &HashSet::new(), &collapsed, mode);
+
+        assert_eq!(album_id_for_song(&artists, 3), Some(a_bx.clone()));
+        assert_eq!(album_id_for_song(&artists, 1), Some(ab_x.clone()));
+        assert_eq!(
+            album_id_for_song(&artists, 2),
+            Some(album_composite_id("A|B", "Y|Z"))
+        );
+        // Only the album collapsed by its id is collapsed.
+        let rects = list_item_rects(&artists, &collapsed, mode, 1.0);
+        assert!(
+            !rects
+                .iter()
+                .any(|(item, _)| *item == LibraryListItem::Song(3))
+        );
+        assert!(
+            rects
+                .iter()
+                .any(|(item, _)| *item == LibraryListItem::Song(1))
+        );
+        for (item, rect) in rects {
+            assert_eq!(
+                item_y_range(&item, &artists, &collapsed, mode),
+                Some((rect.y, rect.height)),
+                "{item:?}"
+            );
+        }
     }
 
     #[test]

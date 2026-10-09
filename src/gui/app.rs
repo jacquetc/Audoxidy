@@ -2929,7 +2929,9 @@ impl AudoxidyApp {
                                 if let Some(album_entry) =
                                     self.library_manager.cached_albums.as_ref().and_then(|all| {
                                         all.iter().find(|a| {
-                                            (format!("{}|{}", a.artist, a.id) == album_id)
+                                            (crate::logic::library_groups::album_composite_id(
+                                                &a.artist, &a.id,
+                                            ) == album_id)
                                                 || (a.id == album_id)
                                         })
                                     })
@@ -2954,9 +2956,10 @@ impl AudoxidyApp {
 
                         // Fallback a Base de Datos: Si no está en caché o el GC limpió la RAM
                         if !found_in_cache {
-                            if let Some(pos) = album_id.find('|') {
-                                let artist = &album_id[..pos];
-                                let hash = &album_id[pos + 1..];
+                            if let Some((artist, hash)) =
+                                crate::logic::library_groups::parse_album_composite_id(&album_id)
+                            {
+                                let (artist, hash) = (artist.as_str(), hash.as_str());
                                 // db-lock: solo lectura — refresco best-effort, se omite si el lock falla
                                 if let Ok(db) = self.database.lock() {
                                     if let Ok(songs) =
@@ -3772,7 +3775,8 @@ impl AudoxidyApp {
                     let alb_name = song.album.as_deref().unwrap_or("Desconocido");
                     if let Some(hash) = album_hash_map.get(&(art.to_string(), alb_name.to_string()))
                     {
-                        let composite_id = format!("{}|{}", art, hash);
+                        let composite_id =
+                            crate::logic::library_groups::album_composite_id(art, hash);
                         if sel_albums.contains(&composite_id) {
                             ids_to_delete_set.insert(song.id);
                         }
@@ -3955,40 +3959,9 @@ impl AudoxidyApp {
                 let db_arc = self.database.clone();
                 let active_playlist_id = self.playlist_manager.active_playlist_id;
 
-                // Si el índice está en la selección actual, eliminamos todo lo seleccionado
-                let target_songs = if self.playlist_manager.selected_idxs.contains(&linear_idx) {
-                    self.playlist_manager.get_selected_song_ids()
-                } else {
-                    // Si no, eliminamos solo este elemento (ya sea canción o carpeta completa)
-                    let mut ids = Vec::new();
-                    if let Some(item_info) = self
-                        .playlist_manager
-                        .get_item_info_at_linear_index(linear_idx)
-                    {
-                        match item_info {
-                            crate::gui::playlist::PlaylistItemType::Song(g_idx, s_idx, _) => {
-                                if let Some(group) =
-                                    self.playlist_manager.active_groups().get(g_idx)
-                                {
-                                    if let Some(song_ref) = group.songs.get(s_idx) {
-                                        ids.push(song_ref.song_id);
-                                    }
-                                }
-                            }
-                            crate::gui::playlist::PlaylistItemType::Separator(_, anchor) => {
-                                if let Some(group) = self
-                                    .playlist_manager
-                                    .groups
-                                    .iter()
-                                    .find(|g| g.first_item_id == anchor)
-                                {
-                                    ids.extend(group.songs.iter().map(|s| s.song_id));
-                                }
-                            }
-                        }
-                    }
-                    ids
-                };
+                // Toda la selección si el índice está en ella; si no, solo ese
+                // elemento. Se resuelve sobre lo que se ve (búsqueda incluida).
+                let target_songs = self.playlist_manager.action_target_song_ids(linear_idx);
 
                 if !target_songs.is_empty() {
                     return Task::batch(vec![
@@ -4088,45 +4061,7 @@ impl AudoxidyApp {
             Message::PlaylistSendToNewList(linear_idx) => {
                 self.focus = AppFocus::Playlist;
                 self.context_menu = None;
-                let target_songs = if self.playlist_manager.selected_idxs.contains(&linear_idx) {
-                    self.playlist_manager.get_selected_song_ids()
-                } else {
-                    let mut ids = Vec::new();
-                    if let Some(item_info) = self
-                        .playlist_manager
-                        .get_item_info_at_linear_index(linear_idx)
-                    {
-                        match item_info {
-                            crate::gui::playlist::PlaylistItemType::Song(
-                                _folder,
-                                local_idx,
-                                anchor,
-                            ) => {
-                                if let Some(group) = self
-                                    .playlist_manager
-                                    .groups
-                                    .iter()
-                                    .find(|g| g.first_item_id == anchor)
-                                {
-                                    if let Some(song_ref) = group.songs.get(local_idx) {
-                                        ids.push(song_ref.song_id);
-                                    }
-                                }
-                            }
-                            crate::gui::playlist::PlaylistItemType::Separator(_folder, anchor) => {
-                                if let Some(group) = self
-                                    .playlist_manager
-                                    .groups
-                                    .iter()
-                                    .find(|g| g.first_item_id == anchor)
-                                {
-                                    ids.extend(group.songs.iter().map(|s| s.song_id));
-                                }
-                            }
-                        }
-                    }
-                    ids
-                };
+                let target_songs = self.playlist_manager.action_target_song_ids(linear_idx);
                 self.update(Message::OpenDialog(ActiveDialog::CreatePlaylist {
                     name: "".to_string(),
                     pending_add_songs: target_songs,
@@ -4138,45 +4073,7 @@ impl AudoxidyApp {
                 self.context_menu = None;
                 let db_arc = self.database.clone();
 
-                let target_songs = if self.playlist_manager.selected_idxs.contains(&linear_idx) {
-                    self.playlist_manager.get_selected_song_ids()
-                } else {
-                    let mut ids = Vec::new();
-                    if let Some(item_info) = self
-                        .playlist_manager
-                        .get_item_info_at_linear_index(linear_idx)
-                    {
-                        match item_info {
-                            crate::gui::playlist::PlaylistItemType::Song(
-                                _folder,
-                                local_idx,
-                                anchor,
-                            ) => {
-                                if let Some(group) = self
-                                    .playlist_manager
-                                    .groups
-                                    .iter()
-                                    .find(|g| g.first_item_id == anchor)
-                                {
-                                    if let Some(song_ref) = group.songs.get(local_idx) {
-                                        ids.push(song_ref.song_id);
-                                    }
-                                }
-                            }
-                            crate::gui::playlist::PlaylistItemType::Separator(_folder, anchor) => {
-                                if let Some(group) = self
-                                    .playlist_manager
-                                    .groups
-                                    .iter()
-                                    .find(|g| g.first_item_id == anchor)
-                                {
-                                    ids.extend(group.songs.iter().map(|s| s.song_id));
-                                }
-                            }
-                        }
-                    }
-                    ids
-                };
+                let target_songs = self.playlist_manager.action_target_song_ids(linear_idx);
 
                 if !target_songs.is_empty() {
                     return Task::perform(
@@ -6240,7 +6137,11 @@ impl AudoxidyApp {
                                     .find(|a| a.title == album_name && a.artist == artist_name)
                                 {
                                     let hash_id = album_info.id.clone();
-                                    let composite_id = format!("{}|{}", artist_name, hash_id);
+                                    let composite_id =
+                                        crate::logic::library_groups::album_composite_id(
+                                            artist_name,
+                                            &hash_id,
+                                        );
 
                                     if self.library_manager.expanded_album.as_deref()
                                         != Some(&composite_id)
@@ -6272,7 +6173,10 @@ impl AudoxidyApp {
                                         let mut row_h = 252.0;
                                         let mut _has_expanded_here = false;
                                         for a in chunk {
-                                            let comp = format!("{}|{}", a.artist, a.id);
+                                            let comp =
+                                                crate::logic::library_groups::album_composite_id(
+                                                    &a.artist, &a.id,
+                                                );
                                             if self.library_manager.expanded_album.as_deref()
                                                 == Some(&comp)
                                             {
@@ -6381,7 +6285,10 @@ impl AudoxidyApp {
                                             a.title == album_name && a.artist == artist_name
                                         }) {
                                             let composite_id =
-                                                format!("{}|{}", artist_name, album_info.id);
+                                                crate::logic::library_groups::album_composite_id(
+                                                    &artist_name,
+                                                    &album_info.id,
+                                                );
                                             self.library_manager
                                                 .collapsed_albums
                                                 .remove(&composite_id);

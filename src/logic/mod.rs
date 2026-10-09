@@ -15,6 +15,7 @@
 pub mod audio_settings;
 pub mod eq;
 pub mod filter_index;
+pub mod id_codec;
 pub mod library_geometry;
 pub mod library_groups;
 pub mod library_selection;
