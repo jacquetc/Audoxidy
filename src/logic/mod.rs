@@ -11,3 +11,10 @@
 //! / `expect()` are only allowed in tests (see `clippy.toml`).
 
 #![deny(warnings, clippy::all, clippy::unwrap_used, clippy::expect_used)]
+
+pub mod filter_index;
+pub mod library_geometry;
+pub mod library_groups;
+pub mod library_selection;
+pub mod library_sort;
+pub mod selection_modifiers;

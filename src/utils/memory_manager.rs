@@ -230,6 +230,7 @@ impl MemoryManager {
     }
 
     /// Ejecuta la secuencia de purga global notificando a la App
+    #[cfg(feature = "iced-ui")]
     pub fn execute_global_purge() -> iced::Task<crate::gui::app::Message> {
         iced::Task::done(crate::gui::app::Message::GlobalMemoryPurge)
     }
