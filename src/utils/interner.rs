@@ -20,7 +20,7 @@ fn check_and_purge() {
     }
 }
 
-/// Devuelve un puntero Arc<str> a la cadena proporcionada.
+/// Devuelve un puntero `Arc<str>` a la cadena proporcionada.
 /// Optimizado para guardar la cadena una sola vez en memoria (HashSet de Arcs).
 /// Auto-purga cuando la caché excede ~10 MB para prevenir OOM.
 pub fn intern_string(s: &str) -> std::sync::Arc<str> {

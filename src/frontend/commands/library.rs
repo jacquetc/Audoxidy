@@ -107,7 +107,7 @@ pub fn album_songs(ctx: &AppContext, artist: &str, hash: &str) -> Reply<Vec<Arc<
 }
 
 /// The songs of an album given its composite id (`"{artist}|{hash}"`, see
-/// [`album_composite_id`]).
+/// [`album_composite_id`](crate::logic::library_groups::album_composite_id)).
 ///
 /// An id that does not parse is taken as a bare album hash, as in the Iced
 /// UI.
