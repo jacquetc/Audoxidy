@@ -39,6 +39,7 @@ Line numbers refer to the code before Wave A (commit `288477a`). Decisions were 
 | D22 | Clearing the sort empties the expanded grid album | **fix (Teksilo)**: the Teksilo grid detail panel loads an album's songs from its parsed (artist, hash) |
 | D23 | The 75 % RAM hard cap purges on every tick, with no cooldown | **fix (Teksilo)**: the frontend monitor applies a cooldown |
 | D24 | Startup applies the stream settings before the PipeWire clock | **fix (Teksilo)**: the Teksilo restore sets the clock first, like Apply |
+| D25 | Restored compressor intensity and reverb room size wait for a stream rebuild | **fix (Teksilo)**: the Teksilo startup restore applies their derived parameters |
 | **No decision needed** | | |
 | D20 | Iced grid navigation y-positions use the unfiltered song count | not applicable |
 | D21 | `widgets::apply_marquee` is never called | not applicable |
@@ -174,6 +175,12 @@ M3U and M3U8 differ only by extension. Durations are truncated with `as i32`.
 - **Where:** `AudoxidyApp::new` (`src/gui/app.rs`, roughly lines 680-821 before Wave A).
 - **Defect:** startup rebuilds the stream with the saved device settings first, and applies the PipeWire clock (rate and quantum) afterwards. `system_audio::apply_pipewire_clock` documents that it must run before the stream is built, and the Audio Center's Apply follows that order. At startup the stream may therefore open at the old server rate.
 - **Found by:** Wave B1.
+
+### D25. Restored compressor intensity and reverb room size wait for a stream rebuild
+
+- **Where:** the startup restore (`AudoxidyApp::new`, the `dsp_compressor_intensity` and `dsp_reverb_room_size` keys).
+- **Defect:** the restore assigns the two fields directly. It does not call `Compressor::update_intensity_params` or `Reverb::set_room_size`, which compute the parameters the DSP actually uses (ratio, attack, release; the room size). The saved values therefore only take effect after the next stream rebuild or the next change of those controls.
+- **Found by:** Wave B2a, which reproduced it in `frontend::commands::engine_settings::restore_persisted`.
 
 ## No decision needed
 
