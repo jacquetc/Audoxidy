@@ -24,6 +24,8 @@ pub mod db_worker;
 pub mod error;
 pub mod events;
 pub mod reply;
+#[cfg(any(test, feature = "teksilo-mocks"))]
+pub mod test_fixtures;
 pub mod threading;
 
 pub use db_worker::DbWorker;
