@@ -52,7 +52,7 @@
 2	src/db/scanner.rs	clippy::is_digit_ascii_radix
 2	src/db/scanner.rs	clippy::lines_filter_map_ok
 2	src/db/scanner.rs	clippy::unused_enumerate_index
-176	src/gui/app.rs	clippy::collapsible_if
+170	src/gui/app.rs	clippy::collapsible_if
 2	src/gui/app.rs	clippy::collapsible_match
 26	src/gui/app.rs	clippy::explicit_auto_deref
 6	src/gui/app.rs	clippy::if_same_then_else
