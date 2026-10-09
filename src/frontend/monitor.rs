@@ -27,11 +27,14 @@
 //! - **Housekeeping** (Iced's `Tick`, every 500 ms while playing or scanning,
 //!   every 5 s otherwise): it logs the RAM, underrun and latency metrics, and
 //!   runs the memory-purge triggers: the system RAM hard cap, the 60 s timer,
-//!   the player RAM limit with its 10 s cooldown, and the purge 40 s after a
-//!   scan ends. The timer and RAM-limit purges wait while a scan runs or a
+//!   the player RAM limit, and the purge 40 s after a scan ends. The two RAM
+//!   purges share one 10 s cooldown: Iced gives it to the RAM limit only and
+//!   purges on every tick while the hard cap is exceeded (quirk fix 26, Iced
+//!   defect D23). The timer and RAM-limit purges wait while a scan runs or a
 //!   preload is in its safety window. Each purge publishes
 //!   `Maintenance::PurgeRequested` for the UI's caches and queues the backend
-//!   part on the engine worker.
+//!   part on the engine worker ([`queue_backend_purge`]), which also forgets
+//!   the preload the purge dropped, so that the next track is preloaded again.
 
 #![warn(missing_docs)]
 
@@ -41,7 +44,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 
-use super::engine_worker::EngineWorker;
+use super::engine_worker::{EngineWorker, PurgeOutcome};
 use super::error::FrontendError;
 use super::events::{
     Event, EventHub, LibraryEvent, MaintenanceEvent, PlaybackEvent, PlaybackSnapshot, PurgeReason,
@@ -49,6 +52,7 @@ use super::events::{
 };
 use super::ports::{MediaControlsPort, PlayerPort};
 use super::preload::{PreloadSnapshot, PreloadState};
+use super::reply::Reply;
 use super::threading::WorkerThread;
 use crate::audio::engine::{AudioState, LATENCY_PEAK_US, UNDERRUNS};
 use crate::integrations::control::ExternalControlEvent;
@@ -364,14 +368,20 @@ fn diff_playback(
 
 /// Iced's purge triggers, in its order: the hard cap first, then the timer
 /// and the RAM limit (both held back during a scan or the preload window),
-/// then the post-scan purge. At most one purge per housekeeping pass.
+/// then the post-scan purge. At most one purge per housekeeping pass. The hard
+/// cap and the RAM limit share one cooldown.
 fn purge_trigger(
     state: &mut MonitorState,
     inputs: &MonitorInputs,
     sample: &MemorySample,
 ) -> Option<PurgeReason> {
     let now = inputs.unix_secs;
-    if sample.system_over_hard_cap {
+    // The hard cap ignores the scan and the preload window, as in Iced, but
+    // not the RAM cooldown (quirk fix 26, Iced defect D23).
+    if let Some(accepted_at) =
+        ram_purge_decision(sample.system_over_hard_cap, now, state.last_ram_purge_secs)
+    {
+        state.last_ram_purge_secs = accepted_at;
         return Some(PurgeReason::RamHardCap);
     }
 
@@ -406,6 +416,35 @@ fn purge_trigger(
         return Some(PurgeReason::ScanFinished);
     }
     None
+}
+
+/// Queues the backend part of the memory purge on the engine worker
+/// ([`EngineWorker::run_backend_purge`]), then forgets the pending preload in
+/// `preload`.
+///
+/// The purge frees the preloaded track. Without forgetting it, the playback
+/// commands would still count the next track as preloaded and never preload
+/// it again, so the transition would not be gapless (quirk fix 26). Iced keeps
+/// that bookkeeping on purpose, because its hard cap purged on every tick and
+/// a re-created preload would be dropped again at once; with the hard cap's
+/// cooldown, a preload re-created here lives at least 10 s. The
+/// bookkeeping is cleared after the purge, on the same worker; a preload the
+/// commands record in between is simply requested again, which the engine
+/// ignores for a track already preloaded. The reply is the buffer purge's
+/// outcome.
+pub fn queue_backend_purge(
+    engine: &EngineWorker,
+    preload: &Arc<PreloadState>,
+) -> Reply<PurgeOutcome> {
+    let outcome = engine.run_backend_purge();
+    let preload = Arc::clone(preload);
+    let _forgotten = engine.run(move |_| {
+        if preload.snapshot().is_active() {
+            preload.clear();
+        }
+        Ok(())
+    });
+    outcome
 }
 
 /// The current wall clock in UNIX seconds (0 if the clock is before 1970).
@@ -566,7 +605,7 @@ fn run_monitor(deps: MonitorDeps, stop: &crossbeam::channel::Receiver<()>) {
                 }
                 MonitorAction::BackendPurge => {
                     tracing::debug!("Audoxidy GC: Purging Memory (Ghost Mode)");
-                    let _ = deps.engine.run_backend_purge();
+                    let _ = queue_backend_purge(&deps.engine, &deps.preload);
                 }
                 MonitorAction::LogMetrics(sample) => log_metrics(&sample),
             }

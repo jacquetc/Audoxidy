@@ -373,6 +373,108 @@ fn the_ram_hard_cap_purges_at_once_even_during_a_scan_or_a_preload() {
 }
 
 #[test]
+fn d23_the_ram_hard_cap_purges_at_most_every_ten_seconds() {
+    let t0 = Instant::now();
+    let mut state = MonitorState::new(config(), T0);
+    let over = MemorySample {
+        system_over_hard_cap: true,
+        ..quiet()
+    };
+    let at = |secs: u64| with_memory(playing(), T0 + secs, over.clone());
+    // Iced purged on every tick while over the cap.
+    assert_eq!(
+        purges(&poll_once(&mut state, t0, &at(1))),
+        ["Purge(RamHardCap)"]
+    );
+    for secs in 2..11 {
+        let output = poll_once(&mut state, t0, &at(secs));
+        assert!(
+            purges(&output).is_empty(),
+            "still in the cooldown at {secs} s"
+        );
+        assert!(!output.actions.contains(&MonitorAction::BackendPurge));
+    }
+    assert_eq!(
+        purges(&poll_once(&mut state, t0, &at(11))),
+        ["Purge(RamHardCap)"]
+    );
+}
+
+#[test]
+fn the_ram_hard_cap_and_the_player_ram_limit_share_one_cooldown() {
+    let t0 = Instant::now();
+    let mut state = MonitorState::new(config(), T0);
+    let hard_cap = MemorySample {
+        system_over_hard_cap: true,
+        ..quiet()
+    };
+    let app_over = MemorySample {
+        app_over_limit: true,
+        ..quiet()
+    };
+    assert_eq!(
+        purges(&poll_once(
+            &mut state,
+            t0,
+            &with_memory(paused(), T0 + 1, hard_cap)
+        )),
+        ["Purge(RamHardCap)"]
+    );
+    assert!(
+        purges(&poll_once(
+            &mut state,
+            t0,
+            &with_memory(paused(), T0 + 6, app_over.clone())
+        ))
+        .is_empty()
+    );
+    assert_eq!(
+        purges(&poll_once(
+            &mut state,
+            t0,
+            &with_memory(paused(), T0 + 11, app_over)
+        )),
+        ["Purge(RamLimit)"]
+    );
+}
+
+#[test]
+fn the_backend_purge_forgets_the_preload_it_dropped() {
+    with_timeout(TEST_TIMEOUT, || {
+        let player = Arc::new(FakePlayer::new());
+        let engine = EngineWorker::new(player.clone(), Arc::new(FakeSystemAudio::new())).unwrap();
+        let preload = Arc::new(PreloadState::new());
+        let track = TrackRequest {
+            path: "b.flac".to_string(),
+            ..TrackRequest::default()
+        };
+        player.preload_next(&track, ReplayGains::default()).unwrap();
+        preload.mark_preloaded("b.flac");
+
+        queue_backend_purge(&engine, &preload)
+            .recv_blocking()
+            .unwrap();
+        engine.run(|_| Ok(())).recv_blocking().unwrap();
+
+        assert_eq!(player.preloaded_path(), None);
+        assert_eq!(
+            preload.preloaded_next_path(),
+            None,
+            "the next track gets preloaded again"
+        );
+
+        // Without a pending preload, the 20 s window after a track change stays.
+        preload.mark_track_advanced(T0);
+        queue_backend_purge(&engine, &preload)
+            .recv_blocking()
+            .unwrap();
+        engine.run(|_| Ok(())).recv_blocking().unwrap();
+        assert_eq!(preload.finished_at(), Some(T0));
+        assert!(engine.shutdown(TEST_TIMEOUT));
+    });
+}
+
+#[test]
 fn the_timer_purge_runs_every_sixty_seconds() {
     let t0 = Instant::now();
     let mut state = MonitorState::new(config(), T0);

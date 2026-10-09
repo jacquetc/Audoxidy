@@ -176,6 +176,61 @@ impl AudioManager {
         )
     }
 
+    /// Loads and decodes an audio file with the ReplayGain values given.
+    ///
+    /// The same as [`AudioManager::load_file`], except that the gains are used
+    /// exactly as given: when both are `None` the track simply has no
+    /// ReplayGain, and the database is never queried. The caller fetches the
+    /// gains itself (the Teksilo facade does it on its database worker).
+    #[allow(clippy::too_many_arguments)]
+    pub fn load_file_with_gains(
+        &self,
+        path: &str,
+        title: impl Into<String>,
+        artist: impl Into<String>,
+        album: impl Into<String>,
+        cover_path: Option<String>,
+        track_gain: Option<f64>,
+        album_gain: Option<f64>,
+    ) -> Result<(), AudioError> {
+        self.engine.decode_file(
+            path,
+            title.into(),
+            artist.into(),
+            album.into(),
+            cover_path,
+            track_gain,
+            album_gain,
+        )
+    }
+
+    /// Preloads the next song with the ReplayGain values given, for a gapless
+    /// transition.
+    ///
+    /// The same as [`AudioManager::preload_next`], except that the gains are
+    /// used exactly as given and the database is never queried.
+    #[allow(clippy::too_many_arguments)]
+    pub fn preload_next_with_gains(
+        &self,
+        path: &str,
+        title: impl Into<String>,
+        artist: impl Into<String>,
+        album: impl Into<String>,
+        cover_path: Option<String>,
+        track_gain: Option<f64>,
+        album_gain: Option<f64>,
+    ) -> Result<(), AudioError> {
+        self.engine.preload_file(
+            path,
+            title.into(),
+            artist.into(),
+            album.into(),
+            cover_path,
+            track_gain,
+            album_gain,
+        )
+    }
+
     /// Descarta el estado de pre-carga actual en el hilo decodificador.
     pub fn clear_preload(&self) -> Result<(), AudioError> {
         self.engine.clear_preload()

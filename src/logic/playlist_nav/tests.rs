@@ -1247,6 +1247,171 @@ fn sequential_prev_from_nothing_wraps_to_the_last_enabled_song_only_with_repeat_
 }
 
 #[test]
+fn d14_sequential_prev_from_the_first_song_wraps_to_the_last_with_repeat_all() {
+    let mut g = two_groups();
+    g[1].songs[2].enabled = false; // song 5
+    assert_eq!(
+        step_prev_fixed(&g, Some(1), RepeatMode::All, false, None),
+        Some(5),
+        "the last enabled song"
+    );
+    assert_eq!(
+        step_prev_fixed(&g, Some(1), RepeatMode::Off, false, None),
+        None
+    );
+    // The original keeps not wrapping (Iced).
+    assert_eq!(step_prev(&g, Some(1), RepeatMode::All, false, None), None);
+}
+
+#[test]
+fn d14_sequential_prev_wraps_when_only_disabled_songs_come_before() {
+    let mut g = two_groups();
+    g[0].songs[0].enabled = false; // song 1
+    g[0].songs[1].enabled = false; // song 2
+    assert_eq!(
+        step_prev_fixed(&g, Some(4), RepeatMode::All, false, None),
+        Some(6)
+    );
+    assert_eq!(
+        step_prev_fixed(&g, Some(4), RepeatMode::One, false, None),
+        None
+    );
+}
+
+#[test]
+fn d14_sequential_prev_with_a_single_enabled_song_wraps_to_itself() {
+    let g = one_group(vec![song(1, true), song(2, false)]);
+    assert_eq!(
+        step_prev_fixed(&g, Some(1), RepeatMode::All, false, None),
+        Some(1)
+    );
+}
+
+#[test]
+fn d14_the_fixed_prev_matches_the_original_elsewhere() {
+    let mut g = two_groups();
+    g[0].songs[1].enabled = false;
+    for playing in [None, Some(1), Some(2), Some(4), Some(5), Some(6)] {
+        for repeat in [RepeatMode::Off, RepeatMode::One] {
+            assert_eq!(
+                step_prev_fixed(&g, playing, repeat, false, None),
+                step_prev(&g, playing, repeat, false, None),
+                "{playing:?} {repeat:?}"
+            );
+        }
+    }
+    assert_eq!(
+        step_prev_fixed(&g, Some(5), RepeatMode::All, false, None),
+        Some(4)
+    );
+    assert_eq!(
+        step_prev_fixed(&g, None, RepeatMode::All, false, None),
+        step_prev(&g, None, RepeatMode::All, false, None)
+    );
+}
+
+#[test]
+fn d15_shuffle_prev_skips_history_entries_that_left_the_list() {
+    let g = two_groups();
+    let mut sess = session(&[3, 4], 3, &[1, 42, 43, 5]);
+    let prev = step_prev_fixed(&g, Some(6), RepeatMode::Off, true, Some(&mut sess));
+    assert_eq!(prev, Some(1), "song 1, not the removed 43 and 42");
+    assert_eq!(sess.history, [1]);
+    assert_eq!(sess.current_position, 0, "one step back per popped entry");
+
+    // The original rewinds into the removed song, then plays the sequential
+    // previous one.
+    let mut original = session(&[3, 4], 3, &[1, 42, 43, 5]);
+    let prev = step_prev(&g, Some(6), RepeatMode::Off, true, Some(&mut original));
+    assert_eq!(prev, Some(5));
+    assert_eq!(original.history, [1, 42, 43]);
+}
+
+#[test]
+fn d15_without_an_earlier_song_in_the_list_the_session_is_kept_and_sequential_applies() {
+    let g = two_groups();
+    let mut sess = session(&[3], 2, &[42, 5]);
+    let prev = step_prev_fixed(&g, Some(6), RepeatMode::Off, true, Some(&mut sess));
+    assert_eq!(prev, Some(5), "the sequential previous song");
+    assert_eq!(sess.history, [42, 5]);
+    assert_eq!(sess.current_position, 2);
+}
+
+#[test]
+fn d15_shuffle_prev_without_removed_songs_pops_one_entry_like_the_original() {
+    let g = two_groups();
+    let mut fixed = session(&[4, 5], 2, &[1, 4, 5]);
+    let mut original = fixed.clone();
+    assert_eq!(
+        step_prev_fixed(&g, Some(6), RepeatMode::Off, true, Some(&mut fixed)),
+        step_prev(&g, Some(6), RepeatMode::Off, true, Some(&mut original))
+    );
+    assert_eq!(fixed.history, original.history);
+    assert_eq!(fixed.current_position, original.current_position);
+
+    let mut single = session(&[4, 5], 0, &[5]);
+    assert_eq!(
+        step_prev_fixed(&g, Some(6), RepeatMode::Off, true, Some(&mut single)),
+        Some(5),
+        "a single entry falls back to sequential"
+    );
+    assert_eq!(single.history, [5]);
+}
+
+#[test]
+fn d16_activating_shuffle_without_enabled_songs_drops_the_old_session() {
+    let g = one_group(vec![song(1, false), song(2, false)]);
+    let mut active = false;
+    let mut sess = Some(session(&[1, 2], 1, &[1]));
+    activate_shuffle_fixed(
+        &g,
+        None,
+        &mut active,
+        &mut sess,
+        &mut fastrand::Rng::with_seed(1),
+    );
+    assert!(!active);
+    assert!(sess.is_none(), "the stale session is gone");
+
+    // The original keeps it (Iced).
+    let mut original = Some(session(&[1, 2], 1, &[1]));
+    activate_shuffle(
+        &g,
+        None,
+        &mut active,
+        &mut original,
+        &mut fastrand::Rng::with_seed(1),
+    );
+    assert!(original.is_some());
+}
+
+#[test]
+fn d16_activating_shuffle_with_enabled_songs_matches_the_original() {
+    let g = two_groups();
+    let (mut fixed_active, mut original_active) = (false, false);
+    let (mut fixed, mut original) = (None, None);
+    activate_shuffle_fixed(
+        &g,
+        Some(2),
+        &mut fixed_active,
+        &mut fixed,
+        &mut fastrand::Rng::with_seed(9),
+    );
+    activate_shuffle(
+        &g,
+        Some(2),
+        &mut original_active,
+        &mut original,
+        &mut fastrand::Rng::with_seed(9),
+    );
+    assert!(fixed_active && original_active);
+    assert_eq!(
+        fixed.map(|s| (s.session_id, s.shuffle_order, s.history)),
+        original.map(|s| (s.session_id, s.shuffle_order, s.history))
+    );
+}
+
+#[test]
 fn a_new_shuffle_session_holds_the_enabled_songs_except_the_playing_one() {
     let mut rng = fastrand::Rng::with_seed(11);
     let mut g = two_groups();

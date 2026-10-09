@@ -6,8 +6,10 @@
 //! worker:
 //!
 //! 1. resolve the sound-server rate and quantum ([`resolve_system_clock`]);
-//! 2. with PipeWire, force the clock, wait [`PIPEWIRE_SETTLE`] and persist the
-//!    PipeWire configuration; with PulseAudio, persist its configuration;
+//! 2. with PipeWire, force the clock, wait
+//!    [`PIPEWIRE_SETTLE`](crate::frontend::engine_worker::PIPEWIRE_SETTLE) and persist the
+//!    PipeWire configuration; with PulseAudio, persist its configuration
+//!    ([`EngineContext::apply_system_clock`](crate::frontend::engine_worker::EngineContext::apply_system_clock));
 //! 3. rebuild the stream with the selected device settings;
 //! 4. persist the device keys exactly as Iced does, whether or not the stream
 //!    could be rebuilt.
@@ -23,7 +25,7 @@
 
 use crate::audio::engine::{AudioDeviceInfo, AudioSettings, BitDepth, ChannelConfig};
 use crate::frontend::app_context::AppContext;
-use crate::frontend::engine_worker::{EngineContext, PIPEWIRE_SETTLE, SoundServer};
+use crate::frontend::engine_worker::SoundServer;
 use crate::frontend::error::FrontendError;
 use crate::frontend::events::DeviceSnapshot;
 use crate::frontend::reply::Reply;
@@ -67,22 +69,6 @@ pub fn resolve_system_clock(
     let quantum =
         rules::resolve_system_quantum(system_quantum, rate.unwrap_or(rules::DEFAULT_SAMPLE_RATE));
     SystemClock { rate, quantum }
-}
-
-/// Applies the sound-server clock on the engine worker, as Iced does before
-/// it builds a stream: with PipeWire, force the clock, wait
-/// [`PIPEWIRE_SETTLE`], then persist it; with PulseAudio, only persist it.
-pub(crate) fn apply_system_clock(engine: &EngineContext, clock: SystemClock) -> SoundServer {
-    let system = &engine.system_audio;
-    if system.is_pipewire_active() {
-        system.apply_pipewire_clock(clock.rate, clock.quantum);
-        std::thread::sleep(PIPEWIRE_SETTLE);
-        system.persist_pipewire_conf(clock.rate, clock.quantum);
-        SoundServer::PipeWire
-    } else {
-        system.persist_pulse_conf(clock.rate, clock.quantum);
-        SoundServer::PulseAudio
-    }
 }
 
 /// The selections of the configuration tab, applied by [`apply`].
@@ -263,7 +249,7 @@ pub fn apply(ctx: &AppContext, pending: PendingAudioSettings) -> Reply<ApplyOutc
     let db = ctx.db.clone();
     ctx.engine.run(move |engine| {
         let clock = pending.system_clock();
-        let sound_server = apply_system_clock(engine, clock);
+        let sound_server = engine.apply_system_clock(clock.rate, clock.quantum);
         let applied = engine
             .player
             .apply_audio_settings(pending.to_audio_settings());
@@ -451,6 +437,7 @@ pub fn restart_audio_services(ctx: &AppContext) -> Reply<()> {
 mod tests {
     use super::*;
     use crate::frontend::commands::engine_settings::rig::{Rig, Step};
+    use crate::frontend::engine_worker::PIPEWIRE_SETTLE;
     use crate::frontend::fakes::{PlayerCall, RecordedSettings, SystemAudioCall};
     use crate::frontend::ports::{PlayerPort, ReplayGains, TrackRequest};
     use crate::frontend::settings::keys;

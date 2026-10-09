@@ -90,6 +90,9 @@ pub struct AppContext {
     pub preload: Arc<PreloadState>,
     /// The configuration the context was built with.
     pub config: Arc<AppConfig>,
+    /// Whether the startup restore was claimed (quirk fix 6); shared by every
+    /// clone.
+    startup_restore: Arc<AtomicBool>,
     lifecycle: Arc<Lifecycle>,
 }
 
@@ -240,8 +243,20 @@ impl AppContext {
             engine,
             preload,
             config: Arc::new(parts.config),
+            startup_restore: Arc::new(AtomicBool::new(false)),
             lifecycle,
         })
+    }
+
+    /// Claims the startup restore: `true` on the first call on this context
+    /// or any of its clones, `false` on every later one.
+    ///
+    /// The settings restore (`commands::engine_settings::restore_persisted`)
+    /// and the session restore (`session::restore`, which includes the
+    /// settings restore) both claim it, so whichever runs first is the only
+    /// startup restore of the context (quirk fix 6).
+    pub(crate) fn claim_startup_restore(&self) -> bool {
+        !self.startup_restore.swap(true, Ordering::AcqRel)
     }
 
     /// Stops every thread, in order: the monitor, the long operations
@@ -331,6 +346,21 @@ mod tests {
             assert!(db.is_stopped());
             assert!(engine.is_stopped());
             assert!(hub.is_stopped());
+        });
+    }
+
+    #[test]
+    fn the_startup_restore_is_claimed_once_across_clones() {
+        with_timeout(TEST_TIMEOUT, || {
+            let context = AppContext::in_memory().unwrap();
+            let clone = context.clone();
+            assert!(clone.claim_startup_restore());
+            assert!(!context.claim_startup_restore());
+            assert!(!clone.claim_startup_restore());
+            let other = AppContext::in_memory().unwrap();
+            assert!(other.claim_startup_restore(), "each context has its own");
+            assert!(context.shutdown());
+            assert!(other.shutdown());
         });
     }
 

@@ -34,6 +34,7 @@ pub mod monitor;
 pub mod ports;
 pub mod preload;
 pub mod reply;
+pub mod session;
 pub mod settings;
 #[cfg(any(test, feature = "teksilo-mocks"))]
 pub mod test_fixtures;

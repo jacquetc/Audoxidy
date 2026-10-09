@@ -2,7 +2,7 @@
 //! back into the engine, once, on the facade's workers.
 //!
 //! [`restore_persisted`] follows the order of the Iced UI's
-//! `AudoxidyApp::new` (`src/gui/app.rs`), with three Teksilo-only changes
+//! `AudoxidyApp::new` (`src/gui/app.rs`), with four Teksilo-only changes
 //! recorded in `docs/teksilo-port-quirk-fixes.md`:
 //!
 //! 1. the sound-server clock (PipeWire: force, settle, persist; PulseAudio:
@@ -16,28 +16,27 @@
 //! 3. the volume;
 //! 4. the volume-and-mix, crossfade and meter settings (engine state);
 //! 5. the equalizer: mode, on/off, preamp, both band sets;
-//! 6. the effects;
+//! 6. the effects, with the parameters the compressor derives from its
+//!    intensity and the reverb from its room size (quirk fix 27, Iced defect
+//!    D25: Iced only assigns the two fields, so they wait for a stream
+//!    rebuild);
 //! 7. the downmix settings (quirk fix 9: Iced applies them only on the first
 //!    Audio Center open).
 //!
 //! Iced reads the volume-and-mix keys a second time at startup; that second
 //! pass changes nothing and is not repeated (quirk fix 6). The session restore
-//! (playlist, track, position) runs after this one and is not part of it.
+//! ([`session::restore`](crate::frontend::session::restore)) runs this restore
+//! first, then puts back the playlist, the track and its position.
 
 #![warn(missing_docs)]
 
-use std::sync::{Arc, Weak};
-
-use parking_lot::Mutex;
-
-use super::audio_settings::{SystemClock, apply_system_clock, resolve_system_clock};
+use super::audio_settings::{SystemClock, resolve_system_clock};
 use crate::frontend::app_context::AppContext;
 use crate::frontend::engine_worker::SoundServer;
 use crate::frontend::error::FrontendError;
 use crate::frontend::events::DeviceSnapshot;
 use crate::frontend::reply::Reply;
 use crate::frontend::settings::{self, PersistedSettings};
-use crate::utils::config::AppConfig;
 
 /// What happened to the output stream during the restore.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,35 +72,26 @@ pub struct RestoreReport {
     pub audio_notice: Option<String>,
 }
 
-/// The contexts whose settings were restored (by their configuration, which
-/// every clone of a context shares).
-static RESTORED: Mutex<Vec<Weak<AppConfig>>> = Mutex::new(Vec::new());
-
-/// Marks `ctx` as restored; `false` if it already was.
-fn claim_restore(ctx: &AppContext) -> bool {
-    let mut restored = RESTORED.lock();
-    restored.retain(|context| context.strong_count() > 0);
-    let this = Arc::as_ptr(&ctx.config);
-    if restored.iter().any(|context| context.as_ptr() == this) {
-        return false;
-    }
-    restored.push(Arc::downgrade(&ctx.config));
-    true
-}
-
 /// Restores every persisted audio setting into the engine; see the module
 /// documentation for the order.
 ///
 /// The settings are read on the database worker and applied in one job on
 /// the engine worker; nothing runs on the caller's thread. It runs once per
-/// context (quirk fix 6): a second call resolves to
+/// context (quirk fix 6): a second call, or a call after the session restore
+/// (`session::restore`, which runs this restore itself), resolves to
 /// [`FrontendError::InvalidInput`] without touching the engine.
 pub fn restore_persisted(ctx: &AppContext) -> Reply<RestoreReport> {
-    if !claim_restore(ctx) {
+    if !ctx.claim_startup_restore() {
         return Reply::ready(Err(FrontendError::InvalidInput(
             "the persisted settings were already restored on this context".to_string(),
         )));
     }
+    restore_engine_settings(ctx)
+}
+
+/// The restore itself, without the run-once guard: the session restore calls
+/// it after claiming the guard.
+pub(crate) fn restore_engine_settings(ctx: &AppContext) -> Reply<RestoreReport> {
     let persisted = settings::load_all(&ctx.db);
     let db = ctx.db.clone();
     ctx.engine.run(move |engine| {
@@ -114,7 +104,7 @@ pub fn restore_persisted(ctx: &AppContext) -> Reply<RestoreReport> {
             device.system_quantum,
             device.sample_rate,
         );
-        let sound_server = apply_system_clock(engine, clock);
+        let sound_server = engine.apply_system_clock(clock.rate, clock.quantum);
 
         let mut device_id_backfilled = None;
         let stream = if device.has_saved_output() {
@@ -164,7 +154,14 @@ pub fn restore_persisted(ctx: &AppContext) -> Reply<RestoreReport> {
         player.set_preamp_gain(eq.preamp_gain);
         player.apply_eq_preset_gains(&eq.band_gains_20, &eq.band_gains_31);
 
-        player.update_dsp(&mut |dsp| settings.dsp.apply_to(dsp));
+        player.update_dsp(&mut |dsp| {
+            settings.dsp.apply_to(dsp);
+            // Iced assigns the two fields and stops there (defect D25); compute
+            // the parameters the effects actually use (quirk fix 27).
+            dsp.compressor.update_intensity_params();
+            let room_size = dsp.reverb.room_size;
+            dsp.reverb.set_room_size(room_size);
+        });
 
         settings.downmix.apply_to(&mut player.state().write());
 
@@ -182,7 +179,7 @@ pub fn restore_persisted(ctx: &AppContext) -> Reply<RestoreReport> {
 }
 
 /// A context whose ports record, in one ordered log, the calls whose order
-/// the settings commands promise.
+/// the settings and session commands promise.
 #[cfg(test)]
 pub(crate) mod rig {
     use std::sync::Arc;
@@ -289,6 +286,7 @@ pub(crate) mod rig {
             self.inner.pause();
         }
         fn set_playing(&self, playing: bool) {
+            self.record("set_playing");
             self.inner.set_playing(playing);
         }
         fn stop(&self) {
@@ -301,12 +299,14 @@ pub(crate) mod rig {
             self.inner.is_playing()
         }
         fn seek(&self, position_secs: f64) {
+            self.record("seek");
             self.inner.seek(position_secs);
         }
         fn take_eof(&self) -> bool {
             self.inner.take_eof()
         }
         fn load_file(&self, track: &TrackRequest, gains: ReplayGains) -> Result<(), AudioError> {
+            self.record("load_file");
             self.inner.load_file(track, gains)
         }
         fn preload_next(&self, track: &TrackRequest, gains: ReplayGains) -> Result<(), AudioError> {
@@ -732,6 +732,71 @@ mod tests {
             );
             assert!(!state.meter_enabled);
             assert_eq!(fakes.player.eq_band_count(), 20);
+        });
+    }
+
+    /// The reverb's output for an impulse followed by silence.
+    fn impulse_response(reverb: &crate::audio::dsp::Reverb) -> Vec<f64> {
+        let mut reverb = reverb.clone();
+        let mut out = Vec::new();
+        for i in 0..4_000 {
+            let mut frame = [if i == 0 { 1.0 } else { 0.0 }; 2];
+            reverb.process(&mut frame);
+            out.extend(frame);
+        }
+        out
+    }
+
+    #[test]
+    fn d25_the_restored_compressor_intensity_and_reverb_room_size_take_effect_at_once() {
+        use crate::audio::dsp::{Compressor, Reverb};
+        with_timeout(TEST_TIMEOUT, || {
+            let (ctx, fakes) = AppContext::in_memory_with_fakes().unwrap();
+            seed(
+                &ctx,
+                &[
+                    (keys::DSP_COMPRESSOR_INTENSITY, "0.9"),
+                    (keys::DSP_REVERB_ENABLED, "1"),
+                    (keys::DSP_REVERB_WET, "1.00"),
+                    (keys::DSP_REVERB_ROOM_SIZE, "0.95"),
+                ],
+            );
+            restore_persisted(&ctx).recv_blocking().unwrap();
+
+            let mut expected_compressor = Compressor::new();
+            expected_compressor.intensity = 0.9;
+            expected_compressor.update_intensity_params();
+            let mut expected_reverb = Reverb::new();
+            expected_reverb.enabled = true;
+            expected_reverb.set_wet(1.0);
+            expected_reverb.set_room_size(0.95);
+            // What Iced leaves until the next stream rebuild: the field only.
+            let mut stale_reverb = Reverb::new();
+            stale_reverb.enabled = true;
+            stale_reverb.set_wet(1.0);
+            stale_reverb.room_size = 0.95;
+            assert_ne!(
+                impulse_response(&expected_reverb),
+                impulse_response(&stale_reverb),
+                "the room size changes the response"
+            );
+
+            fakes.player.read_dsp(&mut |dsp| {
+                assert_eq!(dsp.compressor.intensity, 0.9);
+                assert_eq!(
+                    dsp.compressor.intensity_ratio,
+                    expected_compressor.intensity_ratio
+                );
+                assert_ne!(
+                    dsp.compressor.intensity_ratio,
+                    Compressor::new().intensity_ratio,
+                    "the ratio follows the restored intensity"
+                );
+                assert_eq!(
+                    impulse_response(&dsp.reverb),
+                    impulse_response(&expected_reverb)
+                );
+            });
         });
     }
 
