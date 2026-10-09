@@ -37,6 +37,8 @@ Line numbers refer to the code before Wave A (commit `288477a`). Decisions were 
 | D18 | Apply and startup resolve Automatic rate/quantum differently | **fix (Teksilo)** |
 | D19 | M3U and M3U8 output is identical; durations are truncated | **fix (Teksilo)** |
 | D22 | Clearing the sort empties the expanded grid album | **fix (Teksilo)**: the Teksilo grid detail panel loads an album's songs from its parsed (artist, hash) |
+| D23 | The 75 % RAM hard cap purges on every tick, with no cooldown | **fix (Teksilo)**: the frontend monitor applies a cooldown |
+| D24 | Startup applies the stream settings before the PipeWire clock | **fix (Teksilo)**: the Teksilo restore sets the clock first, like Apply |
 | **No decision needed** | | |
 | D20 | Iced grid navigation y-positions use the unfiltered song count | not applicable |
 | D21 | `widgets::apply_marquee` is never called | not applicable |
@@ -160,6 +162,18 @@ M3U and M3U8 differ only by extension. Durations are truncated with `as i32`.
 - **Where:** `LibrarySortChanged` (`src/gui/app.rs`, the branch that clears the sort and reloads the database order; line 2849 after Wave A).
 - **Defect:** it calls `db.get_songs_by_album(album_id)` with the grid's expanded album id. That id is a composite `"{artist}|{hash}"`, but the function expects a bare album hash. The query matches nothing, so the expanded album shows no songs after the sort is cleared.
 - **Found by:** Wave A3. Decided with the same rule as the other non-crash defects: the Teksilo UI does not have this path, because its grid detail panel loads the album from its parsed (artist, hash).
+
+### D23. The 75 % RAM hard cap purges on every tick, with no cooldown
+
+- **Where:** the `Tick` handler (`src/gui/app.rs`, `is_ram_over_hard_cap` → `GlobalMemoryPurge`).
+- **Defect:** while system memory use is above 75 % (often because of other applications), every tick runs the full purge. That means every 500 ms while playing, and it includes dropping the preloaded next track (which breaks gapless playback) and rebuilding the stream when idle. The 500 MB / 75 % checks below it have a 10 s cooldown; the hard cap has none.
+- **Found by:** Wave B1, which ported it as is.
+
+### D24. Startup applies the stream settings before the PipeWire clock
+
+- **Where:** `AudoxidyApp::new` (`src/gui/app.rs`, roughly lines 680-821 before Wave A).
+- **Defect:** startup rebuilds the stream with the saved device settings first, and applies the PipeWire clock (rate and quantum) afterwards. `system_audio::apply_pipewire_clock` documents that it must run before the stream is built, and the Audio Center's Apply follows that order. At startup the stream may therefore open at the old server rate.
+- **Found by:** Wave B1.
 
 ## No decision needed
 

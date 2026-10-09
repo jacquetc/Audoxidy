@@ -92,7 +92,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   - Stream-touching engine calls and subprocesses go through a second worker.
   - Debug builds assert that the database is never touched from the UI thread.
 - **Why:** the UI froze during these calls.
-- **Pinned by:** to be filled by the frontend wave (the DbWorker thread assertion test).
+- **Pinned by:** `frontend::db_worker::tests::recv_blocking_on_the_marked_ui_thread_panics` (any blocking wait on the marked UI thread panics in debug builds) and `frontend::reply::tests::try_recv_and_async_recv_are_allowed_on_the_ui_thread`; ordering and the purge re-check are pinned by `frontend::engine_worker::tests::{a_purge_followed_by_play_before_it_runs_is_skipped, engine_jobs_run_in_submission_order}`.
 
 ## 6. The session is restored once at startup
 
@@ -174,7 +174,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:** while playing, the position is saved every `behavior.auto_save_interval_secs`
   (20 s by default, from `config.ron`), plus on every event where Iced saves.
 - **Why:** after a crash, the restored position could be far behind.
-- **Pinned by:** to be filled by the playlist wave.
+- **Pinned by:** `frontend::monitor::tests::autosave_is_due_every_interval_while_playing` and `frontend::monitor::tests::no_autosave_is_due_while_paused_and_resuming_restarts_the_interval` (the monitor side); the playlist view-model's persist-on-`AutosaveDue` test is added by the playlist wave.
 
 ## 14. Hidden built-in EQ presets stay hidden across restarts
 
