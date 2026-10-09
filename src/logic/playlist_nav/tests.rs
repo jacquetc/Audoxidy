@@ -1007,6 +1007,130 @@ fn a_reshuffle_with_nothing_enabled_turns_shuffle_off_and_plays_nothing() {
     assert_eq!(sess.map(|s| s.session_id), Some("s1".to_string()));
 }
 
+/// Song 1 listed twice: its first copy (group A, item 1) is disabled and its
+/// second copy (group B, item 11) is enabled. Song 2 is disabled.
+/// Linear: 0 sep A, 1 s1 (off), 2 s2 (off), 3 sep B, 4 s1 copy (on).
+fn duplicate_with_disabled_first_copy() -> Vec<PlaylistFolderGroup> {
+    let mut copy = song(1, true);
+    copy.item_id = 11;
+    vec![
+        group(10, vec![song(1, false), song(2, false)]),
+        group(20, vec![copy]),
+    ]
+}
+
+#[test]
+fn the_enabled_copy_of_a_song_is_found_when_its_first_copy_is_disabled() {
+    let g = duplicate_with_disabled_first_copy();
+    assert_eq!(linear_index_of_song_id(&g, 1), Some(1));
+    assert_eq!(enabled_linear_index_of_song_id(&g, 1), Some(4));
+    assert_eq!(enabled_linear_index_of_song_id(&g, 2), None);
+    // When the first copy is enabled, it is the one found.
+    let g = two_groups();
+    assert_eq!(enabled_linear_index_of_song_id(&g, 4), Some(5));
+}
+
+#[test]
+fn d1_shuffle_plays_the_enabled_copy_of_a_song_whose_first_copy_is_disabled() {
+    let g = duplicate_with_disabled_first_copy();
+    let sess = session(&[1], 0, &[]);
+    assert_eq!(
+        peek_next(&g, None, RepeatMode::Off, true, Some(&sess)),
+        NextStep::Shuffle {
+            linear_idx: 4,
+            song_id: 1,
+            next_position: 1
+        }
+    );
+    let next = next_song_ref(&g, Some(2), RepeatMode::Off, true, Some(&sess));
+    assert_eq!(next.map(|s| s.item_id), Some(11));
+}
+
+#[test]
+fn d1_repeat_all_reshuffle_plays_the_enabled_copy_instead_of_recursing() {
+    // Before the fix, every re-shuffle resolved song 1 to its disabled first
+    // copy, so `advance_next` re-shuffled until the stack overflowed.
+    let mut rng = fastrand::Rng::with_seed(5);
+    let g = duplicate_with_disabled_first_copy();
+    let (mut playing, mut shuffle) = (Some(2), true);
+    let mut sess = Some(session(&[1], 1, &[1]));
+    let target = advance_next(
+        &g,
+        &mut playing,
+        RepeatMode::All,
+        &mut shuffle,
+        &mut sess,
+        &mut rng,
+    );
+    assert_eq!(target, Some(4));
+    assert_eq!(playing, Some(4));
+    assert!(shuffle);
+    let s = sess.unwrap_or_else(|| session(&[], 0, &[]));
+    assert_ne!(s.session_id, "s1");
+    assert_eq!(s.shuffle_order, [1]);
+    assert_eq!(s.current_position, 1);
+}
+
+#[test]
+fn d1_repeat_all_keeps_reshuffling_and_playing_enabled_copies() {
+    let mut rng = fastrand::Rng::with_seed(11);
+    let mut g = duplicate_with_disabled_first_copy();
+    let mut copy = song(2, true);
+    copy.item_id = 12;
+    g[1].songs.push(copy); // Linear 5: song 2's enabled copy.
+    let (mut playing, mut shuffle, mut sess) = (None, false, None);
+    activate_shuffle(&g, playing, &mut shuffle, &mut sess, &mut rng);
+    for round in 0..20 {
+        let preview =
+            next_song_ref(&g, playing, RepeatMode::All, shuffle, sess.as_ref()).map(|s| s.item_id);
+        let target = advance_next(
+            &g,
+            &mut playing,
+            RepeatMode::All,
+            &mut shuffle,
+            &mut sess,
+            &mut rng,
+        );
+        let played = target.and_then(|idx| song_at(&g, idx));
+        assert!(
+            played.is_some_and(|s| s.enabled),
+            "round {round}: {target:?}"
+        );
+        // Whenever the preload knows the next song, it is the one played.
+        if playing.is_some() && preview.is_some() {
+            assert_eq!(preview, played.map(|s| s.item_id), "round {round}");
+        }
+        assert!(shuffle);
+    }
+}
+
+#[test]
+fn d1_nothing_enabled_returns_no_next_without_looping() {
+    let mut rng = fastrand::Rng::with_seed(3);
+    let mut g = duplicate_with_disabled_first_copy();
+    g[1].songs[0].enabled = false;
+    // An order that still names the (now disabled) songs.
+    for order in [&[1, 2, 1][..], &[][..]] {
+        let (mut playing, mut shuffle) = (Some(4), true);
+        let mut sess = Some(session(order, 0, &[]));
+        assert_eq!(
+            peek_next(&g, playing, RepeatMode::All, true, sess.as_ref()),
+            NextStep::Reshuffle
+        );
+        let target = advance_next(
+            &g,
+            &mut playing,
+            RepeatMode::All,
+            &mut shuffle,
+            &mut sess,
+            &mut rng,
+        );
+        assert_eq!(target, None, "order {order:?}");
+        assert_eq!(playing, Some(4));
+        assert!(!shuffle);
+    }
+}
+
 #[test]
 fn shuffle_prev_pops_the_history() {
     let g = two_groups();

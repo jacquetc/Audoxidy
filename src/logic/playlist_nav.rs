@@ -167,6 +167,29 @@ pub fn linear_index_of_song_id(groups: &[PlaylistFolderGroup], song_id: i64) -> 
     None
 }
 
+/// Linear index of the first *enabled* occurrence of a song (by database song
+/// id). This is the first occurrence when that one is enabled; when the same
+/// song is listed again further down, a later enabled copy is found even if
+/// the first copy is disabled. `None` when no copy is enabled.
+pub fn enabled_linear_index_of_song_id(
+    groups: &[PlaylistFolderGroup],
+    song_id: i64,
+) -> Option<usize> {
+    let mut count = 0;
+    for group in groups {
+        count += 1; // Separator
+        if let Some(idx) = group
+            .songs
+            .iter()
+            .position(|s| s.song_id == song_id && s.enabled)
+        {
+            return Some(count + idx);
+        }
+        count += group.songs.len();
+    }
+    None
+}
+
 /// Linear index of the first enabled song of the group whose separator is at
 /// `separator_idx`; `None` if that is not a separator or no song is enabled.
 pub fn first_enabled_song_in_group(
@@ -871,8 +894,9 @@ pub fn find_last_enabled(groups: &[PlaylistFolderGroup]) -> Option<usize> {
 /// The next step from the playing song, without changing anything:
 /// - Repeat One replays the playing item (`Stop` when nothing plays);
 /// - shuffle takes the first song of the session order, from its position,
-///   that is enabled (looked up by song id); at the end it is `Reshuffle`
-///   under Repeat All and `Stop` otherwise (also without a session);
+///   that has an enabled copy in the list (looked up by song id with
+///   [`enabled_linear_index_of_song_id`]); at the end it is `Reshuffle` under
+///   Repeat All and `Stop` otherwise (also without a session);
 /// - otherwise the next enabled song in playlist order (from the start when
 ///   nothing plays), wrapping only under Repeat All.
 pub fn peek_next(
@@ -893,9 +917,7 @@ pub fn peek_next(
                 .get(session.current_position..)
                 .unwrap_or(&[]);
             for (offset, &song_id) in order.iter().enumerate() {
-                if let Some(linear_idx) = linear_index_of_song_id(groups, song_id)
-                    && song_at(groups, linear_idx).is_some_and(|s| s.enabled)
-                {
+                if let Some(linear_idx) = enabled_linear_index_of_song_id(groups, song_id) {
                     return NextStep::Shuffle {
                         linear_idx,
                         song_id,
@@ -938,9 +960,11 @@ pub fn commit_shuffle_step(session: &mut ShuffleSession, song_id: i64, next_posi
 }
 
 /// Plays the next song: applies [`peek_next`] and updates the state (the
-/// playing index, the shuffle history and position; a re-shuffle draws a new
-/// session with `rng` and decides again). Returns the linear index of the
-/// song to load and play, or `None` when nothing plays.
+/// playing index, the shuffle history and position). A re-shuffle draws a new
+/// session with `rng` and decides once more; it happens at most once per
+/// call, and if the fresh order still yields nothing to play the result is
+/// the same as having no next song. Returns the linear index of the song to
+/// load and play, or `None` when nothing plays.
 pub fn advance_next(
     groups: &[PlaylistFolderGroup],
     playing: &mut Option<usize>,
@@ -949,7 +973,33 @@ pub fn advance_next(
     session: &mut Option<ShuffleSession>,
     rng: &mut fastrand::Rng,
 ) -> Option<usize> {
-    match peek_next(groups, *playing, repeat, *shuffle_active, session.as_ref()) {
+    let mut step = peek_next(groups, *playing, repeat, *shuffle_active, session.as_ref());
+    if step == NextStep::Reshuffle {
+        activate_shuffle(groups, *playing, shuffle_active, session, rng);
+        let has_order = session
+            .as_ref()
+            .is_some_and(|s| !s.shuffle_order.is_empty());
+        if !has_order {
+            return None;
+        }
+        step = match peek_next(groups, *playing, repeat, *shuffle_active, session.as_ref()) {
+            // Bounded: a fresh order that still plays nothing ends the advance.
+            NextStep::Reshuffle => NextStep::Stop,
+            fresh => fresh,
+        };
+    }
+    apply_next_step(groups, playing, session, step)
+}
+
+/// Carries out a decided step for [`advance_next`]; a re-shuffle is never
+/// applied here and plays nothing.
+fn apply_next_step(
+    groups: &[PlaylistFolderGroup],
+    playing: &mut Option<usize>,
+    session: &mut Option<ShuffleSession>,
+    step: NextStep,
+) -> Option<usize> {
+    match step {
         NextStep::Replay(idx) => song_at(groups, idx).map(|_| idx),
         NextStep::Shuffle {
             linear_idx,
@@ -967,18 +1017,7 @@ pub fn advance_next(
             *playing = Some(idx);
             Some(idx)
         }
-        NextStep::Reshuffle => {
-            activate_shuffle(groups, *playing, shuffle_active, session, rng);
-            let has_order = session
-                .as_ref()
-                .is_some_and(|s| !s.shuffle_order.is_empty());
-            if has_order {
-                advance_next(groups, playing, repeat, shuffle_active, session, rng)
-            } else {
-                None
-            }
-        }
-        NextStep::Stop => None,
+        NextStep::Reshuffle | NextStep::Stop => None,
     }
 }
 
