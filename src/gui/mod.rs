@@ -1,5 +1,7 @@
 pub mod app;
 pub mod audio_center;
+pub mod control_stream;
+pub mod covers_iced;
 pub mod library;
 pub mod library_filters;
 pub mod player;

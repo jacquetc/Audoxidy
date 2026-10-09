@@ -1493,13 +1493,13 @@ pub fn album_art_widget<'a, Message: 'a>(
 
     // 2. Intentar cargar desde archivo AVIF en disco (Prioridad 1) — sin caché RAM
     if handle_opt.is_none() {
-        handle_opt = avif_path.and_then(|p| crate::utils::covers::load_cover_handle(p));
+        handle_opt = avif_path.and_then(|p| crate::gui::covers_iced::load_cover_handle(p));
     }
 
     // 3. Fallback: Cargar desde bytes crudos (Prioridad 2)
     if handle_opt.is_none() {
         if let Some(data) = raw_data {
-            handle_opt = crate::utils::covers::load_raw_image_for_iced(data);
+            handle_opt = crate::gui::covers_iced::load_raw_image_for_iced(data);
         }
     }
 

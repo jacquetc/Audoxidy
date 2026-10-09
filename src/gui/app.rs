@@ -3,6 +3,7 @@ use crate::audio::AudioManager;
 use crate::audio::engine::{LATENCY_PEAK_US, UNDERRUNS};
 use crate::db::{Database, scanner::Scanner};
 use crate::gui::audio_center::{AudioCenterManager, AudioCenterMessage};
+use crate::gui::control_stream::{ExternalControlReceiver, external_control_stream};
 use crate::gui::library::{LIBRARY_SCROLL_ID, LibraryManager};
 use crate::gui::library_filters::LibraryFiltersManager;
 use crate::gui::playlist::PLAYLIST_TABS_SCROLL_ID;
@@ -11,10 +12,7 @@ use crate::gui::theme::{
     COLOR_ACCENT, COLOR_BG, COLOR_CONTRAST, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY,
     FONT_INTER_SANS_NORMAL,
 };
-use crate::integrations::control::{
-    ExternalControlEvent, ExternalControlReceiver, external_control_channel,
-    external_control_stream,
-};
+use crate::integrations::control::{ExternalControlEvent, external_control_channel};
 use crate::integrations::media_controls::SystemMediaControls;
 use iced::widget::operation::{AbsoluteOffset, focus, scroll_to};
 use iced::{Color, Element, Task, Theme};
@@ -1574,7 +1572,7 @@ impl AudoxidyApp {
                                             != cover_path.as_ref()
                                     {
                                         self.player_ui_state.prefetched_next_handle =
-                                            crate::utils::covers::load_cover_handle(cover_path);
+                                            crate::gui::covers_iced::load_cover_handle(cover_path);
                                     }
                                 }
                                 // Pre-cargar la siguiente canción una sola vez por pista.
@@ -1751,7 +1749,7 @@ impl AudoxidyApp {
                     if now.saturating_sub(finished_at) >= 40 {
                         self.scan_finished_at = None;
                         tracing::debug!("Audoxidy GC: Scan complete, clearing memory");
-                        crate::utils::covers::purge_old_covers(32); // Vaciar caché de covers generado por escáner
+                        crate::gui::covers_iced::purge_old_covers(32); // Vaciar caché de covers generado por escáner
 
                         // Reiniciar el temporizador global para que no haga otra purga en 2 mins
                         crate::utils::memory_manager::MemoryManager::reset_global_purge_timer();
@@ -1795,7 +1793,7 @@ impl AudoxidyApp {
                 crate::utils::interner::clear_interner();
 
                 // 4. Purgar carátulas LRU (Purga suave de 16 elementos)
-                crate::utils::covers::purge_old_covers(16);
+                crate::gui::covers_iced::purge_old_covers(16);
 
                 // 5. Liberar la memoria de la pre-carga de audio (seguro durante la
                 //    reproducción: no reinicia el stream). NO se resetea
@@ -1928,7 +1926,7 @@ impl AudoxidyApp {
                 self.wake_up_controls(false)
             }
             Message::NextTrack => {
-                crate::utils::covers::clear_raw_cache();
+                crate::gui::covers_iced::clear_raw_cache();
 
                 // Crossfade manual: si el grupo Crossfade está activo y su sub-función
                 // manual está habilitada, se dispara la mezcla con la duración configurada
@@ -2002,7 +2000,7 @@ impl AudoxidyApp {
                 wake_task
             }
             Message::PreviousTrack => {
-                crate::utils::covers::clear_raw_cache();
+                crate::gui::covers_iced::clear_raw_cache();
                 self.playlist_manager.play_prev(&self.audio_manager);
                 self.persist_playlist_state();
 
@@ -5501,7 +5499,7 @@ impl AudoxidyApp {
 
         // 5. Cargar desde disco (Handle::from_path — sin caché RAM)
         if !new_cover_path.is_empty() {
-            if let Some(handle) = crate::utils::covers::load_cover_handle(&new_cover_path) {
+            if let Some(handle) = crate::gui::covers_iced::load_cover_handle(&new_cover_path) {
                 self.player_ui_state.cached_art_handle = Some(handle);
                 self.player_ui_state.current_art_id = audio_state.path.clone();
                 self.player_ui_state.current_cover_path = new_cover_path;

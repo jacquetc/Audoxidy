@@ -26,85 +26,104 @@ static COVER_GATEWAY: OnceLock<crossbeam::channel::Sender<(Vec<u8>, String)>> = 
 /// Almacena rutas de archivos que fallaron o no existen (evita reintentos)
 pub static NEGATIVE_CACHE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
-/// Caché LRU para retener Handles de carátulas y prevenir OOM en Iced.
-pub struct CoverCache {
+/// Caché LRU genérica de carátulas, indexada por ruta.
+///
+/// `H` es el tipo de handle de imagen de la interfaz que la usa (por ejemplo,
+/// `iced::widget::image::Handle` en `gui::covers_iced`). La caché no conoce
+/// ninguna interfaz: solo limita cuántos handles se retienen para prevenir OOM.
+pub struct CoverCache<H: Clone> {
     /// Entradas ordenadas por recencia (la más reciente al frente).
-    entries: LruCache<String, iced::widget::image::Handle>,
+    entries: LruCache<String, H>,
 }
 
-impl CoverCache {
-    /// Crea la caché con la capacidad indicada. La capacidad debe ser > 0.
-    fn new(cap: usize) -> Self {
+impl<H: Clone> CoverCache<H> {
+    /// Creates the cache with the given capacity; a capacity of 0 is treated as 1.
+    pub fn new(cap: usize) -> Self {
         Self {
-            entries: LruCache::new(
-                NonZeroUsize::new(cap).expect("la capacidad debe ser mayor que cero"),
-            ),
+            entries: LruCache::new(non_zero_capacity(cap)),
         }
     }
 
-    /// Devuelve el Handle y promueve la entrada a la posición más reciente.
-    fn get(&mut self, key: &str) -> Option<iced::widget::image::Handle> {
+    /// Devuelve el handle y promueve la entrada a la posición más reciente.
+    pub fn get(&mut self, key: &str) -> Option<H> {
         self.entries.get(key).cloned()
     }
 
     /// Consulta la entrada sin alterar el orden de recencia.
-    #[cfg(test)]
-    fn peek(&self, key: &str) -> Option<iced::widget::image::Handle> {
+    pub fn peek(&self, key: &str) -> Option<H> {
         self.entries.peek(key).cloned()
     }
 
     /// Inserta o actualiza la entrada, promoviéndola a la posición más reciente.
-    fn put(&mut self, key: String, value: iced::widget::image::Handle) {
+    pub fn put(&mut self, key: String, value: H) {
         self.entries.put(key, value);
     }
 
     /// Promueve una clave existente sin insertarla si no está presente.
-    fn promote(&mut self, key: &str) -> bool {
+    pub fn promote(&mut self, key: &str) -> bool {
         self.entries.promote(key)
     }
 
     /// Ajusta la capacidad; al reducir desaloja primero las menos recientes.
-    fn resize(&mut self, cap: usize) {
-        if self.entries.cap().get() != cap {
-            self.entries
-                .resize(NonZeroUsize::new(cap).expect("la capacidad debe ser mayor que cero"));
+    /// A capacity of 0 is treated as 1.
+    pub fn resize(&mut self, cap: usize) {
+        let cap = non_zero_capacity(cap);
+        if self.entries.cap() != cap {
+            self.entries.resize(cap);
         }
     }
 
     /// Número de entradas retenidas.
-    #[cfg(test)]
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    /// Returns `true` when the cache holds no entry.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Indica si la clave está en la caché, sin alterar el orden de recencia.
-    fn contains(&self, key: &str) -> bool {
+    pub fn contains(&self, key: &str) -> bool {
         self.entries.contains(key)
     }
 
+    /// Desaloja las `count` entradas menos recientes. En modo low-resource
+    /// duplica el número de entradas a purgar.
+    pub fn purge_oldest(&mut self, count: usize, low_resource: bool) {
+        let effective_count = if low_resource { count * 2 } else { count };
+        let to_remove = effective_count.min(self.entries.len());
+
+        for _ in 0..to_remove {
+            self.entries.pop_lru();
+        }
+    }
+
+    /// Vacía por completo la caché.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
     /// Orden de más reciente a menos reciente.
-    #[cfg(test)]
-    fn order_mru_to_lru(&self) -> Vec<String> {
+    pub fn order_mru_to_lru(&self) -> Vec<String> {
         self.entries.iter().map(|(key, _)| key.clone()).collect()
     }
+}
+
+/// Converts a requested capacity to the `NonZeroUsize` the `lru` crate needs.
+fn non_zero_capacity(cap: usize) -> NonZeroUsize {
+    NonZeroUsize::new(cap).unwrap_or(NonZeroUsize::MIN)
 }
 
 /// Límite dinámico de carátulas en caché según modo:
 /// - Normal: 64 (estándar, suficiente para pantallas grandes)
 /// - Low-resource: 16 (evicción agresiva para ahorrar RAM)
-fn get_max_covers() -> usize {
+pub fn get_max_covers() -> usize {
     if crate::utils::is_low_resource() {
         16
     } else {
         64
     }
-}
-
-pub static LRU_COVER_CACHE: OnceLock<Mutex<CoverCache>> = OnceLock::new();
-
-/// Obtiene o inicializa la caché LRU global de carátulas.
-pub fn get_lru_cache() -> &'static Mutex<CoverCache> {
-    LRU_COVER_CACHE.get_or_init(|| Mutex::new(CoverCache::new(get_max_covers())))
 }
 
 /// Obtiene o inicializa el ThreadPool global para procesamiento de carátulas.
@@ -281,111 +300,119 @@ pub fn process_and_save_cover(data: &[u8], safe_album_name: &str) -> std::io::Re
     Ok(dst_path)
 }
 
-/// Carga una carátula desde disco usando Handle::from_path() de Iced.
-/// Iced gestiona internamente la decodificación y la memoria.
-/// Arquitectura: Disco AVIF → Iced (sin caché RAM intermedia).
-pub fn load_cover_handle(path: &str) -> Option<iced::widget::image::Handle> {
-    let neg_cache_mtx = NEGATIVE_CACHE.get_or_init(|| Mutex::new(HashSet::new()));
-
-    // 1. Verificar si el archivo ya falló anteriormente
-    if neg_cache_mtx.lock().contains(path) {
-        return None;
-    }
-
-    // 2. Revisar la Caché LRU en memoria
-    let cache_mtx = get_lru_cache();
-    let mut cache = cache_mtx.lock();
-
-    // Recalcular límite dinámico en cada carga (el modo pudo cambiar); al reducir,
-    // `resize` desaloja primero las entradas menos recientes.
-    cache.resize(get_max_covers());
-
-    if let Some(handle) = cache.get(path) {
-        return Some(handle);
-    }
-
-    // 3. Crear nuevo Handle y guardar en caché; `put` desaloja si excede la capacidad.
-    let handle = iced::widget::image::Handle::from_path(path);
-    cache.put(path.to_string(), handle.clone());
-
-    Some(handle)
+/// A cover decoded to tightly packed 8-bit RGBA pixels, independent of any GUI toolkit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedCover {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Row-major RGBA8 pixels, `width * height * 4` bytes.
+    pub rgba: Vec<u8>,
 }
 
-/// Desaloja las entradas menos recientes. En modo low-resource
-/// duplica el número de entradas a purgar.
-fn purge_oldest_covers(cache: &mut CoverCache, count: usize, low_resource: bool) {
-    let effective_count = if low_resource { count * 2 } else { count };
-    let to_remove = effective_count.min(cache.entries.len());
-
-    for _ in 0..to_remove {
-        cache.entries.pop_lru();
-    }
-}
-
-/// Purga las carátulas más viejas de la caché.
-/// Usado por el Garbage Collector cuando la app está inactiva.
-/// En low-resource, purga el doble de elementos por ciclo.
-pub fn purge_old_covers(count: usize) {
-    let cache_mtx = get_lru_cache();
-    let mut cache = cache_mtx.lock();
-    purge_oldest_covers(&mut cache, count, crate::utils::is_low_resource());
-}
-
-/// Carga una imagen desde bytes crudos (fallback del reproductor).
-/// Precarga carátulas para una lista de rutas de álbumes visibles.
-/// Útil para evitar frames en blanco al hacer scroll por la biblioteca:
-/// las carátulas se cargan en la LRU cache antes de que el usuario las vea.
-pub fn preload_visible_covers(paths: &[String]) {
-    if paths.is_empty() {
-        return;
-    }
-    let cache_mtx = get_lru_cache();
-    let mut cache = cache_mtx.lock();
-    for path in paths {
-        if cache.contains(path) {
-            // Ya en caché: promover a MRU sin reinsertar.
-            cache.promote(path);
-        } else {
-            // No está: cargar desde disco y guardar en LRU.
-            let handle = iced::widget::image::Handle::from_path(path);
-            cache.put(path.clone(), handle);
+/// Decodes an image file (AVIF, PNG, JPEG or WebP) to RGBA8.
+///
+/// The format is detected from the file content. When the longer edge exceeds
+/// `max_edge`, the image is downscaled (Lanczos3, aspect ratio preserved) so the
+/// longer edge equals `max_edge`; smaller images are never upscaled. Returns
+/// `None` on any failure (missing or unreadable file, unknown format, decode
+/// error, zero-sized image or `max_edge == 0`); the reason is logged at debug
+/// level.
+pub fn decode_cover_rgba(path: &std::path::Path, max_edge: u32) -> Option<DecodedCover> {
+    match try_decode_cover_rgba(path, max_edge) {
+        Ok(cover) => Some(cover),
+        Err(reason) => {
+            tracing::debug!("No se pudo decodificar la carátula {:?}: {}", path, reason);
+            None
         }
     }
 }
 
-/// Solo se usa cuando no hay carátula en caché de disco (datos embebidos del archivo de audio).
-/// Carga una imagen desde bytes crudos para usar en Iced (fallback para datos embebidos).
-pub fn load_raw_image_for_iced(data: &[u8]) -> Option<iced::widget::image::Handle> {
-    if data.is_empty() {
-        return None;
+/// Fallible body of [`decode_cover_rgba`]; the error is a human-readable reason.
+fn try_decode_cover_rgba(path: &std::path::Path, max_edge: u32) -> Result<DecodedCover, String> {
+    if max_edge == 0 {
+        return Err("max_edge is 0".to_string());
     }
-    Some(iced::widget::image::Handle::from_bytes(data.to_vec()))
+    let image = image::ImageReader::open(path)
+        .map_err(|e| e.to_string())?
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?
+        .decode()
+        .map_err(|e| e.to_string())?
+        .to_rgba8();
+
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 {
+        return Err("zero-sized image".to_string());
+    }
+
+    let (dst_width, dst_height) = fit_within(width, height, max_edge);
+    if (dst_width, dst_height) == (width, height) {
+        return Ok(DecodedCover {
+            width,
+            height,
+            rgba: image.into_raw(),
+        });
+    }
+
+    let src_image = Image::from_vec_u8(
+        width,
+        height,
+        image.into_raw(),
+        fast_image_resize::PixelType::U8x4,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut dst_image = Image::new(dst_width, dst_height, src_image.pixel_type());
+
+    let mut resizer = Resizer::new();
+    if let Some(ext) = forced_cpu_extension() {
+        // SAFETY: `forced_cpu_extension` solo devuelve `Avx2` tras comprobar en
+        // runtime con `is_x86_feature_detected!("avx2")` que el procesador la
+        // soporta, de modo que la extensión está garantizada en este punto.
+        unsafe {
+            resizer.set_cpu_extensions(ext);
+        }
+    }
+    let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3));
+    resizer
+        .resize(&src_image, &mut dst_image, &options)
+        .map_err(|e| e.to_string())?;
+
+    Ok(DecodedCover {
+        width: dst_width,
+        height: dst_height,
+        rgba: dst_image.into_vec(),
+    })
 }
 
-/// Vacía por completo la caché LRU de carátulas.
-fn clear_cover_cache(cache: &mut CoverCache) {
-    cache.entries.clear();
+/// Size that fits `width` x `height` inside a `max_edge` square, preserving the
+/// aspect ratio and never upscaling. Each edge is at least 1 pixel.
+fn fit_within(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
+    let longer = width.max(height);
+    if longer <= max_edge {
+        return (width, height);
+    }
+    let scale = |edge: u32| -> u32 {
+        let scaled =
+            (u64::from(edge) * u64::from(max_edge) + u64::from(longer) / 2) / u64::from(longer);
+        u32::try_from(scaled).unwrap_or(max_edge).clamp(1, max_edge)
+    };
+    (scale(width), scale(height))
 }
-
-/// Limpia la caché de imágenes crudas del reproductor (llamado al cambiar de canción)
-/// Limpia la caché LRU completa de carátulas (llamado al cambiar de canción).
-pub fn clear_raw_cache() {
-    // Vaciar LRU completo al limpiar
-    let cache_mtx = get_lru_cache();
-    let mut cache = cache_mtx.lock();
-    clear_cover_cache(&mut cache);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced::widget::image::Handle;
     use std::collections::{HashMap, VecDeque};
 
-    /// Handle determinista y comparable: `from_path` deriva el `Id` de la ruta,
-    /// a diferencia de `from_bytes`, que genera identidades únicas.
+    /// Handle de prueba, independiente de cualquier interfaz: basta con que sea
+    /// `Clone` y comparable para que el arnés compare rastros.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Handle(usize);
+
+    /// Handle determinista y comparable derivado del índice.
     fn test_handle(i: usize) -> Handle {
-        Handle::from_path(format!("cache/covers/{i}.avif"))
+        Handle(i)
     }
 
     /// Operaciones mínimas que el arnés de paridad necesita de cada implementación.
@@ -404,7 +431,7 @@ mod tests {
 
     /// Adaptador de paridad sobre la caché de producción (respaldada por `lru`).
     struct ProductionCache {
-        cache: CoverCache,
+        cache: CoverCache<Handle>,
     }
 
     impl ProductionCache {
@@ -429,11 +456,11 @@ mod tests {
         }
 
         fn clear(&mut self) {
-            clear_cover_cache(&mut self.cache);
+            self.cache.clear();
         }
 
         fn purge_oldest(&mut self, count: usize, low_resource: bool) {
-            purge_oldest_covers(&mut self.cache, count, low_resource);
+            self.cache.purge_oldest(count, low_resource);
         }
 
         fn resize(&mut self, cap: usize) {
@@ -566,7 +593,7 @@ mod tests {
     /// ninguna otra implementación: fija el orden MRU→LRU esperado.
     #[test]
     fn covercache_golden_lru_order() {
-        let mut cache = CoverCache::new(3);
+        let mut cache: CoverCache<Handle> = CoverCache::new(3);
         cache.put("a".into(), test_handle(0));
         cache.put("b".into(), test_handle(1));
         cache.put("c".into(), test_handle(2));
@@ -811,5 +838,160 @@ mod tests {
         // Limpia solo el archivo generado; el directorio cache/covers/ es un
         // artefacto de runtime ignorado por git y se deja en su sitio.
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_zero_capacity_is_treated_as_one_entry() {
+        let mut cache: CoverCache<Handle> = CoverCache::new(0);
+        assert!(cache.is_empty());
+        cache.put("a".into(), test_handle(0));
+        cache.put("b".into(), test_handle(1));
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains("b"));
+
+        cache.resize(0);
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn promote_moves_an_existing_key_without_inserting_a_missing_one() {
+        let mut cache: CoverCache<Handle> = CoverCache::new(3);
+        cache.put("a".into(), test_handle(0));
+        cache.put("b".into(), test_handle(1));
+        assert!(cache.promote("a"));
+        assert_eq!(cache.order_mru_to_lru(), vec!["a", "b"]);
+        assert!(!cache.promote("missing"));
+        assert_eq!(cache.len(), 2);
+    }
+
+    /// Path to a fresh file in the system temp dir, unique per process and call.
+    fn unique_temp_path(name: &str, extension: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "audoxidy_cover_test_{}_{}_{}.{}",
+            std::process::id(),
+            name,
+            n,
+            extension
+        ))
+    }
+
+    /// Writes `img` as PNG to a unique temp file and returns its path.
+    fn write_png(img: &image::RgbaImage, name: &str) -> std::path::PathBuf {
+        let path = unique_temp_path(name, "png");
+        img.save_with_format(&path, image::ImageFormat::Png)
+            .expect("no se pudo escribir el PNG de prueba");
+        path
+    }
+
+    /// Asserts that two RGBA pixels differ by at most `tolerance` per channel.
+    fn assert_pixel_near(actual: &[u8], expected: [u8; 4], tolerance: u8) {
+        for (a, e) in actual.iter().zip(expected.iter()) {
+            assert!(
+                a.abs_diff(*e) <= tolerance,
+                "pixel {actual:?} differs from {expected:?} by more than {tolerance}"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_cover_rgba_reads_a_png_without_resizing_when_it_already_fits() {
+        let mut img = image::RgbaImage::from_pixel(4, 2, image::Rgba([10, 20, 30, 255]));
+        img.put_pixel(3, 1, image::Rgba([200, 100, 50, 128]));
+        let path = write_png(&img, "fits");
+
+        let decoded = decode_cover_rgba(&path, 4).expect("the PNG should decode");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!((decoded.width, decoded.height), (4, 2));
+        assert_eq!(decoded.rgba.len(), 4 * 2 * 4);
+        assert_eq!(&decoded.rgba[0..4], &[10, 20, 30, 255]);
+        // Row 1, column 3 of a 4-pixel-wide image.
+        let last = (4 + 3) * 4;
+        assert_eq!(&decoded.rgba[last..last + 4], &[200, 100, 50, 128]);
+    }
+
+    #[test]
+    fn decode_cover_rgba_downscales_so_the_longer_edge_matches_max_edge() {
+        let img = image::RgbaImage::from_pixel(100, 50, image::Rgba([255, 0, 0, 255]));
+        let path = write_png(&img, "landscape");
+        let decoded = decode_cover_rgba(&path, 20).expect("the PNG should decode");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!((decoded.width, decoded.height), (20, 10));
+        assert_eq!(decoded.rgba.len(), 20 * 10 * 4);
+        assert_pixel_near(&decoded.rgba[0..4], [255, 0, 0, 255], 1);
+
+        let img = image::RgbaImage::from_pixel(30, 90, image::Rgba([0, 0, 255, 255]));
+        let path = write_png(&img, "portrait");
+        let decoded = decode_cover_rgba(&path, 45).expect("the PNG should decode");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!((decoded.width, decoded.height), (15, 45));
+        assert_pixel_near(&decoded.rgba[0..4], [0, 0, 255, 255], 1);
+    }
+
+    #[test]
+    fn decode_cover_rgba_never_upscales_a_small_image() {
+        let img = image::RgbaImage::from_pixel(10, 5, image::Rgba([1, 2, 3, 255]));
+        let path = write_png(&img, "small");
+        let decoded = decode_cover_rgba(&path, 400).expect("the PNG should decode");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!((decoded.width, decoded.height), (10, 5));
+        assert_eq!(&decoded.rgba[0..4], &[1, 2, 3, 255]);
+    }
+
+    #[test]
+    fn decode_cover_rgba_reads_an_avif_encoded_by_the_image_crate() {
+        let img = image::RgbaImage::from_pixel(16, 8, image::Rgba([0, 200, 0, 255]));
+        let path = unique_temp_path("avif", "avif");
+        let file = std::fs::File::create(&path).expect("no se pudo crear el AVIF de prueba");
+        AvifEncoder::new_with_speed_quality(file, 10, 100)
+            .write_image(img.as_raw(), 16, 8, ExtendedColorType::Rgba8)
+            .expect("no se pudo codificar el AVIF de prueba");
+
+        let decoded = decode_cover_rgba(&path, 400).expect("the AVIF should decode");
+        let full = decode_cover_rgba(&path, 8).expect("the AVIF should decode");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!((decoded.width, decoded.height), (16, 8));
+        // AVIF is lossy: the solid colour survives within a small tolerance.
+        assert_pixel_near(&decoded.rgba[0..4], [0, 200, 0, 255], 12);
+        assert_eq!((full.width, full.height), (8, 4));
+    }
+
+    #[test]
+    fn decode_cover_rgba_returns_none_for_a_missing_file() {
+        let path = unique_temp_path("missing", "png");
+        assert!(decode_cover_rgba(&path, 400).is_none());
+    }
+
+    #[test]
+    fn decode_cover_rgba_returns_none_for_bytes_that_are_not_an_image() {
+        let path = unique_temp_path("garbage", "png");
+        std::fs::write(&path, b"definitely not an image").expect("write test file");
+        let decoded = decode_cover_rgba(&path, 400);
+        let _ = std::fs::remove_file(&path);
+        assert!(decoded.is_none());
+    }
+
+    #[test]
+    fn decode_cover_rgba_returns_none_for_a_zero_max_edge() {
+        let img = image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
+        let path = write_png(&img, "zero_edge");
+        let decoded = decode_cover_rgba(&path, 0);
+        let _ = std::fs::remove_file(&path);
+        assert!(decoded.is_none());
+    }
+
+    #[test]
+    fn fit_within_preserves_the_aspect_ratio_and_keeps_edges_at_least_one_pixel() {
+        assert_eq!(fit_within(400, 400, 200), (200, 200));
+        assert_eq!(fit_within(1000, 10, 100), (100, 1));
+        assert_eq!(fit_within(10_000, 1, 100), (100, 1));
+        assert_eq!(fit_within(50, 50, 50), (50, 50));
     }
 }
