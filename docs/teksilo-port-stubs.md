@@ -43,5 +43,5 @@ These entries stay enabled and behave as in Iced. The marker sits where Iced sto
 | Feature | Iced location | Iced behaviour | Teksilo site |
 | --- | --- | --- | --- |
 | Folder node in the filter tree | `src/gui/app.rs:4750` | selects the node but applies no library filter (`SelectFolder` is never emitted) | |
-| Meter "Tiempo de hold del pico" stepper | `src/gui/app.rs:5330` | value is saved; the meter keeps the 1.5 s constant (`src/gui/app.rs:496`) | |
-| Meter "Ventana RMS" stepper | `src/gui/app.rs:5349` | value is saved; nothing reads it | |
+| Meter "Tiempo de hold del pico" stepper | `src/gui/app.rs:5330` | value is saved; the meter keeps the 1.5 s constant (`src/gui/app.rs:496`) |`src/frontend/commands/meter.rs` (`set_hold_time_ms`) |
+| Meter "Ventana RMS" stepper | `src/gui/app.rs:5349` | value is saved; nothing reads it |`src/frontend/commands/meter.rs` (`set_rms_window_ms`) |
