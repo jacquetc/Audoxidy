@@ -23,6 +23,7 @@
 pub mod db_worker;
 pub mod error;
 pub mod events;
+pub mod long_ops;
 pub mod preload;
 pub mod reply;
 #[cfg(any(test, feature = "teksilo-mocks"))]
@@ -32,5 +33,6 @@ pub mod threading;
 pub use db_worker::DbWorker;
 pub use error::FrontendError;
 pub use events::{Event, EventHub, Origin, SubscriptionToken};
+pub use long_ops::{LongOperations, OpContext};
 pub use reply::{Latest, Reply, Ticket, TrackedReply};
 pub use threading::{is_ui_thread, mark_ui_thread};
