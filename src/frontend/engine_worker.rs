@@ -67,6 +67,29 @@ pub struct EngineContext {
     pub system_audio: Arc<dyn SystemAudioPort>,
 }
 
+impl EngineContext {
+    /// Applies the sound-server clock as Iced does before it builds a stream:
+    /// with PipeWire, force the clock live, wait [`PIPEWIRE_SETTLE`], then
+    /// persist it; with PulseAudio, only persist it. `None` means the
+    /// server's default.
+    ///
+    /// This is the one implementation of that sequence: Apply, the startup
+    /// restore and [`EngineWorker::apply_system_clock`] all run it, as a job
+    /// on the engine worker, since it starts subprocesses and sleeps.
+    pub fn apply_system_clock(&self, rate: Option<u32>, quantum: Option<u32>) -> SoundServer {
+        let system = &self.system_audio;
+        if system.is_pipewire_active() {
+            system.apply_pipewire_clock(rate, quantum);
+            std::thread::sleep(PIPEWIRE_SETTLE);
+            system.persist_pipewire_conf(rate, quantum);
+            SoundServer::PipeWire
+        } else {
+            system.persist_pulse_conf(rate, quantum);
+            SoundServer::PulseAudio
+        }
+    }
+}
+
 type EngineTask = Box<dyn FnOnce(&EngineContext) + Send>;
 
 enum EngineJob {
@@ -187,27 +210,14 @@ impl EngineWorker {
         self.run(move |context| Ok(context.player.apply_audio_settings(settings)?))
     }
 
-    /// Applies the sound-server clock as Iced does before it rebuilds the
-    /// stream: with PipeWire, force the clock live, wait
-    /// [`PIPEWIRE_SETTLE`], then persist it; with PulseAudio, only persist
-    /// it. `None` means the server's default.
+    /// Applies the sound-server clock as a job, with
+    /// [`EngineContext::apply_system_clock`].
     pub fn apply_system_clock(
         &self,
         rate: Option<u32>,
         quantum: Option<u32>,
     ) -> Reply<SoundServer> {
-        self.run(move |context| {
-            let system = &context.system_audio;
-            if system.is_pipewire_active() {
-                system.apply_pipewire_clock(rate, quantum);
-                std::thread::sleep(PIPEWIRE_SETTLE);
-                system.persist_pipewire_conf(rate, quantum);
-                Ok(SoundServer::PipeWire)
-            } else {
-                system.persist_pulse_conf(rate, quantum);
-                Ok(SoundServer::PulseAudio)
-            }
-        })
+        self.run(move |context| Ok(context.apply_system_clock(rate, quantum)))
     }
 
     /// Restarts PipeWire, its PulseAudio bridge and WirePlumber.

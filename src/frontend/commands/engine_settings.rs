@@ -26,18 +26,13 @@
 
 #![warn(missing_docs)]
 
-use std::sync::{Arc, Weak};
-
-use parking_lot::Mutex;
-
-use super::audio_settings::{SystemClock, apply_system_clock, resolve_system_clock};
+use super::audio_settings::{SystemClock, resolve_system_clock};
 use crate::frontend::app_context::AppContext;
 use crate::frontend::engine_worker::SoundServer;
 use crate::frontend::error::FrontendError;
 use crate::frontend::events::DeviceSnapshot;
 use crate::frontend::reply::Reply;
 use crate::frontend::settings::{self, PersistedSettings};
-use crate::utils::config::AppConfig;
 
 /// What happened to the output stream during the restore.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,35 +68,26 @@ pub struct RestoreReport {
     pub audio_notice: Option<String>,
 }
 
-/// The contexts whose settings were restored (by their configuration, which
-/// every clone of a context shares).
-static RESTORED: Mutex<Vec<Weak<AppConfig>>> = Mutex::new(Vec::new());
-
-/// Marks `ctx` as restored; `false` if it already was.
-fn claim_restore(ctx: &AppContext) -> bool {
-    let mut restored = RESTORED.lock();
-    restored.retain(|context| context.strong_count() > 0);
-    let this = Arc::as_ptr(&ctx.config);
-    if restored.iter().any(|context| context.as_ptr() == this) {
-        return false;
-    }
-    restored.push(Arc::downgrade(&ctx.config));
-    true
-}
-
 /// Restores every persisted audio setting into the engine; see the module
 /// documentation for the order.
 ///
 /// The settings are read on the database worker and applied in one job on
 /// the engine worker; nothing runs on the caller's thread. It runs once per
-/// context (quirk fix 6): a second call resolves to
+/// context (quirk fix 6): a second call, or a call after the session restore
+/// (`session::restore`, which runs this restore itself), resolves to
 /// [`FrontendError::InvalidInput`] without touching the engine.
 pub fn restore_persisted(ctx: &AppContext) -> Reply<RestoreReport> {
-    if !claim_restore(ctx) {
+    if !ctx.claim_startup_restore() {
         return Reply::ready(Err(FrontendError::InvalidInput(
             "the persisted settings were already restored on this context".to_string(),
         )));
     }
+    restore_engine_settings(ctx)
+}
+
+/// The restore itself, without the run-once guard: the session restore calls
+/// it after claiming the guard.
+pub(crate) fn restore_engine_settings(ctx: &AppContext) -> Reply<RestoreReport> {
     let persisted = settings::load_all(&ctx.db);
     let db = ctx.db.clone();
     ctx.engine.run(move |engine| {
@@ -114,7 +100,7 @@ pub fn restore_persisted(ctx: &AppContext) -> Reply<RestoreReport> {
             device.system_quantum,
             device.sample_rate,
         );
-        let sound_server = apply_system_clock(engine, clock);
+        let sound_server = engine.apply_system_clock(clock.rate, clock.quantum);
 
         let mut device_id_backfilled = None;
         let stream = if device.has_saved_output() {
