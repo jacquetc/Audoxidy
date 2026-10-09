@@ -132,7 +132,7 @@ fn loading_a_playlist_reads_its_rows_gains_and_saved_modes() {
 }
 
 #[test]
-fn a_shuffle_session_is_loaded_with_the_iced_position_rule() {
+fn a_loaded_shuffle_session_points_just_after_the_saved_song() {
     with_timeout(TEST_TIMEOUT, || {
         let rig = Rig::new();
         let list = rig.playlist_id("List");
