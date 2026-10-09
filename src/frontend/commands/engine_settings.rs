@@ -178,7 +178,7 @@ pub(crate) fn restore_engine_settings(ctx: &AppContext) -> Reply<RestoreReport> 
 }
 
 /// A context whose ports record, in one ordered log, the calls whose order
-/// the settings commands promise.
+/// the settings and session commands promise.
 #[cfg(test)]
 pub(crate) mod rig {
     use std::sync::Arc;
@@ -285,6 +285,7 @@ pub(crate) mod rig {
             self.inner.pause();
         }
         fn set_playing(&self, playing: bool) {
+            self.record("set_playing");
             self.inner.set_playing(playing);
         }
         fn stop(&self) {
@@ -297,12 +298,14 @@ pub(crate) mod rig {
             self.inner.is_playing()
         }
         fn seek(&self, position_secs: f64) {
+            self.record("seek");
             self.inner.seek(position_secs);
         }
         fn take_eof(&self) -> bool {
             self.inner.take_eof()
         }
         fn load_file(&self, track: &TrackRequest, gains: ReplayGains) -> Result<(), AudioError> {
+            self.record("load_file");
             self.inner.load_file(track, gains)
         }
         fn preload_next(&self, track: &TrackRequest, gains: ReplayGains) -> Result<(), AudioError> {
