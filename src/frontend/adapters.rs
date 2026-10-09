@@ -22,6 +22,10 @@ use crate::integrations::media_controls::SystemMediaControls;
 use crate::integrations::system_audio;
 
 /// [`PlayerPort`] over the real [`AudioManager`].
+///
+/// Loads and preloads go through `AudioManager::load_file_with_gains` and
+/// `preload_next_with_gains`: the gains the caller passes are used as given,
+/// and the manager never queries the database itself.
 pub struct AudioManagerPlayer {
     manager: Arc<AudioManager>,
 }
@@ -35,27 +39,6 @@ impl AudioManagerPlayer {
     /// The wrapped manager.
     pub fn manager(&self) -> &Arc<AudioManager> {
         &self.manager
-    }
-
-    /// Runs `send` (a load or preload) so that `AudioManager` does not look the
-    /// gains up itself.
-    ///
-    /// When both gains are `None`, `AudioManager::load_file` and `preload_next`
-    /// query the database on the calling thread if they can `try_lock` it.
-    /// The facade has already fetched the gains through the database worker
-    /// (a song without ReplayGain really has none), so this holds the
-    /// connection's guard, taken with a non-blocking `try_lock`, for the length
-    /// of the call: the manager's own `try_lock` then fails and it skips the
-    /// lookup. If the database worker holds the lock at that moment, the
-    /// manager's `try_lock` fails as well, unless the job ends in between; that
-    /// rare case only repeats a lookup that finds no gain.
-    fn without_gain_lookup<R>(&self, gains: ReplayGains, send: impl FnOnce() -> R) -> R {
-        if gains.track.is_some() || gains.album.is_some() {
-            return send();
-        }
-        let database = self.manager.get_database();
-        let _guard = database.as_ref().and_then(|db| db.try_lock().ok());
-        send()
     }
 }
 
@@ -95,31 +78,27 @@ impl PlayerPort for AudioManagerPlayer {
     }
 
     fn load_file(&self, track: &TrackRequest, gains: ReplayGains) -> Result<(), AudioError> {
-        self.without_gain_lookup(gains, || {
-            self.manager.load_file(
-                &track.path,
-                track.title.clone(),
-                track.artist.clone(),
-                track.album.clone(),
-                track.cover_path.clone(),
-                gains.track,
-                gains.album,
-            )
-        })
+        self.manager.load_file_with_gains(
+            &track.path,
+            track.title.clone(),
+            track.artist.clone(),
+            track.album.clone(),
+            track.cover_path.clone(),
+            gains.track,
+            gains.album,
+        )
     }
 
     fn preload_next(&self, track: &TrackRequest, gains: ReplayGains) -> Result<(), AudioError> {
-        self.without_gain_lookup(gains, || {
-            self.manager.preload_next(
-                &track.path,
-                track.title.clone(),
-                track.artist.clone(),
-                track.album.clone(),
-                track.cover_path.clone(),
-                gains.track,
-                gains.album,
-            )
-        })
+        self.manager.preload_next_with_gains(
+            &track.path,
+            track.title.clone(),
+            track.artist.clone(),
+            track.album.clone(),
+            track.cover_path.clone(),
+            gains.track,
+            gains.album,
+        )
     }
 
     fn purge_preload(&self) -> Result<(), AudioError> {
