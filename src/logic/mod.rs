@@ -12,9 +12,17 @@
 
 #![deny(warnings, clippy::all, clippy::unwrap_used, clippy::expect_used)]
 
+pub mod audio_settings;
+pub mod eq;
 pub mod filter_index;
 pub mod library_geometry;
 pub mod library_groups;
 pub mod library_selection;
 pub mod library_sort;
+pub mod marquee;
+pub mod meter;
+pub mod playlist_export;
+pub mod playlist_nav;
 pub mod selection_modifiers;
+pub mod stepper;
+pub mod transport;
