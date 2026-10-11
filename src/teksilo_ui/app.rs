@@ -28,11 +28,16 @@ use teksilo::core::PlatformTitleBarHost;
 #[cfg(test)]
 use teksilo::core::WidgetTree;
 use teksilo::prelude::*;
-use teksilo::tokens::{HAlignment, VAlignment};
-use teksilo::widgets::{Expand, FixedSize, HStack, Panel, Spacer, VStack};
+use teksilo::tokens::{Alignment, HAlignment, VAlignment};
+use teksilo::widgets::{Expand, FixedSize, HStack, Panel, Spacer, VStack, ZStack};
 
 pub use self::services::{AppServices, AudioCenterLink, Request, UiLinks, audio_center_tab};
 pub use self::session::{RestoreStatus, SessionState};
+use crate::teksilo_ui::audio_center::config::{ConfigTab, ConfigViewModel};
+use crate::teksilo_ui::audio_center::effects::{EffectsTab, EffectsViewModel};
+use crate::teksilo_ui::audio_center::equalizer::{EqualizerTab, EqualizerViewModel};
+use crate::teksilo_ui::audio_center::shell::{AudioCenterPanel, AudioCenterViewModel};
+use crate::teksilo_ui::audio_center::volume_mix::{VolumeMixTab, VolumeMixViewModel};
 use crate::teksilo_ui::filters::{FiltersPanel, FiltersViewModel};
 use crate::teksilo_ui::library::{LibraryPanel, LibraryViewModel};
 use crate::teksilo_ui::player::{PlayerPanel, PlayerViewModel};
@@ -210,12 +215,29 @@ impl Widget for App {
             ),
         );
 
+        let main = ctx.add(row().child(left).child(right));
+        // The Audio Center floats over the main layout (`app.rs:5160`): a
+        // top-leading layer that lets the pointer through outside its frame.
+        let audio_center = self.panel(ctx, |services| {
+            Box::new(AudioCenterPanel::new(
+                AudioCenterViewModel::new(services),
+                Box::new(ConfigTab::new(ConfigViewModel::new(services))),
+                Box::new(EqualizerTab::new(EqualizerViewModel::new(services))),
+                Box::new(EffectsTab::new(EffectsViewModel::new(services))),
+                Box::new(VolumeMixTab::new(VolumeMixViewModel::new(services))),
+            ))
+        });
         let root = ctx.add(
             Panel::new()
                 .padding(0.0)
                 .border_width(0.0)
                 .background(SurfaceRole::Main)
-                .child(row().child(left).child(right)),
+                .child(
+                    ZStack::new()
+                        .alignment(Alignment::TOP_LEADING)
+                        .child(main)
+                        .child(audio_center),
+                ),
         );
         self.regions.set(Some(Regions {
             player,
@@ -253,7 +275,13 @@ mod tests {
 
     const TIMEOUT: Duration = Duration::from_secs(10);
 
-    fn mounted() -> (WidgetTree, AsyncRuntimeHandle, AppHandles, Regions) {
+    fn mounted() -> (
+        WidgetTree,
+        AsyncRuntimeHandle,
+        AppHandles,
+        Regions,
+        WidgetId,
+    ) {
         let ctx = AppContext::in_memory().unwrap();
         LibraryFixture::demo()
             .seed_on(&ctx.db)
@@ -263,10 +291,10 @@ mod tests {
         let (mut tree, runtime) = tree_with_async(&ctx);
         let app = App::new(handles.clone(), None);
         let regions = app.regions();
-        tree.add(app);
+        let app_id = tree.add(app);
         layout(&mut tree);
         let regions = regions.get().unwrap();
-        (tree, runtime, handles, regions)
+        (tree, runtime, handles, regions, app_id)
     }
 
     fn rect(tree: &WidgetTree, id: WidgetId) -> (f32, f32, f32, f32) {
@@ -276,7 +304,7 @@ mod tests {
 
     #[test]
     fn the_regions_have_the_iced_geometry() {
-        let (tree, _runtime, handles, r) = mounted();
+        let (tree, _runtime, handles, r, _) = mounted();
         let (w, h) = VIEWPORT;
         assert_eq!(rect(&tree, r.player), (0.0, 0.0, 400.0, 400.0));
         assert_eq!(rect(&tree, r.playlist), (0.0, 400.0, 400.0, h - 400.0));
@@ -288,18 +316,19 @@ mod tests {
 
     #[test]
     fn the_panels_are_mounted_in_their_regions() {
-        let (tree, _runtime, handles, r) = mounted();
+        let (tree, _runtime, handles, r, app) = mounted();
         use crate::teksilo_ui::test_support::first_of_type;
         assert!(first_of_type(&tree, r.filters, "FiltersPanel").is_some());
         assert!(first_of_type(&tree, r.player, "PlayerPanel").is_some());
         assert!(first_of_type(&tree, r.library, "LibraryPanel").is_some());
         assert!(first_of_type(&tree, r.playlist, "PlaylistPanel").is_some());
+        assert!(first_of_type(&tree, app, "AudioCenterPanel").is_some());
         assert!(handles.ctx.shutdown());
     }
 
     #[test]
     fn building_the_root_restores_the_session_once() {
-        let (mut tree, runtime, handles, _) = mounted();
+        let (mut tree, runtime, handles, _, _) = mounted();
         let status = handles.session.status();
         assert!(run_until(&runtime, TIMEOUT, || status.get().is_settled()));
         assert!(matches!(status.get(), RestoreStatus::Restored(_)));

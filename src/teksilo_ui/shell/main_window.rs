@@ -6,8 +6,9 @@
 //! (the window has a stable id and the settings bundle keeps window state).
 //!
 //! Closing it, by its close button, the OS or a shortcut, runs the close
-//! guard: the features' close hooks (the Audio Center saves its equalizer and
-//! effects when it is open), then the playback position is saved. Once the
+//! guard: the features' close hooks, then the save of the playback position.
+//! (Iced also saves the equalizer and the effects when the Audio Center
+//! closes; the facade stores every such change as it is made.) Once the
 //! window is gone, playback stops and the facade's threads stop after writing
 //! every queued save (quirk fix 3; the Iced UI calls `exit(0)` and saves
 //! nothing).

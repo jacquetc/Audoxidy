@@ -236,6 +236,11 @@ pub fn first_of_type(tree: &WidgetTree, root: WidgetId, suffix: &str) -> Option<
 }
 
 /// Every node at or under `root` that the accessibility tree names `name`.
+///
+/// It reads `WidgetTree::accessibility_node`, which panics on a parked widget
+/// (a page of a `Switcher` not shown, a `visible_when(false)` subtree): use it
+/// on trees without parked pages, or walk `tree.sync_accessibility().nodes`
+/// as `audio_center::shell::testing::find_by_name` does.
 pub fn find_by_name(tree: &WidgetTree, root: WidgetId, name: &str) -> Vec<WidgetId> {
     let mut found = Vec::new();
     let mut stack = vec![root];

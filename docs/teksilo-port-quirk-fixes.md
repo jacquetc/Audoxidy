@@ -66,6 +66,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 54 | The open grid album's database fallback finds compilations |
 | 59 | The equalizer's preset dialogs stay inside the window |
 | 60 | Cancelling the preset dialog after an import saves the restored equalizer |
+| 61 | A click on empty space commits an open value field |
 
 ---
 
@@ -98,10 +99,9 @@ Unfinished Iced features (stubs) are not listed here; they are in
   saved at exit.
 - **Teksilo:** the window's close hook does three things, then lets the app exit normally:
   - saves the playlist position, shuffle and repeat state;
-  - saves the EQ and DSP settings when the Audio Center is open;
   - stops the background threads and the audio engine.
 - **Why:** the playback position and open settings were lost on every close.
-- **Pinned by:** the persistence part by `frontend::session::tests::quirk_3_persist_now_then_stop_stores_the_position_and_the_session` (the position, play state, shuffle and session saved by `session::persist_now` are written before `session::stop` ends the threads); the close path by `teksilo_ui::shell::main_window::tests::closing_runs_the_hooks_and_stops_the_backend` (`AppHandles::before_close` runs the close hooks and queues the save from the window's close guard; `AppHandles::after_close` stops the backend from the window's removal hook) and `teksilo_ui::app::session::tests::persisting_after_the_restore_writes_the_position`. The Audio Center registers its EQ and DSP save as a close hook in its wave.
+- **Pinned by:** the persistence part by `frontend::session::tests::quirk_3_persist_now_then_stop_stores_the_position_and_the_session` (the position, play state, shuffle and session saved by `session::persist_now` are written before `session::stop` ends the threads); the close path by `teksilo_ui::shell::main_window::tests::closing_runs_the_hooks_and_stops_the_backend` (`AppHandles::before_close` runs the close hooks and queues the save from the window's close guard; `AppHandles::after_close` stops the backend from the window's removal hook) and `teksilo_ui::app::session::tests::persisting_after_the_restore_writes_the_position`. Iced also saves the equalizer and the effects when the Audio Center closes; the Teksilo facade stores every equalizer, effect and mix change as it is made, so nothing is left to save at close (`teksilo_ui::audio_center::shell::audio_center_vm::tests::the_equalizer_and_the_effects_are_stored_without_a_close`).
 
 ## 4. Escape closes overlays and dialogs
 
@@ -112,7 +112,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   - dialog. In the EQ preset Load dialog, Escape restores the previewed state, as Cancel does;
   - the Audio Center panel.
 - **Why:** standard desktop behaviour, and needed for keyboard users.
-- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{escape_closes_the_menu_without_acting, a_click_outside_closes_the_menu}`, the filter menu by `teksilo_ui::filters::panel::tests::escape_closes_the_menu_without_choosing`, the search fields by fix 35's tests; the playlist menus by `teksilo_ui::playlist::list::tests::escape_closes_the_row_menu` and `teksilo_ui::playlist::tabs::tests::{the_chevron_opens_every_playlist_under_itself, a_right_click_on_a_tab_opens_its_menu_and_on_the_strip_the_bar_menu}`; the Audio Center and the meter popup by their waves.
+- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{escape_closes_the_menu_without_acting, a_click_outside_closes_the_menu}`, the filter menu by `teksilo_ui::filters::panel::tests::escape_closes_the_menu_without_choosing`, the search fields by fix 35's tests; the playlist menus by `teksilo_ui::playlist::list::tests::escape_closes_the_row_menu` and `teksilo_ui::playlist::tabs::tests::{the_chevron_opens_every_playlist_under_itself, a_right_click_on_a_tab_opens_its_menu_and_on_the_strip_the_bar_menu}`; the Audio Center by `teksilo_ui::audio_center::shell::panel::tests::{escape_closes_the_panel, escape_from_a_control_inside_a_tab_closes_the_panel_too, escape_does_nothing_while_the_panel_is_closed, the_close_button_takes_the_focus_when_the_panel_opens}`, `teksilo_ui::audio_center::config::config_tab::tests::escape_closes_an_open_pick_list_before_it_closes_the_panel` and `teksilo_ui::audio_center::volume_mix::volume_mix_tab::tests::escape_cancels_an_open_field_before_it_closes_the_panel` (the innermost overlay closes first), the equalizer dialogs by `teksilo_ui::audio_center::equalizer::load_dialog::tests::escape_and_a_press_outside_restore_the_backup` and `teksilo_ui::audio_center::equalizer::save_dialog::tests::cancelar_and_a_press_outside_close_without_saving`; the meter popup by its wave.
 
 ## 5. No blocking work on the UI thread
 
@@ -127,7 +127,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   - Stream-touching engine calls and subprocesses go through a second worker.
   - Debug builds assert that the database is never touched from the UI thread.
 - **Why:** the UI froze during these calls.
-- **Pinned by:** `frontend::db_worker::tests::recv_blocking_on_the_marked_ui_thread_panics` (any blocking wait on the marked UI thread panics in debug builds) and `frontend::reply::tests::try_recv_and_async_recv_are_allowed_on_the_ui_thread`; ordering and the purge re-check are pinned by `frontend::engine_worker::tests::{a_purge_followed_by_play_before_it_runs_is_skipped, engine_jobs_run_in_submission_order}`.
+- **Pinned by:** `frontend::db_worker::tests::recv_blocking_on_the_marked_ui_thread_panics` (any blocking wait on the marked UI thread panics in debug builds) and `frontend::reply::tests::try_recv_and_async_recv_are_allowed_on_the_ui_thread`; ordering and the purge re-check are pinned by `frontend::engine_worker::tests::{a_purge_followed_by_play_before_it_runs_is_skipped, engine_jobs_run_in_submission_order}`; the Audio Center's sound-server status (Iced runs `pw-metadata` on the UI thread every 3 s, `audio_center.rs:298`) is one engine-worker request at a time, every 3 s, only while the config tab is shown: `teksilo_ui::audio_center::config::config_vm::tests::{a_poll_asks_the_engine_worker_and_shows_the_answer, polls_are_three_seconds_apart_whatever_the_frame_rate, a_slow_sound_server_is_never_asked_twice_at_once}` and `teksilo_ui::audio_center::config::config_tab::tests::{the_poll_subscription_lives_only_while_the_tab_is_shown, inside_the_panel_polling_stops_when_the_panel_closes_or_changes_tab, a_hidden_tab_asks_the_sound_server_nothing}`.
 
 ## 6. The session is restored once at startup
 
@@ -150,7 +150,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   opened them. Modal dialogs are centred, the framework default. The EQ preset dialogs stay
   positioned relative to the Audio Center.
 - **Why:** hard-coded and origin positions put popups away from what opened them.
-- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{the_menu_button_opens_the_menu_below_it, the_menu_follows_the_button_when_the_panel_moves_or_has_an_inset}` (Iced opens it at a fixed position; the popover API has no offset, so it opens at the button's leading edge, about 7 px left of Iced's x = 15); the filter menu by `teksilo_ui::filters::panel::tests::the_selector_opens_a_172_pixel_menu_of_five_types_anchored_at_it` (Iced: a fixed 70 px from the window top, `library_filters.rs:345`); the playlist row menu by `teksilo_ui::playlist::list::tests::the_row_menu_opens_at_the_pointer` and the tab overflow list by `teksilo_ui::playlist::tabs::tests::the_chevron_opens_every_playlist_under_itself` (Iced: a fixed (220, 440)); the meter popup by its wave.
+- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{the_menu_button_opens_the_menu_below_it, the_menu_follows_the_button_when_the_panel_moves_or_has_an_inset}` (Iced opens it at a fixed position; the popover API has no offset, so it opens at the button's leading edge, about 7 px left of Iced's x = 15); the filter menu by `teksilo_ui::filters::panel::tests::the_selector_opens_a_172_pixel_menu_of_five_types_anchored_at_it` (Iced: a fixed 70 px from the window top, `library_filters.rs:345`); the playlist row menu by `teksilo_ui::playlist::list::tests::the_row_menu_opens_at_the_pointer` and the tab overflow list by `teksilo_ui::playlist::tabs::tests::the_chevron_opens_every_playlist_under_itself` (Iced: a fixed (220, 440)); the Audio Center's pick lists by `teksilo_ui::audio_center::config::config_tab::tests::a_pick_list_opens_under_its_box`; the meter popup by its wave.
 
 ## 8. Failed user actions show an error toast
 
@@ -158,7 +158,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   external file import, applying audio settings, EQ preset import and export.
 - **Teksilo:** the same failures are logged and also shown as an error toast.
 - **Why:** the user saw nothing happen and had no hint why.
-- **Pinned by:** the command side (the failure comes back as an error and a `LongOperation::Failed` event, not only a log line) by `frontend::commands::playlist::tests::quirk_8_an_export_that_cannot_write_its_list_fails`, `frontend::commands::playlist::tests::quirk_25_an_entry_outside_latin_1_fails_the_m3u_export_without_writing` and `frontend::commands::playlist::tests::quirk_8_an_import_that_finds_nothing_or_no_file_fails` (export and import), and `frontend::commands::audio_settings::tests::a_stream_error_comes_back_as_err_and_the_keys_are_still_persisted` (Apply); the toasts are to be filled by the playlist and Audio Center waves; the UI side by `teksilo_ui::library::library_vm::tests::{quirk_8_a_failed_delete_shows_an_error_toast_and_a_cancelled_one_does_not, quirk_8_a_folder_that_cannot_be_scanned_shows_an_error_toast}` and `teksilo_ui::player::panel::tests::{a_scan_that_cannot_start_shows_an_error_toast, a_folder_dialog_that_cannot_open_shows_an_error_toast, a_track_that_cannot_be_played_shows_an_error_toast}`; the playlist by `teksilo_ui::playlist::playlist_vm::tests::{a_failed_export_is_an_error_notice, a_failed_import_is_an_error_notice, a_cancelled_operation_and_someone_elses_say_nothing}` and `teksilo_ui::playlist::notice::tests::every_notice_is_shown_as_a_toast_in_the_window` (the playlist also toasts a failed create, rename, delete or file location, and a successful export); the Audio Center by its wave.
+- **Pinned by:** the command side (the failure comes back as an error and a `LongOperation::Failed` event, not only a log line) by `frontend::commands::playlist::tests::quirk_8_an_export_that_cannot_write_its_list_fails`, `frontend::commands::playlist::tests::quirk_25_an_entry_outside_latin_1_fails_the_m3u_export_without_writing` and `frontend::commands::playlist::tests::quirk_8_an_import_that_finds_nothing_or_no_file_fails` (export and import), and `frontend::commands::audio_settings::tests::a_stream_error_comes_back_as_err_and_the_keys_are_still_persisted` (Apply); the toasts are to be filled by the playlist and Audio Center waves; the UI side by `teksilo_ui::library::library_vm::tests::{quirk_8_a_failed_delete_shows_an_error_toast_and_a_cancelled_one_does_not, quirk_8_a_folder_that_cannot_be_scanned_shows_an_error_toast}` and `teksilo_ui::player::panel::tests::{a_scan_that_cannot_start_shows_an_error_toast, a_folder_dialog_that_cannot_open_shows_an_error_toast, a_track_that_cannot_be_played_shows_an_error_toast}`; the playlist by `teksilo_ui::playlist::playlist_vm::tests::{a_failed_export_is_an_error_notice, a_failed_import_is_an_error_notice, a_cancelled_operation_and_someone_elses_say_nothing}` and `teksilo_ui::playlist::notice::tests::every_notice_is_shown_as_a_toast_in_the_window` (the playlist also toasts a failed create, rename, delete or file location, and a successful export); the Audio Center's Apply by `teksilo_ui::audio_center::config::config_vm::tests::a_failed_apply_shows_an_error_toast_and_still_disables_apply` and its preset operations by `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::a_failed_preset_operation_shows_an_error_toast`.
 
 ## 9. Downmix settings apply at startup
 
@@ -331,7 +331,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   so it shows the lengths in effect. The secondary-click reset values stay Iced's (1000 and
   2000 ms).
 - **Why:** the tab showed values that were not the ones applied.
-- **Pinned by:** `frontend::commands::mix::tests::after_a_fresh_install_restore_the_tab_shows_the_fade_lengths_in_effect`.
+- **Pinned by:** `frontend::commands::mix::tests::after_a_fresh_install_restore_the_tab_shows_the_fade_lengths_in_effect`; the tab by `teksilo_ui::audio_center::volume_mix::volume_mix_vm::tests::the_tab_shows_the_values_the_engine_uses`.
 
 ## 22. Previous wraps to the last song under Repeat All
 
@@ -737,4 +737,15 @@ Unfinished Iced features (stubs) are not listed here; they are in
   Iced UI keeps its query.
 - **Why:** the user's decision. A compilation opened empty whenever the current results did not hold it.
 - **Pinned by:** `frontend::commands::library::tests::{quirk_54_a_compilation_is_found_by_its_album_artist, the_album_artist_query_finds_an_ordinary_album_and_a_pipe_in_the_artist}` and `teksilo_ui::library::library_vm::tests::quirk_54_a_compilation_hidden_by_the_search_loads_from_its_album_artist`.
+
+## 61. A click on empty space commits an open value field
+
+- **Iced:** any click outside an open stepper or effect-slider value field commits it and deselects
+  the slider (the field loses focus on every outside click).
+- **Teksilo:** a click into non-focusable space keeps the keyboard focus where it was (review item 25),
+  which would leave the field open. So the Audio Center's frame takes the focus on a primary press,
+  and the open field blurs and commits as in Iced. This restores Iced's behaviour rather than changing
+  it; it is listed because the mechanism differs.
+- **Why:** an edited value left uncommitted until Enter or Tab.
+- **Pinned by:** `teksilo_ui::audio_center::volume_mix::volume_mix_tab::tests::a_press_on_the_background_commits_an_open_value_field` (it fails without the focusable frame).
 
