@@ -517,6 +517,11 @@ impl PresetLoad {
         {
             let mut state = vm.inner.state.borrow_mut();
             eq::restore(&vm.inner.services.ctx, &mut state, &self.inner.backup);
+            // Quirk fix 60: an "Importar" during the dialog was persisted at
+            // once; save the restored state too, so the database matches what
+            // the engine and the tab show (Iced restores without saving,
+            // `app.rs:2163-2178`). The worker writes it in order; nothing waits.
+            drop(eq::save(&vm.inner.services.ctx, &state));
         }
         vm.inner.epoch.set(vm.inner.epoch.get() + 1);
         vm.sync();

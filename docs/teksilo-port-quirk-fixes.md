@@ -58,6 +58,8 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 42 | Clearing the sort keeps the open grid album |
 | 47 | The list modes follow the sort |
 | 48 | The rubber band selects what it covers |
+| 59 | The equalizer's preset dialogs stay inside the window |
+| 60 | Cancelling the preset dialog after an import saves the restored equalizer |
 
 ---
 
@@ -644,4 +646,24 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:** the band and its hit rectangles use the list's own coordinates and width.
 - **Why:** the band selected rows it did not cover and missed rows it did.
 - **Pinned by:** `teksilo_ui::library::list_rows::tests::a_drag_over_the_rows_selects_them_with_the_marquee` and `teksilo_ui::library::library_vm::tests::the_marquee_selects_the_rows_it_crosses`.
+
+## 59. The equalizer's preset dialogs stay inside the window
+
+- **Iced:** the Load and Save preset dialogs open at a fixed offset from the Audio Center
+  (`src/gui/app.rs:5730-5740`). A dragged panel can push them partly off-screen.
+- **Teksilo:** they open at the same offset from the panel, clamped so the whole dialog stays inside
+  the window.
+- **Why:** a dialog whose buttons are off-screen cannot be answered.
+- **Pinned by:** `teksilo_ui::audio_center::equalizer::placement::tests` (the offset formulas and the clamp), `teksilo_ui::audio_center::equalizer::load_dialog::tests::a_dragged_panel_moves_the_dialog`.
+
+## 60. Cancelling the preset dialog after an import saves the restored equalizer
+
+- **Iced:** "Importar" in the Load dialog applies the file's preset and saves it at once. "Cancelar"
+  then restores the backup in the engine and on screen, without saving it
+  (`src/gui/app.rs:2163-2178`). The database keeps the imported preset, so the next start shows it.
+- **Teksilo:** Cancel saves the restored state too, so the database matches what the engine plays
+  and the tab shows.
+- **Why:** the equalizer that came back after a restart was not the one the user had cancelled back
+  to.
+- **Pinned by:** `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::quirk_60_cancelling_after_an_import_saves_the_restored_state` (it fails without the fix).
 

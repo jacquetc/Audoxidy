@@ -576,6 +576,37 @@ fn importing_applies_the_file_at_once_and_adds_it_to_the_list() {
 }
 
 #[test]
+fn quirk_60_cancelling_after_an_import_saves_the_restored_state() {
+    let mut f = Fixture::new();
+    let before = f.raw(keys::EQ_SELECTED_PRESET);
+    let preset = crate::audio::preset::EqPreset::new(
+        "imported then cancelled",
+        1.5,
+        Some(vec![2.0; 20]),
+        Some(vec![2.0; 31]),
+    );
+    let path = temp_path("imported-then-cancelled.aeqp");
+    std::fs::write(
+        &path,
+        crate::audio::preset::preset_to_json(&preset).unwrap(),
+    )
+    .unwrap();
+    let load = f.vm.begin_load();
+    let (session, source) = (load.clone(), path.clone());
+    f.press(move |ctx| session.import(source.clone(), ctx));
+    f.setting_when(keys::EQ_SELECTED_PRESET, |v| {
+        v == Some("imported then cancelled")
+    });
+    load.cancel();
+    let after = f.setting_when(keys::EQ_SELECTED_PRESET, |v| {
+        v != Some("imported then cancelled")
+    });
+    assert_eq!(after, before.filter(|v| !v.is_empty()).or(after.clone()));
+    assert_eq!(f.vm.preset_name().get(), None);
+    f.finish();
+}
+
+#[test]
 fn importing_a_file_that_is_not_a_preset_changes_nothing() {
     let mut f = Fixture::new();
     let path = temp_path("broken.json");
