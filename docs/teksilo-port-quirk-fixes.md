@@ -64,6 +64,10 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 52 | Down with nothing focused selects the first row |
 | 53 | The open grid album follows the search whatever its case |
 | 54 | The open grid album's database fallback finds compilations |
+| 55 | Renaming the active playlist leaves the playing track alone |
+| 56 | The playlist selection follows its songs through a search |
+| 57 | A song without a track number is numbered within its group |
+| 58 | "Enviar a otra lista" leaves out the active playlist |
 | 59 | The equalizer's preset dialogs stay inside the window |
 | 60 | Cancelling the preset dialog after an import saves the restored equalizer |
 | 61 | A click on empty space commits an open value field |
@@ -158,6 +162,10 @@ Unfinished Iced features (stubs) are not listed here; they are in
   external file import, applying audio settings, EQ preset import and export.
 - **Teksilo:** the same failures are logged and also shown as an error toast.
 - **Why:** the user saw nothing happen and had no hint why.
+- **Also (Teksilo only, the user's decision of 2026-10-11):** the playlist tells the user when an export
+  has written its list (a success toast, or a warning saying how many song copies failed), and shows
+  an error toast when creating, renaming or deleting a playlist, or opening a song's file location,
+  fails; Iced only logs these.
 - **Pinned by:** the command side (the failure comes back as an error and a `LongOperation::Failed` event, not only a log line) by `frontend::commands::playlist::tests::quirk_8_an_export_that_cannot_write_its_list_fails`, `frontend::commands::playlist::tests::quirk_25_an_entry_outside_latin_1_fails_the_m3u_export_without_writing` and `frontend::commands::playlist::tests::quirk_8_an_import_that_finds_nothing_or_no_file_fails` (export and import), and `frontend::commands::audio_settings::tests::a_stream_error_comes_back_as_err_and_the_keys_are_still_persisted` (Apply); the toasts are to be filled by the playlist and Audio Center waves; the UI side by `teksilo_ui::library::library_vm::tests::{quirk_8_a_failed_delete_shows_an_error_toast_and_a_cancelled_one_does_not, quirk_8_a_folder_that_cannot_be_scanned_shows_an_error_toast}` and `teksilo_ui::player::panel::tests::{a_scan_that_cannot_start_shows_an_error_toast, a_folder_dialog_that_cannot_open_shows_an_error_toast, a_track_that_cannot_be_played_shows_an_error_toast}`; the playlist by `teksilo_ui::playlist::playlist_vm::tests::{a_failed_export_is_an_error_notice, a_failed_import_is_an_error_notice, a_cancelled_operation_and_someone_elses_say_nothing}` and `teksilo_ui::playlist::notice::tests::every_notice_is_shown_as_a_toast_in_the_window` (the playlist also toasts a failed create, rename, delete or file location, and a successful export); the Audio Center's Apply by `teksilo_ui::audio_center::config::config_vm::tests::a_failed_apply_shows_an_error_toast_and_still_disables_apply` and its preset operations by `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::a_failed_preset_operation_shows_an_error_toast`.
 
 ## 9. Downmix settings apply at startup
@@ -748,4 +756,48 @@ Unfinished Iced features (stubs) are not listed here; they are in
   it; it is listed because the mechanism differs.
 - **Why:** an edited value left uncommitted until Enter or Tab.
 - **Pinned by:** `teksilo_ui::audio_center::volume_mix::volume_mix_tab::tests::a_press_on_the_background_commits_an_open_value_field` (it fails without the focusable frame).
+
+## 55. Renaming the active playlist leaves the playing track alone
+
+- **Iced:** after a rename, `InternalPlaylistsRefreshed` sends `SwitchPlaylist(id, false)`
+  (`src/gui/app.rs:2404-2420`). For the active playlist this persists its state, reloads it, then
+  loads, seeks and replays the playing track.
+- **Teksilo:** the active playlist only takes its new name: nothing is sent to the player, and the
+  selection stays. Renaming another playlist, or a system playlist (which makes a renamed copy), still
+  opens it, as in Iced.
+- **Why:** the user's decision (2026-10-11). A rename caused an audible reload and seek of the track,
+  as content changes did before fix 12.
+- **Pinned by:** `teksilo_ui::playlist::playlist_vm::tests::renaming_the_active_playlist_keeps_the_playing_track`; the switches that are kept by `teksilo_ui::playlist::playlist_vm::tests::{renaming_another_playlist_opens_it, renaming_a_system_playlist_switches_to_a_renamed_copy}`.
+
+## 56. The playlist selection follows its songs through a search
+
+- **Iced:** `PlaylistSearchChanged` (`src/gui/app.rs:2746`) filters the groups again but keeps the
+  selection, the focus and the pivot as linear indices, which then point at other rows.
+- **Teksilo:** the selection is carried by the identity of its rows (a song by its playlist item, a
+  separator by its group's anchor). Selected rows the search still shows stay selected under their new
+  indices. Rows it hides drop out and do not come back when the search is cleared. The focus and the
+  pivot follow their row, or are dropped with it.
+- **Why:** the user's decision. The highlighted rows, and the rows Delete, Space and "Enviar a otra
+  lista" act on, changed under the user's hand.
+- **Pinned by:** `teksilo_ui::playlist::playlist_vm::tests::the_selection_follows_its_songs_through_a_search`, `teksilo_ui::playlist::rows::tests::{a_selection_follows_its_rows_through_a_search, a_row_is_found_again_by_its_key}`.
+
+## 57. A song without a track number is numbered within its group
+
+- **Iced:** `build_song_row` (`src/gui/playlist.rs:931-935`) shows `{:02}.` of the row's linear index,
+  which counts the separators. The first group reads 01, 02, …; a later group continues from its
+  offset (the first song of the mock "CD 02" reads 12).
+- **Teksilo:** the song shows its position among the songs of its group, counted over the whole
+  playlist before any search, from 1. That is what Iced shows for the first group, and it reads like
+  the track number it replaces. A song keeps its number when a search hides others.
+- **Why:** the user's decision. The numbering was off by the number of groups above.
+- **Pinned by:** `teksilo_ui::playlist::rows::tests::a_song_is_numbered_within_its_group_in_the_whole_playlist`, `teksilo_ui::playlist::list::tests::a_song_shows_its_track_number_or_its_position_in_its_group`.
+
+## 58. "Enviar a otra lista" leaves out the active playlist
+
+- **Iced:** the submenu (`src/gui/app.rs:3999`, built at `:4024-4041`) lists every playlist, the active
+  one included. Sending songs to it adds nothing, since a song already in a playlist is skipped.
+- **Teksilo:** it lists "Nueva lista", the system playlists, then the user playlists sorted
+  case-insensitively, without the active playlist.
+- **Why:** the user's decision. An entry that silently did nothing.
+- **Pinned by:** `teksilo_ui::playlist::playlist_vm::tests::{the_send_to_lists_leave_out_the_active_playlist, the_send_to_lists_put_the_system_lists_first_then_sort_the_rest}`, `teksilo_ui::playlist::menus::tests::the_send_to_submenu_lists_new_then_the_system_lists_then_the_rest_sorted`.
 
