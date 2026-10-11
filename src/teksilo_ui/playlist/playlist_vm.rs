@@ -37,9 +37,10 @@
 //! view-model calls (`play_song`, `end_of_track`, `toggle_repeat`,
 //! `toggle_shuffle`, `switch_playlist`, …) persists the playlist state itself.
 //!
-//! A search keeps the selection on its rows (quirk fix 56), and renaming the
-//! active playlist leaves the playing track alone (quirk fix 55); see
-//! `docs/teksilo-port-quirk-fixes.md`.
+//! Teksilo-only fixes made here (`docs/teksilo-port-quirk-fixes.md`): the
+//! selection follows its rows through a search (quirk fix 56), renaming the
+//! active playlist leaves the playing track alone (quirk fix 55), and "Enviar
+//! a otra lista" leaves the active playlist out (quirk fix 58).
 //!
 //! Changing a playlist's content (adding, importing, sending songs, removing)
 //! reloads only its rows (quirk fix 12): the content model applies the new
@@ -818,9 +819,15 @@ impl PlaylistViewModel {
         Some(self.logged(reply, "the songs could not be sent to the playlist"))
     }
 
-    /// The playlists of the "Enviar a otra lista" submenu, in its order.
+    /// The playlists of the "Enviar a otra lista" submenu, in its order: the
+    /// active playlist is left out (quirk fix 58; Iced lists it, and sending
+    /// its own songs to it adds nothing, `src/gui/app.rs:4024-4041`).
     pub fn send_to_lists(&self) -> Vec<PlaylistTab> {
+        let active = self.active_playlist().get();
         menu_order(&self.tab_list(), true)
+            .into_iter()
+            .filter(|tab| Some(tab.id) != active)
+            .collect()
     }
 
     /// The playlists of the tab overflow menu, in its order.

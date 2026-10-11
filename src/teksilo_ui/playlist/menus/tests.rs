@@ -103,7 +103,6 @@ fn the_send_to_submenu_lists_new_then_the_system_lists_then_the_rest_sorted() {
                 "Audoxidy",
                 "Oxidy Drift",
                 "Baladas",
-                "David Bowie",
                 "mixtape"
             ]
         );

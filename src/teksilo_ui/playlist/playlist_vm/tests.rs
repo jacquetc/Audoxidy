@@ -524,14 +524,8 @@ fn the_send_to_lists_put_the_system_lists_first_then_sort_the_rest() {
     let send: Vec<String> = env.vm.send_to_lists().into_iter().map(|t| t.name).collect();
     assert_eq!(
         send,
-        vec![
-            "Audoxidy",
-            "Oxidy Drift",
-            "Alpha",
-            "beta",
-            "David Bowie",
-            "zeta"
-        ]
+        vec!["Audoxidy", "Oxidy Drift", "Alpha", "beta", "zeta"],
+        "the active playlist, \"David Bowie\", is left out"
     );
     let overflow: Vec<String> = env
         .vm
@@ -667,6 +661,19 @@ fn renaming_a_system_playlist_switches_to_a_renamed_copy() {
         "Audoxidy"
     );
     env.wait(|| env.services.active_playlist.name().get() == "Mis favoritas");
+}
+
+#[test]
+fn the_send_to_lists_leave_out_the_active_playlist() {
+    // Quirk fix 58.
+    let env = restored();
+    let bowie = env.playlist_id("David Bowie");
+    assert!(env.vm.send_to_lists().iter().all(|tab| tab.id != bowie));
+    let audoxidy = env.playlist_id("Audoxidy");
+    env.vm.switch_playlist(audoxidy, false);
+    env.wait(|| env.vm.active_playlist().get() == Some(audoxidy));
+    let send: Vec<String> = env.vm.send_to_lists().into_iter().map(|t| t.name).collect();
+    assert_eq!(send, vec!["Oxidy Drift", "David Bowie"]);
 }
 
 #[test]
