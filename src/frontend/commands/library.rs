@@ -124,6 +124,32 @@ pub fn album_songs_by_composite_id(
     }
 }
 
+/// The songs of a grid album given its composite id (`"{artist}|{hash}"`),
+/// matched by **album artist**, the artist the grid groups an album under:
+/// every song of a compilation is found, whatever its track artist. For the
+/// Teksilo UI (quirk fix 54): [`album_songs_by_composite_id`] goes through
+/// [`album_songs`] (`Database::get_songs_by_album_and_artist`), which matches
+/// the track artist, so it finds none of a compilation's songs; the Iced UI
+/// keeps that query.
+///
+/// An id that does not parse is taken as a bare album hash.
+pub fn album_songs_by_album_artist(
+    ctx: &AppContext,
+    composite_id: &str,
+) -> Reply<Vec<Arc<SongData>>> {
+    let id = composite_id.to_string();
+    ctx.db.read(move |db| {
+        Ok(match parse_album_composite_id(&id) {
+            Some((artist, hash)) => db
+                .get_songs_by_album(&hash)?
+                .into_iter()
+                .filter(|song| get_effective_artist(song) == artist)
+                .collect(),
+            None => db.get_songs_by_album(&id)?,
+        })
+    })
+}
+
 /// The cover hashes a deletion may leave unused: the album hash of each
 /// deleted song and its cover override.
 fn covers_to_check(db: &Database, ids: &HashSet<i64>) -> Result<Vec<String>, FrontendError> {
@@ -447,6 +473,66 @@ mod tests {
                 .recv_blocking()
                 .unwrap();
             assert!(wrong_artist.is_empty());
+        });
+    }
+
+    #[test]
+    fn quirk_54_a_compilation_is_found_by_its_album_artist() {
+        with_timeout(TEST_TIMEOUT, || {
+            let (ctx, seeded) = seeded(LibraryFixture::demo());
+            let album = seeded
+                .albums
+                .iter()
+                .find(|a| a.title == "Summer Mix")
+                .unwrap();
+            assert_eq!(album.artist, "Various Artists");
+            let id = album_composite_id(&album.artist, &album.hash);
+
+            let by_track_artist = album_songs_by_composite_id(&ctx, &id)
+                .recv_blocking()
+                .unwrap();
+            assert!(
+                by_track_artist.is_empty(),
+                "the Iced query matches the track artist"
+            );
+
+            let songs = album_songs_by_album_artist(&ctx, &id)
+                .recv_blocking()
+                .unwrap();
+            assert_eq!(titles(&songs).len(), 2);
+            assert!(
+                songs
+                    .iter()
+                    .all(|s| s.album.as_deref() == Some("Summer Mix"))
+            );
+
+            let other = album_composite_id("Nobody", &album.hash);
+            let none = album_songs_by_album_artist(&ctx, &other)
+                .recv_blocking()
+                .unwrap();
+            assert!(none.is_empty(), "another album artist's album");
+
+            let bare = album_songs_by_album_artist(&ctx, &album.hash)
+                .recv_blocking()
+                .unwrap();
+            assert_eq!(bare.len(), 2);
+        });
+    }
+
+    #[test]
+    fn the_album_artist_query_finds_an_ordinary_album_and_a_pipe_in_the_artist() {
+        with_timeout(TEST_TIMEOUT, || {
+            let fixture = LibraryFixture::new()
+                .song(FixtureSong::new("/m/a/1.flac", "One", "A | B", "Pipes"))
+                .song(FixtureSong::new("/m/a/2.flac", "Two", "A | B", "Pipes"))
+                .song(FixtureSong::new("/m/c/1.flac", "Other", "C", "Plain"));
+            let (ctx, seeded) = seeded(fixture);
+            let album = seeded.albums.iter().find(|a| a.title == "Pipes").unwrap();
+            let id = album_composite_id(&album.artist, &album.hash);
+            let songs = album_songs_by_album_artist(&ctx, &id)
+                .recv_blocking()
+                .unwrap();
+            assert_eq!(titles(&songs), vec!["One", "Two"]);
         });
     }
 
