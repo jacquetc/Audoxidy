@@ -18,6 +18,7 @@
 #![deny(warnings, clippy::all, clippy::unwrap_used, clippy::expect_used)]
 
 pub mod app;
+pub mod audio_center;
 pub mod event_source;
 pub mod icons;
 #[cfg(any(test, feature = "teksilo-mocks"))]
