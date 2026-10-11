@@ -10,17 +10,25 @@
 //!   shuffle and equalizer icons.
 //!
 //! [`PlaylistViewModel`] holds the state and the behaviour; the views are thin.
+//! The app builds it from the services (`PlaylistViewModel::new(&services)`)
+//! and mounts [`PlaylistPanel::new(vm)`](PlaylistPanel::new) in the region;
+//! building the panel subscribes the view-model to the facade's events. Ctrl+A,
+//! routed by the app to the focused panel, is
+//! [`PlaylistViewModel::select_all`]; [`PlaylistPanel::list_id`] names the list
+//! that takes the keyboard.
 
 pub mod bottom_bar;
 pub mod dialogs;
 pub mod list;
 pub mod menus;
 pub mod notice;
+pub mod panel;
 pub mod playlist_vm;
 pub mod rows;
 pub mod tabs;
 #[cfg(test)]
 pub(crate) mod testing;
 
+pub use panel::PlaylistPanel;
 pub use playlist_vm::{Notice, PlaylistViewModel};
 pub use rows::{PlaylistRowsSource, RowItem, ScrollTarget};
