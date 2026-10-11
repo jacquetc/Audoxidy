@@ -337,7 +337,7 @@ impl EqualizerViewModel {
     /// The reset icon (`EqPresetIconReset`, `audio_center.rs:1443`): flat
     /// bands, preamp 0 dB, no preset.
     pub fn reset(&self) {
-        self.apply(|ctx, state| eq::reset(ctx, state));
+        self.apply(eq::reset);
     }
 
     // --- The presets -------------------------------------------------------------------------
@@ -583,4 +583,4 @@ impl PresetLoad {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

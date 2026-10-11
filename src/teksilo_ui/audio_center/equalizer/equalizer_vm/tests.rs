@@ -28,7 +28,7 @@ use crate::teksilo_ui::test_support::{
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Everything a view-model test needs.
-pub(super) struct Fixture {
+pub(crate) struct Fixture {
     pub services: AppServices,
     pub fakes: InMemoryFakes,
     pub toasts: ToastRegistry,
@@ -39,6 +39,13 @@ pub(super) struct Fixture {
 impl Fixture {
     /// A view-model over the mock library, in 20-band mode, loaded.
     pub fn new() -> Self {
+        Self::in_locale("es-ES")
+    }
+
+    /// [`Fixture::new`] with the shipped messages of `locale` installed for
+    /// the rest of the test (every test runs on its own thread).
+    pub fn in_locale(locale: &str) -> Self {
+        install_locale(locale);
         let (ctx, fakes) = AppContext::in_memory_with_fakes().unwrap();
         screenshot_library()
             .seed_on(&ctx.db)
@@ -129,9 +136,55 @@ impl Fixture {
         press(&mut self.tree, f);
     }
 
+    /// Takes the modal the last click presented and builds its content into
+    /// the tree: the layer's id, and the callback the framework runs when the
+    /// modal goes away by any route.
+    pub fn open_modal(
+        &mut self,
+    ) -> (
+        WidgetId,
+        Option<teksilo::core::overlay::OverlayDismissCallback>,
+    ) {
+        use teksilo::core::modal::ModalContent;
+        let queued = self
+            .tree
+            .drain_pending_modal_requests()
+            .pop()
+            .expect("no modal was presented");
+        let on_dismiss = queued.request.on_dismiss.clone();
+        let id = match queued.request.content {
+            ModalContent::Deferred(build) => build(&mut self.tree),
+            ModalContent::ExistingWidget(id) => id,
+        };
+        crate::teksilo_ui::test_support::layout(&mut self.tree);
+        let _ = self.tree.render();
+        (id, on_dismiss)
+    }
+
     pub fn finish(self) {
         assert!(self.services.ctx.shutdown());
     }
+}
+
+fn install_locale(locale: &str) {
+    use teksilo::i18n::config::I18nConfig;
+    use teksilo::i18n::manager::I18nManager;
+    use teksilo::i18n::thread_local::{clear, install};
+    let Some(&(tag, files)) = crate::teksilo_ui::startup::app_locales()
+        .iter()
+        .find(|(tag, _)| *tag == locale)
+    else {
+        panic!("{locale} is not a locale the app ships");
+    };
+    let id: teksilo::i18n::LanguageIdentifier = tag.parse().unwrap();
+    clear();
+    let config = I18nConfig::new()
+        .source_locale(id.clone())
+        .supported_locales([id.clone()])
+        .compile_in(&[(tag, files)])
+        .auto_detect_os_locale(false)
+        .fallback_locale(id);
+    install(I18nManager::from_config(&config));
 }
 
 fn temp_path(name: &str) -> PathBuf {
@@ -484,7 +537,7 @@ fn exporting_writes_the_state_named_after_the_file_stem() {
     let path = temp_path("warm.json");
     let (session, target) = (load.clone(), path.clone());
     f.press(move |ctx| session.export(target.clone(), ctx));
-    f.wait(|| path.exists() && std::fs::metadata(&path).map_or(false, |m| m.len() > 0));
+    f.wait(|| path.exists() && std::fs::metadata(&path).is_ok_and(|m| m.len() > 0));
     let preset =
         crate::audio::preset::preset_from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(preset.name, "warm");
