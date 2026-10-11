@@ -86,7 +86,7 @@ fn type_text(tree: &mut WidgetTree, text: &str) {
         tree.dispatch_event(WidgetEvent::KeyDown {
             key: Key::Character(ch),
             modifiers: Modifiers::NONE,
-            text: Some(ch.to_string().into()),
+            text: Some(ch.to_string()),
         });
         layout(tree);
         assert_eq!(tree.focused(), Some(id));
@@ -195,10 +195,10 @@ fn the_field_shows_the_value_with_the_call_site_decimals() {
 fn enter_rounds_to_the_step_and_clamps_while_a_blur_only_clamps() {
     let range = (-4.0, 24.0);
     assert_eq!(
-        parse_field("3.14 dB", range, 0.1, true).map(|v| (v * 100.0).round()),
-        Some(310.0)
+        parse_field("3.17 dB", range, 0.1, true).map(|v| (v * 100.0).round()),
+        Some(320.0)
     );
-    assert_eq!(parse_field("3.14", range, 0.1, false), Some(3.14));
+    assert_eq!(parse_field("3.17", range, 0.1, false), Some(3.17));
     assert_eq!(parse_field("99", range, 0.1, true), Some(24.0));
     assert_eq!(parse_field("-12 dB", range, 0.1, false), Some(-4.0));
     assert_eq!(parse_field("abc", range, 0.1, true), None);
@@ -217,11 +217,11 @@ fn a_press_on_the_field_opens_it_and_enter_commits_the_rounded_value() {
     let mut f = fixture(0.0, plain);
     click(&mut f.tree, input_point(), PointerButton::Primary, 10);
     assert!(editing(&f));
-    retype(&mut f.tree, "3.14");
+    retype(&mut f.tree, "3.17");
     let field = f.tree.focused().unwrap();
     key_down(&mut f.tree, field, Key::Enter);
     assert!(!editing(&f));
-    assert!((f.value.get() - 3.1).abs() < 1e-5);
+    assert!((f.value.get() - 3.2).abs() < 1e-5);
     assert_eq!(f.tree.focused(), Some(f.slider));
     assert_eq!(f.changes.borrow().len(), 1);
 }
@@ -242,8 +242,8 @@ fn escape_closes_the_field_without_writing() {
 fn pressing_the_slider_commits_the_field_clamped_but_not_rounded_first() {
     let mut f = fixture(0.0, plain);
     click(&mut f.tree, input_point(), PointerButton::Primary, 10);
-    retype(&mut f.tree, "3.14");
-    // The press commits 3.14, then moves the value to the pointer.
+    retype(&mut f.tree, "3.17");
+    // The press commits 3.17, then moves the value to the pointer.
     click(
         &mut f.tree,
         Point::new(125.0, 9.0),
@@ -252,7 +252,7 @@ fn pressing_the_slider_commits_the_field_clamped_but_not_rounded_first() {
     );
     assert!(!editing(&f));
     let changes = f.changes.borrow();
-    assert!((changes[0] - 3.14).abs() < 1e-5);
+    assert!((changes[0] - 3.17).abs() < 1e-5);
     assert!((f.value.get() - 10.0).abs() < 1e-4);
 }
 
@@ -260,11 +260,11 @@ fn pressing_the_slider_commits_the_field_clamped_but_not_rounded_first() {
 fn leaving_the_field_commits_it_clamped_but_not_rounded() {
     let mut f = fixture(0.0, plain);
     click(&mut f.tree, input_point(), PointerButton::Primary, 10);
-    retype(&mut f.tree, "3.14");
+    retype(&mut f.tree, "3.17");
     f.tree.focus(f.slider);
     layout(&mut f.tree);
     assert!(!editing(&f));
-    assert!((f.value.get() - 3.14).abs() < 1e-5);
+    assert!((f.value.get() - 3.17).abs() < 1e-5);
 }
 
 #[test]
@@ -344,4 +344,19 @@ fn the_open_field_is_a_text_input_named_after_the_parameter() {
     let node = node(&mut f.tree, field);
     assert_eq!(node.role(), Role::TextInput);
     assert_eq!(node.label(), Some("Nivel dB"));
+}
+
+#[test]
+fn the_field_opens_again_after_a_commit() {
+    let mut f = fixture(0.0, plain);
+    click(&mut f.tree, input_point(), PointerButton::Primary, 10);
+    retype(&mut f.tree, "2");
+    let field = f.tree.focused().unwrap();
+    key_down(&mut f.tree, field, Key::Enter);
+    click(&mut f.tree, input_point(), PointerButton::Primary, 500);
+    assert!(editing(&f));
+    retype(&mut f.tree, "4");
+    let field = f.tree.focused().unwrap();
+    key_down(&mut f.tree, field, Key::Enter);
+    assert_eq!(f.value.get(), 4.0);
 }

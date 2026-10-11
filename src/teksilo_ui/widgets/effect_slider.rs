@@ -34,7 +34,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 
@@ -46,7 +46,7 @@ use teksilo::core::{Key, PointerButton, WidgetEvent};
 use teksilo::prelude::*;
 use teksilo::tokens::{CornerRadius, FontWeight, VAlignment};
 use teksilo::widgets::{
-    Center, Expand, FixedSize, HStack, Orientation, Padding, Slider, Switcher, TextFieldHandle,
+    Center, Expand, FixedSize, HStack, Orientation, Padding, Slider, TextFieldHandle,
     TextInputField, TextWidget, ZStack,
 };
 
@@ -163,7 +163,8 @@ pub fn caret_at(x: f32, text: &str) -> usize {
 struct Editor {
     editing: Signal<bool>,
     text: Signal<String>,
-    handle: TextFieldHandle,
+    handle: RefCell<Option<TextFieldHandle>>,
+    pending_caret: Cell<Option<usize>>,
     value: Signal<f32>,
     writer: UserWrite,
     range: (f32, f32),
@@ -172,23 +173,18 @@ struct Editor {
     from_pointer: Cell<bool>,
     quiet: Rc<Cell<bool>>,
     slider: Cell<Option<WidgetId>>,
-    field: Cell<Option<WidgetId>>,
-    set_caret: Rc<dyn Fn(usize)>,
 }
 
 impl Editor {
     /// Opens the field on the current value, the caret at `caret` (or at the
-    /// end), and gives it the focus.
-    fn begin(&self, caret: Option<usize>, from_pointer: bool, ctx: &mut EventContext) {
+    /// end). The value box rebuilds with the field in it, focused.
+    fn begin(&self, caret: Option<usize>, from_pointer: bool) {
         let text = format_value(self.value.get(), self.decimals);
         let caret = caret.unwrap_or(text.chars().count());
         self.text.set(text);
-        self.editing.set(true);
+        self.pending_caret.set(Some(caret));
         self.from_pointer.set(from_pointer);
-        if let Some(field) = self.field.get() {
-            ctx.request_focus(field);
-        }
-        (self.set_caret)(caret);
+        self.editing.set(true);
     }
 
     /// Closes the field and writes its value, rounded to the step when
@@ -206,10 +202,9 @@ impl Editor {
     /// The field's text as typed. The bound signal catches up with the field
     /// only on the next frame, so a commit reads the field itself.
     fn typed(&self) -> String {
-        if self.handle.is_live() {
-            self.handle.text()
-        } else {
-            self.text.get()
+        match &*self.handle.borrow() {
+            Some(handle) if handle.is_live() => handle.text(),
+            _ => self.text.get(),
         }
     }
 
@@ -236,14 +231,11 @@ impl Widget for EffectSlider {
         let text = ctx.signal(String::new());
         let quiet = Rc::new(Cell::new(false));
 
-        let field = TextInputField::new(text.clone())
-            .char_filter(accepts_input_char)
-            .max_length(EDIT_BUFFER_MAX_LEN)
-            .text_height(HEIGHT - 2.0 * INPUT_BORDER);
         let editor = Rc::new(Editor {
-            editing: editing.clone(),
+            editing,
             text,
-            handle: field.handle(),
+            handle: RefCell::new(None),
+            pending_caret: Cell::new(None),
             value: self.value.clone(),
             writer: writer.clone(),
             range: self.range,
@@ -252,20 +244,7 @@ impl Widget for EffectSlider {
             from_pointer: Cell::new(false),
             quiet: quiet.clone(),
             slider: Cell::new(None),
-            field: Cell::new(None),
-            set_caret: field.caret_setter(),
         });
-        let (submit, blur) = (editor.clone(), editor.clone());
-        let field = ctx.add(
-            field
-                .on_submit_fn(move |ctx| {
-                    submit.commit(true, ctx);
-                    submit.hand_back(ctx);
-                })
-                .on_blur_fn(move |ctx| blur.commit(false, ctx))
-                .access_label(self.label.clone()),
-        );
-        editor.field.set(Some(field));
 
         let commit_first = editor.clone();
         let before_press: PressHook = Rc::new(move |ctx| commit_first.commit(false, ctx));
@@ -301,7 +280,15 @@ impl Widget for EffectSlider {
         let slider_focused = Signal::new(false);
         track_selection(ctx, &slider_focused, &self.selected, Some(quiet));
 
-        let input = self.input(ctx, &editor, field, writer);
+        let decimals = self.decimals;
+        let input = ctx.add(ValueBox {
+            editor: editor.clone(),
+            label: self.label.clone(),
+            shown: self.value.map(move |value| format_value(*value, decimals)),
+            writer,
+            default_value: self.default_value,
+            root: None,
+        });
         let keys = editor.clone();
         let selected = self.selected.clone();
         ctx.apply_self_handlers(
@@ -340,65 +327,126 @@ impl Widget for EffectSlider {
     }
 }
 
-impl EffectSlider {
-    /// The 40 × 18 value box: the frame, then the value or the open field.
-    fn input(
-        &self,
-        ctx: &mut BuildContext,
-        editor: &Rc<Editor>,
-        field: WidgetId,
-        writer: UserWrite,
-    ) -> WidgetId {
-        let decimals = self.decimals;
-        let shown = self.value.map(move |value| format_value(*value, decimals));
-        let page = editor.editing.map(|editing| usize::from(*editing));
-        let frame = ctx.add(InputFrame {
-            editing: editor.editing.clone(),
-        });
-        editor
-            .editing
-            .bind_to(frame, ctx.binding_registry(), BindingLevel::RepaintOnly);
-        let press = editor.clone();
-        let default_value = self.default_value;
+/// The 40 × 18 value box: the frame, then the value, or the open field.
+///
+/// It rebuilds when editing starts or ends, so the field exists only while
+/// open and takes the focus from `build`: a field parked in a hidden
+/// `Switcher` page loses the focus it is given in the handler that shows the
+/// page (the page is still dormant when the next layout checks the focus).
+struct ValueBox {
+    editor: Rc<Editor>,
+    label: LocalizedString,
+    shown: Signal<String>,
+    writer: UserWrite,
+    default_value: f32,
+    root: Option<WidgetId>,
+}
+
+impl std::fmt::Debug for ValueBox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ValueBox")
+            .field("editing", &self.editor.editing.get())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ValueBox {
+    /// The open field, focused, its caret where the press put it.
+    fn field(&self, ctx: &mut BuildContext) -> WidgetId {
+        let field = TextInputField::new(self.editor.text.clone())
+            .char_filter(accepts_input_char)
+            .max_length(EDIT_BUFFER_MAX_LEN)
+            .text_height(HEIGHT - 2.0 * INPUT_BORDER);
+        *self.editor.handle.borrow_mut() = Some(field.handle());
+        let set_caret = field.caret_setter();
+        let (submit, blur) = (self.editor.clone(), self.editor.clone());
+        let field = ctx.add(
+            field
+                .on_submit_fn(move |ctx| {
+                    submit.commit(true, ctx);
+                    submit.hand_back(ctx);
+                })
+                .on_blur_fn(move |ctx| blur.commit(false, ctx))
+                .access_label(self.label.clone()),
+        );
+        ctx.focus(field);
+        if let Some(caret) = self.editor.pending_caret.take() {
+            set_caret(caret);
+        }
+        ctx.add(Padding::uniform(INPUT_BORDER).child(field))
+    }
+
+    /// The value as the closed box shows it.
+    fn display(&self, ctx: &mut BuildContext) -> WidgetId {
         ctx.add(
+            Center::new().child(
+                TextWidget::new(lit!(""))
+                    .text(self.shown.clone())
+                    .style(style::inter(INPUT_FONT_SIZE, FontWeight::MEDIUM))
+                    .color(TextRole::Primary)
+                    .single_line(),
+            ),
+        )
+    }
+}
+
+impl Widget for ValueBox {
+    fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
+        let self_id = ctx.self_id();
+        let editing = self.editor.editing.get();
+        self.editor
+            .editing
+            .bind_to(self_id, ctx.binding_registry(), BindingLevel::Rebuild);
+        let frame = ctx.add(InputFrame { editing });
+        let content = if editing {
+            self.field(ctx)
+        } else {
+            *self.editor.handle.borrow_mut() = None;
+            self.display(ctx)
+        };
+
+        let (press, writer, default_value) =
+            (self.editor.clone(), self.writer.clone(), self.default_value);
+        ctx.apply_self_handlers(HandlerSet::new().on_pointer_event(
+            move |event, ctx| match event {
+                WidgetEvent::PointerDown {
+                    button: PointerButton::Secondary,
+                    ..
+                } => {
+                    writer.set(default_value, ctx);
+                    EventResponse::Handled
+                }
+                WidgetEvent::PointerDown {
+                    button: PointerButton::Primary,
+                    position,
+                    ..
+                } if !press.editing.get() => {
+                    let text = format_value(press.value.get(), press.decimals);
+                    press.begin(Some(caret_at(position.x, &text)), true);
+                    EventResponse::Handled
+                }
+                _ => EventResponse::Ignored,
+            },
+        ));
+        let root = ctx.add(
             FixedSize::new()
                 .width(INPUT_WIDTH)
                 .height(HEIGHT)
-                .child(
-                    ZStack::new().child(frame).child(
-                        Switcher::new(page)
-                            .child(
-                                Center::new().child(
-                                    TextWidget::new(lit!(""))
-                                        .text(shown)
-                                        .style(style::inter(INPUT_FONT_SIZE, FontWeight::MEDIUM))
-                                        .color(TextRole::Primary)
-                                        .single_line(),
-                                ),
-                            )
-                            .child(Padding::uniform(INPUT_BORDER).child(field)),
-                    ),
-                )
-                .on_pointer_event(move |event, ctx| match event {
-                    WidgetEvent::PointerDown {
-                        button: PointerButton::Secondary,
-                        ..
-                    } => {
-                        writer.set(default_value, ctx);
-                        EventResponse::Handled
-                    }
-                    WidgetEvent::PointerDown {
-                        button: PointerButton::Primary,
-                        position,
-                        ..
-                    } if !press.editing.get() => {
-                        let text = format_value(press.value.get(), press.decimals);
-                        press.begin(Some(caret_at(position.x, &text)), true, ctx);
-                        EventResponse::Handled
-                    }
-                    _ => EventResponse::Ignored,
-                }),
-        )
+                .child(ZStack::new().child(frame).child(content)),
+        );
+        self.root = Some(root);
+        vec![root]
+    }
+
+    fn layout_response(&self, proposal: SizeProposal, ctx: &LayoutContext) -> LayoutResponse {
+        self.root
+            .and_then(|id| ctx.child_size(id, proposal))
+            .unwrap_or_else(|| proposal.resolve(0.0, 0.0))
+            .into()
+    }
+
+    fn children(&self) -> Vec<WidgetId> {
+        self.root.into_iter().collect()
     }
 }
 
@@ -423,7 +471,7 @@ fn field_keys(
         return EventResponse::Ignored;
     }
     if *key == Key::Enter && *modifiers == teksilo::core::Modifiers::NONE {
-        editor.begin(None, false, ctx);
+        editor.begin(None, false);
         return EventResponse::Handled;
     }
     arrow_keys(event, SliderOrientation::Horizontal, selected)
@@ -434,7 +482,7 @@ fn field_keys(
 /// (`widgets.rs:4462-4487`, `audio_center.rs:3147-3150`).
 #[derive(Debug)]
 struct InputFrame {
-    editing: Signal<bool>,
+    editing: bool,
 }
 
 impl Widget for InputFrame {
@@ -446,7 +494,7 @@ impl Widget for InputFrame {
         let colors = &ctx.theme.colors;
         let radius = CornerRadius::uniform(INPUT_RADIUS);
         canvas.fill_rounded_rect(bounds, radius, Tone::Background.resolve(colors));
-        let border = if self.editing.get() {
+        let border = if self.editing {
             Tone::Accent
         } else {
             Tone::Background
