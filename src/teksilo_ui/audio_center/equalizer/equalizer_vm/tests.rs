@@ -594,15 +594,48 @@ fn quirk_60_cancelling_after_an_import_saves_the_restored_state() {
     let load = f.vm.begin_load();
     let (session, source) = (load.clone(), path.clone());
     f.press(move |ctx| session.import(source.clone(), ctx));
-    f.setting_when(keys::EQ_SELECTED_PRESET, |v| {
-        v == Some("imported then cancelled")
-    });
+    let shown = f.vm.preset_name();
+    f.wait(|| shown.get().as_deref() == Some("imported then cancelled"));
     load.cancel();
     let after = f.setting_when(keys::EQ_SELECTED_PRESET, |v| {
         v != Some("imported then cancelled")
     });
     assert_eq!(after, before.filter(|v| !v.is_empty()).or(after.clone()));
     assert_eq!(f.vm.preset_name().get(), None);
+    f.finish();
+}
+
+#[test]
+fn quirk_60_a_cancel_before_the_import_finishes_still_restores_the_backup() {
+    let mut f = Fixture::new();
+    let before = f.vm.state();
+    let preset = crate::audio::preset::EqPreset::new(
+        "cancelled mid-import",
+        1.5,
+        Some(vec![2.0; 20]),
+        Some(vec![2.0; 31]),
+    );
+    let path = temp_path("cancelled-mid-import.aeqp");
+    std::fs::write(
+        &path,
+        crate::audio::preset::preset_to_json(&preset).unwrap(),
+    )
+    .unwrap();
+    let load = f.vm.begin_load();
+    let (session, source) = (load.clone(), path.clone());
+    // Cancel in the same turn as the import: its reply lands afterwards.
+    let cancel = load.clone();
+    f.press(move |ctx| {
+        session.import(source.clone(), ctx);
+        cancel.cancel();
+    });
+    let model = f.services.eq_presets.clone();
+    f.wait(|| model.entry("cancelled mid-import").is_some());
+    f.wait(|| f.vm.state().gains == before.gains);
+    assert_eq!(f.vm.preset_name().get(), None);
+    f.setting_when(keys::EQ_SELECTED_PRESET, |v| {
+        v != Some("cancelled mid-import")
+    });
     f.finish();
 }
 

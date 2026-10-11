@@ -354,6 +354,7 @@ impl EqualizerViewModel {
                 backup,
                 selected: Signal::new(None),
                 settled: Cell::new(false),
+                cancelled: Cell::new(false),
             }),
         }
     }
@@ -410,6 +411,9 @@ struct LoadInner {
     /// Whether Aceptar or Cancelar already ran, so that the dismissal that
     /// follows a button does not restore the backup over an accepted state.
     settled: Cell<bool>,
+    /// Whether the session ended with Cancelar (or a dismissal): an import
+    /// still in flight then must not leave its state in place.
+    cancelled: Cell<bool>,
 }
 
 /// One opening of the Load dialog; see the module documentation. Clones
@@ -513,6 +517,12 @@ impl PresetLoad {
         if self.inner.settled.replace(true) {
             return;
         }
+        self.inner.cancelled.set(true);
+        self.restore_backup();
+    }
+
+    /// Puts the backup back in the engine, the state and the database.
+    fn restore_backup(&self) {
         let vm = &self.inner.vm;
         {
             let mut state = vm.inner.state.borrow_mut();
@@ -563,16 +573,25 @@ impl PresetLoad {
         let vm = &self.inner.vm;
         let reply = eq::import_preset(&vm.inner.services.ctx, &vm.inner.state.borrow(), path);
         let owner = vm.clone();
+        let session = self.clone();
         vm.spawn_reported(ctx, EqFailure::Import, async move {
             let imported = reply.recv().await?;
-            *owner.inner.state.borrow_mut() = imported.state;
-            owner.inner.epoch.set(owner.inner.epoch.get() + 1);
-            owner.sync();
+            // The imported preset joins the list either way, as in Iced.
             owner
                 .inner
                 .services
                 .eq_presets
                 .replace_from(&imported.presets);
+            if session.inner.cancelled.get() {
+                // Cancelar came before the import finished: the facade has
+                // applied and saved the import since, so restore the backup
+                // again rather than show the imported state (quirk fix 60).
+                session.restore_backup();
+            } else {
+                *owner.inner.state.borrow_mut() = imported.state;
+                owner.inner.epoch.set(owner.inner.epoch.get() + 1);
+                owner.sync();
+            }
             Ok(())
         });
     }
