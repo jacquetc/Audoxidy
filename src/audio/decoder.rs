@@ -1353,6 +1353,8 @@ pub(crate) fn audio_decode_loop(command_rx: Receiver<AudioCommand>, engine: Audi
     let mut rms_sum_r: f64 = 0.0;
     let mut rms_count_r: u64 = 0;
     let mut rms_last_update: std::time::Instant = std::time::Instant::now();
+    // Linear stereo statistics for the Teksilo meter (correlation, mid/side).
+    let mut stereo_stats = crate::audio::meter::StereoStats::new();
 
     // === Pre-carga de la siguiente canción (transiciones sin cortes) ===
     // Decodifica la siguiente pista por adelantado a un buffer f64 ya resampleado
@@ -3528,6 +3530,7 @@ pub(crate) fn audio_decode_loop(command_rx: Receiver<AudioCommand>, engine: Audi
                             }
                             rms_sum_l += pl * pl;
                             rms_sum_r += pr * pr;
+                            stereo_stats.add_frame(frame[0], frame[1]);
                         }
                         rms_count_l += 1;
                         rms_count_r += 1;
@@ -3558,6 +3561,7 @@ pub(crate) fn audio_decode_loop(command_rx: Receiver<AudioCommand>, engine: Audi
                             }
                             rms_sum_l += pl * pl;
                             rms_sum_r += pr * pr;
+                            stereo_stats.add_frame(frame[0], frame[1]);
                         }
                         rms_count_l += 1;
                         rms_count_r += 1;
@@ -3605,6 +3609,8 @@ pub(crate) fn audio_decode_loop(command_rx: Receiver<AudioCommand>, engine: Audi
                         peak_r_db as f32,
                         rms_r_db as f32,
                     );
+                    engine.meter.write_stereo(&stereo_stats.reading());
+                    stereo_stats.end_batch();
                     meter_peak_l = 0.0;
                     meter_peak_r = 0.0;
 
@@ -3615,6 +3621,7 @@ pub(crate) fn audio_decode_loop(command_rx: Receiver<AudioCommand>, engine: Audi
                         rms_count_l = 0;
                         rms_sum_r = 0.0;
                         rms_count_r = 0;
+                        stereo_stats.reset_window();
                         rms_last_update = now;
                     }
                 }
