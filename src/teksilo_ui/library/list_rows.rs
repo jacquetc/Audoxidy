@@ -16,7 +16,7 @@
 //! - Simple and Thumbnail modes: an album header ([`HeaderRow::album`],
 //!   never marked as playing, `widgets.rs:2687`) and the song rows
 //!   ([`SongRow`], with a cover in Thumbnail mode);
-//! - Detailed mode: an album block ([`AlbumBlock`](super::detailed_list::AlbumBlock)).
+//! - Detailed mode: an album block ([`AlbumBlock`]).
 //!
 //! Every row is 10 px in from the list's leading edge and 15 px from its
 //! trailing one (`widgets.rs:2714-2719`). The song rows and the album blocks
@@ -24,7 +24,7 @@
 //! the headers, which have no columns, stay put.
 //!
 //! [`LibraryList`] also carries what surrounds the rows in Iced: the sticky
-//! artist header ([`StickyHeader`](super::sticky_header::StickyHeader)), the
+//! artist header ([`StickyHeader`]), the
 //! empty message, a click on the background (it deselects), the scroll
 //! requests of the view-model, the horizontal wheel and the marquee.
 
