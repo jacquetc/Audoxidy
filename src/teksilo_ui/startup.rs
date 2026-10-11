@@ -201,7 +201,7 @@ pub fn build_context(config: &AppConfig) -> Result<AppContext, FrontendError> {
     {
         let _ = config;
         let ctx = AppContext::in_memory()?;
-        crate::frontend::test_fixtures::LibraryFixture::demo()
+        crate::teksilo_ui::mock_data::screenshot_library()
             .seed_on(&ctx.db)
             .recv_blocking()?;
         Ok(ctx)
