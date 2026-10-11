@@ -11,12 +11,14 @@
 //!
 //! [`PlaylistViewModel`] holds the state and the behaviour; the views are thin.
 
+pub mod bottom_bar;
 pub mod dialogs;
 pub mod list;
 pub mod menus;
 pub mod notice;
 pub mod playlist_vm;
 pub mod rows;
+pub mod tabs;
 #[cfg(test)]
 pub(crate) mod testing;
 

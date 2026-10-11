@@ -58,3 +58,23 @@ playlist-row-playing = Reproduciendo
 # Not in the Iced UI: read after the name of a disabled song's row.
 playlist-row-disabled = Desactivada
 
+## Tab strip
+# Not in the Iced UI: the tab strip's accessible name.
+playlist-tabs = Listas de reproducción
+# Not in the Iced UI: the overflow chevron's accessible name.
+playlist-all-lists = Todas las listas
+
+## Bottom bar
+playlist-search = Buscar...
+# Not in the Iced UI: the lyrics icon's accessible name (the player menu's "Lyrics", quirk fix 15).
+playlist-lyrics = Lyrics
+# Not in the Iced UI: the shuffle icon's accessible name.
+playlist-shuffle = Aleatorio
+# Not in the Iced UI: the repeat icon's accessible name, mode off.
+playlist-repeat-off = Repetir: desactivado
+# Not in the Iced UI: the repeat icon's accessible name, mode all.
+playlist-repeat-all = Repetir: todas
+# Not in the Iced UI: the repeat icon's accessible name, mode one.
+playlist-repeat-one = Repetir: una
+# Not in the Iced UI: the equalizer icon's accessible name (the player menu's "Ecualizador").
+playlist-equalizer = Ecualizador

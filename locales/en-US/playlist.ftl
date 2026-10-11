@@ -46,3 +46,18 @@ playlist-empty = There are no songs in this playlist
 playlist-row-playing = Playing
 playlist-row-disabled = Disabled
 
+## Tab strip
+# The tab strip's accessible name.
+playlist-tabs = Playlists
+# The overflow chevron's accessible name.
+playlist-all-lists = All playlists
+
+## Bottom bar
+playlist-search = Search...
+# The bottom bar icons' accessible names.
+playlist-lyrics = Lyrics
+playlist-shuffle = Shuffle
+playlist-repeat-off = Repeat: off
+playlist-repeat-all = Repeat: all
+playlist-repeat-one = Repeat: one
+playlist-equalizer = Equalizer
