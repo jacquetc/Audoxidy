@@ -789,6 +789,133 @@ pub fn album_id_for_song(artists: &[LibraryVirtualArtist], song_id: i64) -> Opti
     })
 }
 
+/// [`build_view_structure`] for the Teksilo UI, with defects D10 and D13 fixed
+/// (`docs/teksilo-port-iced-defects.md`; quirk fixes 38 and 41).
+///
+/// - **D10:** when several cached albums share an artist and a title, the run
+///   takes the hash of the **first** one, as `library_groups::filtered_albums`,
+///   `album_composite_id_for_song` and the cover lookups do. The original keeps
+///   the last one, so the same album resolved to two composite ids.
+/// - **D13:** an artist has **one** run per album tag. Songs of an album that
+///   are not consecutive (the list is sorted by another column than the album)
+///   join the run their album opened first, in input order, instead of opening
+///   a second run with the same composite id and a shared collapsed state.
+///   Runs keep the order of their first song; song indices count across the
+///   runs in display order.
+///
+/// Everything else (heights, collapse state, the untagged album name) is as
+/// in [`build_view_structure`]. The Iced UI keeps calling the original.
+pub fn build_view_structure_fixed(
+    groups: &[ArtistGroup],
+    cached_albums: Option<&[AlbumEntry]>,
+    collapsed_artists: &HashSet<String>,
+    collapsed_albums: &HashSet<String>,
+    mode: LibraryViewMode,
+) -> (f32, Vec<LibraryVirtualArtist>) {
+    let mut album_hash_map: HashMap<(&str, &str), &str> = HashMap::new();
+    for album in cached_albums.unwrap_or_default() {
+        album_hash_map
+            .entry((album.artist.as_str(), album.title.as_str()))
+            .or_insert(album.id.as_str());
+    }
+
+    let header_h = ListMetrics::for_mode(mode).artist_header_h;
+    let mut v_artists = Vec::with_capacity(groups.len());
+    let mut total_content_h = 0.0;
+    let mut global_song_idx = 0;
+
+    for group in groups {
+        let is_artist_collapsed = collapsed_artists.contains(&group.name);
+        let mut albums: Vec<LibraryAlbumGroup> = Vec::new();
+        let mut run_of_album: HashMap<&str, usize> = HashMap::new();
+
+        for song in &group.songs {
+            let album_name = song.album.as_deref().unwrap_or(UNKNOWN_ALBUM);
+            let duration = song.duration_secs.unwrap_or(0.0);
+            if let Some(&run) = run_of_album.get(album_name) {
+                albums[run].duration_secs += duration;
+                albums[run].songs.push((song.clone(), 0));
+                continue;
+            }
+            let album_hash = album_hash_map
+                .get(&(group.name.as_str(), album_name))
+                .map_or_else(|| album_name.to_string(), |id| id.to_string());
+            run_of_album.insert(album_name, albums.len());
+            albums.push(LibraryAlbumGroup {
+                album_name: album_name.to_string(),
+                album_hash,
+                songs: vec![(song.clone(), 0)],
+                duration_secs: duration,
+            });
+        }
+        for album in &mut albums {
+            for (_, index) in &mut album.songs {
+                *index = global_song_idx;
+                global_song_idx += 1;
+            }
+        }
+
+        let mut artist_h = header_h;
+        if !is_artist_collapsed {
+            for album in &albums {
+                let composite_id = album_composite_id(&group.name, &album.album_hash);
+                let is_expanded = !collapsed_albums.contains(&composite_id);
+                artist_h += album_block_height(mode, is_expanded, album.songs.len());
+            }
+        }
+
+        v_artists.push(LibraryVirtualArtist {
+            artist_name: group.name.clone(),
+            albums_count: group.albums_count,
+            songs_count: group.songs_count,
+            duration_secs: group.duration_secs,
+            is_collapsed: is_artist_collapsed,
+            top_y: total_content_h,
+            height: artist_h,
+            albums,
+        });
+        total_content_h += artist_h;
+    }
+
+    (total_content_h, v_artists)
+}
+
+/// [`item_y_range`] for the Teksilo UI, with defect D12 fixed
+/// (`docs/teksilo-port-iced-defects.md`; quirk fix 40).
+///
+/// An album of a **collapsed** artist has no row, so it has no span: the
+/// original returns the y its header would have if the artist were expanded,
+/// and a reveal scrolled to a row that is not there. The album id must also be
+/// a well-formed composite id (exactly two parts, see
+/// `library_groups::parse_album_composite_id`); the original reads the first
+/// two parts of anything. Artists and songs are as in [`item_y_range`].
+pub fn item_y_range_fixed(
+    item: &LibraryListItem,
+    artists: &[LibraryVirtualArtist],
+    collapsed_albums: &HashSet<String>,
+    mode: LibraryViewMode,
+) -> Option<(f32, f32)> {
+    let LibraryListItem::Album(composite_id) = item else {
+        return item_y_range(item, artists, collapsed_albums, mode);
+    };
+    let (artist_name, album_hash) =
+        crate::logic::library_groups::parse_album_composite_id(composite_id)?;
+    let va = artists.iter().find(|va| va.artist_name == artist_name)?;
+    if va.is_collapsed {
+        return None;
+    }
+    let metrics = ListMetrics::for_mode(mode);
+    let mut current_y = va.top_y + metrics.artist_header_h;
+    for alb in &va.albums {
+        if alb.album_hash == album_hash {
+            return Some((current_y, metrics.album_header_h));
+        }
+        let is_expanded = is_album_expanded(va, alb, collapsed_albums);
+        current_y += album_block_height(mode, is_expanded, alb.songs.len());
+    }
+    None
+}
+
 /// The scroll offset that reveals an item spanning `item_y..item_y + item_h`,
 /// or `None` when it is already fully visible.
 ///
@@ -1451,6 +1578,180 @@ mod tests {
         assert_eq!(
             scroll_offset_to_reveal(100.0, 32.0, None, simple, true, None),
             Some(68.0)
+        );
+    }
+
+    fn fixed_structure(
+        songs: &[Arc<SongData>],
+        albums: &[AlbumEntry],
+        collapsed_artists: &[&str],
+        mode: LibraryViewMode,
+    ) -> Vec<LibraryVirtualArtist> {
+        let ca: HashSet<String> = collapsed_artists.iter().map(|s| s.to_string()).collect();
+        build_view_structure_fixed(
+            &group_by_artist(songs),
+            Some(albums),
+            &ca,
+            &HashSet::new(),
+            mode,
+        )
+        .1
+    }
+
+    #[test]
+    fn d10_duplicate_albums_resolve_to_the_first_cached_hash_like_the_rest_of_the_library() {
+        let songs = vec![song(1, "A", Some("X"))];
+        let albums = vec![cached("first", "X", "A"), cached("last", "X", "A")];
+        let groups = group_by_artist(&songs);
+        let none = HashSet::new();
+        let mode = LibraryViewMode::SimpleList;
+        let (_, original) = build_view_structure(&groups, Some(&albums), &none, &none, mode);
+        assert_eq!(
+            original[0].albums[0].album_hash, "last",
+            "the original keeps the last"
+        );
+
+        let fixed = fixed_structure(&songs, &albums, &[], mode);
+        assert_eq!(fixed[0].albums[0].album_hash, "first");
+        // The same id the song's own lookup and the filtered grid give.
+        assert_eq!(
+            album_id_for_song(&fixed, 1),
+            Some(crate::logic::library_groups::album_composite_id_for_song(
+                &songs[0],
+                Some(&albums)
+            ))
+        );
+        let grid = crate::logic::library_groups::filtered_albums(&groups, &albums, None, None);
+        assert_eq!(grid[0].id, fixed[0].albums[0].album_hash);
+    }
+
+    #[test]
+    fn d13_an_album_whose_songs_are_not_consecutive_forms_one_run() {
+        let songs = vec![
+            song(1, "A", Some("X")),
+            song(2, "A", Some("Y")),
+            song(3, "A", Some("X")),
+            song(4, "A", None),
+        ];
+        let groups = group_by_artist(&songs);
+        let none = HashSet::new();
+        let mode = LibraryViewMode::SimpleList;
+        let (_, original) = build_view_structure(&groups, None, &none, &none, mode);
+        let original_items = list_items(&original, &none);
+        let x = LibraryListItem::Album(album_composite_id("A", "X"));
+        assert_eq!(
+            original_items.iter().filter(|it| **it == x).count(),
+            2,
+            "the original lists album X twice"
+        );
+
+        let (total, fixed) = build_view_structure_fixed(&groups, None, &none, &none, mode);
+        let runs: Vec<(&str, Vec<i64>)> = fixed[0]
+            .albums
+            .iter()
+            .map(|r| {
+                (
+                    r.album_name.as_str(),
+                    r.songs.iter().map(|(s, _)| s.id).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            runs,
+            vec![("X", vec![1, 3]), ("Y", vec![2]), ("Desconocido", vec![4])]
+        );
+        assert_eq!(fixed[0].albums[0].duration_secs, 20.0);
+        let indices: Vec<usize> = fixed[0]
+            .albums
+            .iter()
+            .flat_map(|r| r.songs.iter().map(|(_, i)| *i))
+            .collect();
+        assert_eq!(
+            indices,
+            vec![0, 1, 2, 3],
+            "indices follow the display order"
+        );
+        let items = list_items(&fixed, &none);
+        assert_eq!(items.iter().filter(|it| **it == x).count(), 1);
+        // Same height as the original: one header per run less.
+        assert_eq!(total, 32.0 + 3.0 * 32.0 + 4.0 * 32.0);
+    }
+
+    #[test]
+    fn d13_collapsing_the_album_hides_all_its_songs() {
+        let songs = vec![
+            song(1, "A", Some("X")),
+            song(2, "A", Some("Y")),
+            song(3, "A", Some("X")),
+        ];
+        let groups = group_by_artist(&songs);
+        let collapsed: HashSet<String> = [album_composite_id("A", "X")].into_iter().collect();
+        let mode = LibraryViewMode::SimpleList;
+        let (_, fixed) =
+            build_view_structure_fixed(&groups, None, &HashSet::new(), &collapsed, mode);
+        let items = list_items(&fixed, &collapsed);
+        assert!(!items.contains(&LibraryListItem::Song(1)));
+        assert!(!items.contains(&LibraryListItem::Song(3)));
+        assert!(items.contains(&LibraryListItem::Song(2)));
+    }
+
+    #[test]
+    fn the_fixed_structure_matches_the_original_without_duplicates() {
+        for mode in [
+            LibraryViewMode::SimpleList,
+            LibraryViewMode::ThumbnailList,
+            LibraryViewMode::DetailedList,
+        ] {
+            let (groups, albums) = library();
+            let ca: HashSet<String> = ["B".to_string()].into_iter().collect();
+            let cb: HashSet<String> = [album_composite_id("A", "Y")].into_iter().collect();
+            let (total, original) = build_view_structure(&groups, Some(&albums), &ca, &cb, mode);
+            let (fixed_total, fixed) =
+                build_view_structure_fixed(&groups, Some(&albums), &ca, &cb, mode);
+            assert_eq!(total, fixed_total, "{mode:?}");
+            assert_eq!(
+                list_item_rects(&original, &cb, mode, 100.0),
+                list_item_rects(&fixed, &cb, mode, 100.0),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn d12_an_album_of_a_collapsed_artist_has_no_span() {
+        let (_, artists, collapsed) = structure(LibraryViewMode::SimpleList, &["B"], &[]);
+        let mode = LibraryViewMode::SimpleList;
+        let hz = LibraryListItem::Album("B|hz".into());
+        assert_eq!(
+            item_y_range(&hz, &artists, &collapsed, mode),
+            Some((224.0, 32.0)),
+            "the original gives the y of a hidden header"
+        );
+        assert_eq!(item_y_range_fixed(&hz, &artists, &collapsed, mode), None);
+
+        let (_, expanded, collapsed) = structure(mode, &[], &[]);
+        assert_eq!(
+            item_y_range_fixed(&hz, &expanded, &collapsed, mode),
+            item_y_range(&hz, &expanded, &collapsed, mode)
+        );
+    }
+
+    #[test]
+    fn d12_the_fixed_span_matches_every_visible_rectangle_and_rejects_malformed_ids() {
+        let mode = LibraryViewMode::ThumbnailList;
+        let (_, artists, collapsed) = structure(mode, &["B"], &["A|Y"]);
+        for (item, rect) in list_item_rects(&artists, &collapsed, mode, 1.0) {
+            assert_eq!(
+                item_y_range_fixed(&item, &artists, &collapsed, mode),
+                Some((rect.y, rect.height)),
+                "{item:?}"
+            );
+        }
+        let malformed = LibraryListItem::Album("A|hx|extra".into());
+        assert!(item_y_range(&malformed, &artists, &collapsed, mode).is_some());
+        assert_eq!(
+            item_y_range_fixed(&malformed, &artists, &collapsed, mode),
+            None
         );
     }
 }
