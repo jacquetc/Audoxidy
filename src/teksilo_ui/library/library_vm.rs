@@ -44,8 +44,30 @@
 //!   `logic::library_geometry`.
 //! - Defect D22 (quirk fix 42): the grid's expanded album is resolved from
 //!   its parsed `(artist, hash)`, in memory as Iced does, then from the
-//!   database (`commands::library::album_songs_by_composite_id`), and a sort
-//!   change only re-sorts it, so clearing the sort never empties it.
+//!   database, and a sort change only re-sorts it, so clearing the sort never
+//!   empties it.
+//! - Quirk fix 49: Delete takes the songs Play takes: songs picked inside a
+//!   selected album or artist narrow it ([`delete_target_ids`]).
+//! - Quirk fix 50: the Grid reveal finds a compilation track's album, by the
+//!   artist the grid groups it under ([`LibraryViewModel::reveal_path`]).
+//! - Quirk fix 51: a reveal in the Simple and Thumbnail modes opens the
+//!   song's collapsed album too, as the Detailed mode does.
+//! - Quirk fix 52: with nothing focused, Down selects the first row
+//!   ([`LibraryViewModel::navigate`]).
+//! - Quirk fix 53: the open grid album's songs match the search whatever its
+//!   case ([`visible_album_songs`]).
+//! - Quirk fix 54: the database fallback for the grid's album finds a
+//!   compilation, by its album artist
+//!   (`commands::library::album_songs_by_album_artist`).
+//!
+//! # For the App
+//!
+//! A reveal whose song the search or the filters hide clears them all. The
+//! library's search field follows [`LibraryViewModel::search`]; the filter
+//! column does not listen to the library, so the App resets its highlight
+//! (its sub-filter letter and its selected node) when
+//! [`LibraryViewModel::reveal_cleared`] fires, as Iced clears
+//! `selected_subfilter` and `selected_tree_node` (`src/gui/app.rs:6106-6108`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -70,7 +92,7 @@ use crate::logic::library_groups::{
 };
 use crate::logic::library_selection::{
     LibraryListItem, LibraryNavDir, LibrarySelection, LibraryStructure, apply_bulk_toggle_fixed,
-    artist_to_toggle_fixed, bulk_toggle_targets_fixed, current_index, list_nav_target,
+    artist_to_toggle_fixed, bulk_toggle_targets_fixed, list_nav_target, selected_song_ids,
     selected_songs,
 };
 use crate::logic::library_sort::{SortState, sort_songs};
@@ -146,32 +168,28 @@ pub fn content_width(mode: LibraryViewMode, widths: &ColumnWidths) -> f32 {
     column_header::leading_padding(mode) + columns + column_header::ROW_TRAILING
 }
 
-/// The songs a delete of `selected` removes (`LibraryDeleteSelection`,
-/// `src/gui/app.rs:3717-3790`): the selected songs, every song of a selected
-/// artist and every song of a selected album, among the songs `structure`
-/// shows. Unlike the Play selection, songs picked inside a selected album do
-/// not narrow it. The ids come sorted, without duplicates.
+/// The songs a delete of `selected` removes, among the songs `structure`
+/// shows: the songs Play takes (quirk fix 49, [`selected_song_ids`]), the
+/// selected songs, and every song of a selected artist or album none of whose
+/// songs is picked. Iced's `LibraryDeleteSelection` (`src/gui/app.rs:3717-3790`)
+/// adds every song of a selected album or artist even when songs are picked
+/// inside it, so Delete took more than Play. The ids come sorted, without
+/// duplicates.
 pub fn delete_target_ids(
     selected: &HashSet<LibraryListItem>,
     structure: &impl LibraryStructure,
 ) -> Vec<i64> {
-    let mut ids: HashSet<i64> = HashSet::new();
-    for item in selected {
-        match item {
-            LibraryListItem::Song(id) => {
-                ids.insert(*id);
-            }
-            LibraryListItem::Artist(name) => {
-                ids.extend(structure.artist_song_ids(name).unwrap_or_default());
-            }
-            LibraryListItem::Album(id) => {
-                ids.extend(structure.album_song_ids(id).unwrap_or_default());
-            }
-        }
-    }
-    let mut ids: Vec<i64> = ids.into_iter().collect();
+    let mut ids: Vec<i64> = selected_song_ids(selected, structure).into_iter().collect();
     ids.sort_unstable();
     ids
+}
+
+/// The delete confirmation's message: how many songs go, `count`.
+pub fn delete_text(count: usize) -> LocalizedString {
+    tr!(library_delete_text(
+        count = i64::try_from(count).unwrap_or(i64::MAX),
+        count_text = count.to_string()
+    ))
 }
 
 /// The songs of the grid's album `composite_id` among `songs`, as Iced's
@@ -275,6 +293,7 @@ struct Inner {
     last_artist_click: RefCell<Option<(String, Instant)>>,
     last_album_click: RefCell<Option<(String, Instant)>>,
     pending_reveal: RefCell<Option<String>>,
+    reveal_cleared: Request<LibrarySearchParams>,
     deletes: RefCell<HashSet<OpId>>,
     observers: RefCell<Vec<ObserverHandle>>,
 }
@@ -338,6 +357,7 @@ impl LibraryViewModel {
             last_artist_click: RefCell::new(None),
             last_album_click: RefCell::new(None),
             pending_reveal: RefCell::new(None),
+            reveal_cleared: Request::default(),
             deletes: RefCell::new(HashSet::new()),
             observers: RefCell::new(Vec::new()),
         });
@@ -468,6 +488,14 @@ impl LibraryViewModel {
     /// Scroll requests for the views.
     pub fn scroll_request(&self) -> Signal<Option<(u64, ScrollRequest)>> {
         self.inner.scroll.latest()
+    }
+
+    /// What a reveal cleared to show its song: the search and the filters as
+    /// they were (`query` holds the search text), sent before the library
+    /// queries the unfiltered songs. The App resets the filter column's
+    /// highlight from it; see the module documentation.
+    pub fn reveal_cleared(&self) -> Signal<Option<(u64, LibrarySearchParams)>> {
+        self.inner.reveal_cleared.latest()
     }
 
     /// The playing track's path (the playing markers).
@@ -804,8 +832,11 @@ impl LibraryViewModel {
     /// The arrow keys of the list modes (`LibraryKeyNav`, `src/gui/app.rs:3140`):
     /// Up and Down move the selection (Shift extends it), Left and Right
     /// collapse and expand the selected headers and the albums of the selected
-    /// songs, all of them (D9 fixed, quirk fix 37). Returns whether anything
-    /// moved.
+    /// songs, all of them (D9 fixed, quirk fix 37). With nothing focused (or
+    /// the focused row hidden), Up and Down select the first row (quirk fix
+    /// 52): Iced starts from row 0 as if it were focused
+    /// (`current_index`, `src/gui/library.rs:778-800`), so Down selected the
+    /// second. Returns whether anything moved.
     pub fn navigate(&self, dir: LibraryNavDir, modifiers: Modifiers) -> bool {
         match dir {
             LibraryNavDir::Left | LibraryNavDir::Right => self.bulk_toggle(dir),
@@ -848,8 +879,14 @@ impl LibraryViewModel {
             return false;
         }
         let mut selection = self.inner.selection.get();
-        let current = current_index(&items, selection.focused.as_ref(), |_| false);
-        let target = list_nav_target(current, items.len(), dir);
+        let focused = selection
+            .focused
+            .as_ref()
+            .and_then(|focused| items.iter().position(|(item, _)| item == focused));
+        let (current, target) = match focused {
+            Some(current) => (current, list_nav_target(current, items.len(), dir)),
+            None => (0, 0),
+        };
         let moved = selection.navigate(
             &items,
             current,
@@ -1022,7 +1059,9 @@ impl LibraryViewModel {
 
     /// Loads the songs of the expanded album `id` (D22 fixed): in memory
     /// first, as Iced does, else from the database by the parsed
-    /// `(artist, hash)`.
+    /// `(artist, hash)`, the artist being the album artist (quirk fix 54:
+    /// Iced's `get_songs_by_album_and_artist` matches the track artist and
+    /// finds none of a compilation's songs).
     fn load_expanded(&self, id: &str) {
         let inner = &self.inner;
         let snapshot = inner.services.library_songs.snapshot().get();
@@ -1037,7 +1076,7 @@ impl LibraryViewModel {
         }
         let reply = inner
             .detail_latest
-            .track(library::album_songs_by_composite_id(
+            .track(library::album_songs_by_album_artist(
                 &inner.services.ctx,
                 id,
             ));
@@ -1123,21 +1162,18 @@ impl LibraryViewModel {
     }
 
     /// Delete (quirk fix 1): asks for confirmation with a message box naming
-    /// how many songs go; only its "Eliminar" deletes. Nothing happens when
-    /// nothing is selected, as in Iced.
+    /// how many songs go ([`delete_targets`](Self::delete_targets), quirk fix
+    /// 49); only its "Eliminar" deletes. Nothing happens when nothing is
+    /// selected, as in Iced.
     pub fn request_delete(&self, ctx: &mut EventContext) {
         let ids = self.delete_targets();
         if ids.is_empty() {
             return;
         }
-        let count = i64::try_from(ids.len()).unwrap_or(i64::MAX);
         let vm = self.clone();
         confirm_box(
             tr!(library_delete_title()),
-            tr!(library_delete_text(
-                count = count,
-                count_text = ids.len().to_string()
-            )),
+            delete_text(ids.len()),
             tr!(library_delete_confirm()),
         )
         .on_result(move |result: MessageBoxResult, _ctx| {
@@ -1228,7 +1264,8 @@ impl LibraryViewModel {
 
     /// Reveals the song at `path` (`handle_library_reveal`,
     /// `src/gui/app.rs:6073`): selects it and scrolls to it, opening what hides
-    /// it. When the search or a filter hides it, they are cleared and the
+    /// it. When the search or a filter hides it, they are cleared, what was
+    /// cleared goes out on [`reveal_cleared`](Self::reveal_cleared), and the
     /// reveal resumes when the new results arrive.
     pub fn reveal_path(&self, path: &str) {
         let inner = &self.inner;
@@ -1246,6 +1283,11 @@ impl LibraryViewModel {
             return;
         }
         *inner.pending_reveal.borrow_mut() = Some(path.to_string());
+        let search = inner.search.get();
+        inner.reveal_cleared.send(LibrarySearchParams {
+            query: (!search.is_empty()).then_some(search),
+            ..params
+        });
         inner.search.set_if_changed(String::new());
         inner
             .services
@@ -1279,20 +1321,13 @@ impl LibraryViewModel {
         ) {
             inner.collapsed_artists.borrow_mut().remove(&artist);
         }
-        if inner.view_mode.get() == LibraryViewMode::DetailedList
-            && let Some(album_name) = song.album.as_deref()
-        {
-            let artist = get_effective_artist(&song);
-            if let Some(entry) = snapshot
-                .albums
-                .iter()
-                .find(|a| a.title == album_name && a.artist == artist)
-            {
-                inner
-                    .collapsed_albums
-                    .borrow_mut()
-                    .remove(&album_composite_id(artist, &entry.id));
-            }
+        // The song's album opens in every list mode (quirk fix 51); Iced
+        // opens it in the Detailed mode only (`src/gui/app.rs:6272-6300`), so
+        // in the Simple and Thumbnail modes a song in a collapsed album was
+        // selected but not shown. The album is the run that holds the song,
+        // the composite id its header toggles.
+        if let Some(album) = structure.album_id_for_song(song.id) {
+            inner.collapsed_albums.borrow_mut().remove(&album);
         }
         self.rebuild();
         let item = LibraryListItem::Song(song.id);
@@ -1310,12 +1345,15 @@ impl LibraryViewModel {
     }
 
     /// The Grid part of the reveal: opens the song's album under its row of
-    /// cards, selects the song and puts its row at the top. Iced finds the album by the song's
-    /// `artist` tag (`src/gui/app.rs:6126`), and so does this.
+    /// cards, selects the song and puts its row at the top. The album is found
+    /// by its title and the artist the grid groups it under, the song's album
+    /// artist (else its artist, `get_effective_artist`; quirk fix 50). Iced
+    /// looks for the song's `artist` tag (`src/gui/app.rs:6125-6140`), which a
+    /// compilation's card does not bear, so it opened nothing.
     fn reveal_in_grid(&self, song: &Arc<SongData>) {
         let inner = &self.inner;
         let album_name = song.album.as_deref().unwrap_or(UNKNOWN_ALBUM);
-        let artist_name = song.artist.as_deref().unwrap_or(UNKNOWN_ALBUM);
+        let artist_name = get_effective_artist(song);
         let list = inner.services.albums.list();
         let found = (0..list.len()).find_map(|i| {
             list.with_item(i, |card| {
