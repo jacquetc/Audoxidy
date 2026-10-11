@@ -46,7 +46,8 @@ pub mod window {
     }
 }
 
-/// The transport bar at the bottom of the window (`src/gui/player.rs`).
+/// The player panel: the 400 × 400 cover with its menu, transport and volume
+/// overlay, at the top of the left column (`src/gui/player.rs`).
 pub mod player {
     use super::{IconWidget, res};
 
