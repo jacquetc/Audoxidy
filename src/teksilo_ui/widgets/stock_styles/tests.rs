@@ -1,7 +1,7 @@
 use teksilo::core::WidgetTree;
 use teksilo::core::accesskit::Role;
 use teksilo::tokens::HAlignment;
-use teksilo::widgets::{Checkbox, ComboBox, FixedSize, MinSize, RadioButton, VStack};
+use teksilo::widgets::{Checkbox, ComboBox, FixedSize, MinSize, RadioButton, Toggle, VStack};
 
 use super::*;
 use crate::teksilo_ui::test_support::{access_click, first_of_type, layout};
@@ -36,7 +36,11 @@ fn each_toggler_look_is_twice_as_wide_as_its_iced_size() {
         (ToggleLook::effect(), 17.0),
         (ToggleLook::expander_mode(), 13.0),
     ] {
-        let (tree, id) = mounted(toggle(Signal::new(true), look, lit!("Activar Ecualizador")));
+        let (tree, id) = mounted(toggle(
+            Toggle::new(Signal::new(true)),
+            look,
+            lit!("Activar Ecualizador"),
+        ));
         assert_eq!(size_of(&tree, id), (2.0 * size, size));
         assert_eq!(
             tree.accessibility_node(id).name(),
@@ -56,7 +60,11 @@ fn the_thumb_is_inset_by_a_rounded_fifth_of_the_size() {
 #[test]
 fn a_styled_toggle_still_flips_as_a_switch() {
     let on = Signal::new(false);
-    let (mut tree, id) = mounted(toggle(on.clone(), ToggleLook::effect(), lit!("Compresor")));
+    let (mut tree, id) = mounted(toggle(
+        Toggle::new(on.clone()),
+        ToggleLook::effect(),
+        lit!("Compresor"),
+    ));
     assert_eq!(tree.accessibility_node(id).role(), Role::Switch);
     access_click(&mut tree, id);
     assert!(on.get());
@@ -66,15 +74,11 @@ fn a_styled_toggle_still_flips_as_a_switch() {
 #[test]
 fn the_checkbox_draws_its_iced_square_inside_the_hit_area() {
     let checked = Signal::new(false);
-    let (mut tree, id) = mounted(
-        Checkbox::new(checked.clone())
-            .label(lit!("Fundido"))
-            .labelled_externally()
-            .style(checkbox_style()),
-    );
+    let (mut tree, id) = mounted(checkbox(Checkbox::new(checked.clone()), lit!("Fundido")));
     let square = first_of_type(&tree, id, "CheckboxBox").unwrap();
     assert_eq!(size_of(&tree, square), (CHECKBOX_SIZE, CHECKBOX_SIZE));
     assert_eq!(tree.accessibility_node(id).role(), Role::CheckBox);
+    assert_eq!(tree.accessibility_node(id).name(), Some("Fundido"));
     access_click(&mut tree, id);
     assert!(checked.get());
     let _ = tree.render();

@@ -23,7 +23,8 @@
 //!   `DialogStyle`: install it theme-wide so `InputDialog` and `MessageBox` get
 //!   it, and [`DialogFrame::present`] passes it explicitly;
 //! - [`DialogButtonStyle`] is the button look as a `ButtonStyle`, for the
-//!   stock dialogs' buttons (theme-wide);
+//!   stock dialogs' buttons (theme-wide), and [`text_button`] the same look
+//!   on `Pressable` with a label that follows the hover;
 //! - [`DialogInputStyle`] is the frame of the dialogs' text fields
 //!   (`app.rs:5251`: `COLOR_CONTRAST`, a 1 px accent border, a 4 px radius,
 //!   4 × 5 px of padding), as a `TextInputStyle`;
@@ -289,9 +290,31 @@ impl DialogStyle for DialogFrameStyle {
 }
 
 /// The Iced dialog button as a `ButtonStyle` (`widgets.rs:2093-2117`), for
-/// the buttons of the stock dialogs. Every variant looks the same, as in Iced.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DialogButtonStyle;
+/// the buttons of the stock dialogs: `COLOR_CONTRAST`, accent while hovered,
+/// a 6 px radius, 5 × 10 px of padding. Every variant looks the same, as in
+/// Iced. [`DialogButtonStyle::padded`] gives the larger buttons of the Audio
+/// Center (8 × 12 px, `audio_center.rs:2624`) the same look.
+#[derive(Debug, Clone, Copy)]
+pub struct DialogButtonStyle {
+    padding: (f32, f32),
+}
+
+impl Default for DialogButtonStyle {
+    fn default() -> Self {
+        Self {
+            padding: BUTTON_PADDING,
+        }
+    }
+}
+
+impl DialogButtonStyle {
+    /// The look with `vertical` × `horizontal` px of padding.
+    pub fn padded(vertical: f32, horizontal: f32) -> Self {
+        Self {
+            padding: (vertical, horizontal),
+        }
+    }
+}
 
 impl ButtonStyle for DialogButtonStyle {
     fn make_body(&self, cfg: &ButtonStyleConfig, ctx: &mut BuildContext) -> WidgetId {
@@ -303,7 +326,7 @@ impl ButtonStyle for DialogButtonStyle {
                         .background(fill)
                         .corner_radius(CornerRadius::uniform(BUTTON_RADIUS)),
                 )
-                .child(Padding::symmetric(BUTTON_PADDING.0, BUTTON_PADDING.1).child(cfg.label)),
+                .child(Padding::symmetric(self.padding.0, self.padding.1).child(cfg.label)),
         )
     }
 
@@ -355,7 +378,7 @@ impl TextInputStyle for DialogInputStyle {
 /// `style::audoxidy_dark`.
 pub fn install(slots: &mut teksilo::core::styles::ComponentStyleSlots) {
     slots.dialog = Some(Rc::new(DialogFrameStyle));
-    slots.button = Some(Rc::new(DialogButtonStyle));
+    slots.button = Some(Rc::new(DialogButtonStyle::default()));
     slots.text_input = Some(Rc::new(DialogInputStyle));
 }
 
@@ -552,6 +575,18 @@ fn dialog_button(
     action: ActivateFn,
     enabled: impl Into<Prop<bool>>,
 ) -> Pressable {
+    text_button(label, TEXT_SIZE, BUTTON_PADDING)
+        .enabled(enabled)
+        .on_activate(move |ctx| action(ctx))
+}
+
+/// A button in the Iced dialog-button look, label included: Inter Medium
+/// `text_size` px, `padding` (vertical, horizontal) around it, a 6 px radius;
+/// `COLOR_CONTRAST` with a secondary label at rest, accent with a primary
+/// label while hovered (`widgets.rs:2090-2117`; the Audio Center's bottom
+/// buttons use 15 px and 8 × 12 px, `audio_center.rs:2619`). Chain
+/// `on_activate` and `enabled` onto it.
+pub fn text_button(label: LocalizedString, text_size: f32, padding: (f32, f32)) -> Pressable {
     let hovered = Signal::new(false);
     let body = ZStack::new()
         .child(
@@ -560,9 +595,9 @@ fn dialog_button(
                 .corner_radius(CornerRadius::uniform(BUTTON_RADIUS)),
         )
         .child(
-            Padding::symmetric(BUTTON_PADDING.0, BUTTON_PADDING.1).child(
+            Padding::symmetric(padding.0, padding.1).child(
                 TextWidget::new(label.clone())
-                    .style(style::inter(TEXT_SIZE, FontWeight::MEDIUM))
+                    .style(style::inter(text_size, FontWeight::MEDIUM))
                     .color(hovered.map(|hovered| button_text(*hovered)))
                     .single_line()
                     .a11y_hidden(),
@@ -570,9 +605,7 @@ fn dialog_button(
         );
     Pressable::new(body, label)
         .hovered(hovered)
-        .enabled(enabled)
         .corner_radius(BUTTON_RADIUS)
-        .on_activate(move |ctx| action(ctx))
 }
 
 // ---------------------------------------------------------------------------

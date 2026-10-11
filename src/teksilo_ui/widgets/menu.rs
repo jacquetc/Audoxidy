@@ -242,7 +242,7 @@ pub struct RowMetrics {
     pub icon_column: f32,
     /// Space between the icon column and the label.
     pub gap: f32,
-    /// The label's text style.
+    /// The label's size, in Inter regular.
     pub text_size: f32,
 }
 
@@ -366,7 +366,7 @@ pub struct MenuSurfaceStyle;
 impl PopoverStyle for MenuSurfaceStyle {
     fn make_body(&self, cfg: &PopoverStyleConfig, ctx: &mut BuildContext) -> WidgetId {
         if cfg.variant != PopoverVariant::Menu {
-            return RecipePopoverStyle::default().make_body(cfg, ctx);
+            return RecipePopoverStyle::for_tokens(&ctx.theme().input).make_body(cfg, ctx);
         }
         let vertical = CONTEXT_VERTICAL_PADDING - MENU_LIST_INSET;
         ctx.add(
@@ -433,7 +433,6 @@ fn menu_item(entry: MenuEntry, metrics: RowMetrics, look: Look) -> MenuItem {
         metrics,
         icon_shift: entry.icon_shift,
     };
-    let weight = FontWeight::REGULAR;
     let mut item = match entry.kind {
         EntryKind::Submenu(entries) => MenuItem::submenu(entry.label.clone(), move || {
             let list: Box<dyn Widget> = match look {
@@ -453,7 +452,7 @@ fn menu_item(entry: MenuEntry, metrics: RowMetrics, look: Look) -> MenuItem {
     };
     item = item
         .style(row_style)
-        .text_style(style::inter(metrics.text_size, weight))
+        .text_style(style::inter(metrics.text_size, FontWeight::REGULAR))
         .enabled(entry.enabled);
     if let Some(icon) = entry.icon {
         let icon = icon().icon_size(metrics.icon_column);

@@ -8,7 +8,7 @@
 //!
 //! | Iced (`src/gui/widgets.rs`)                    | Teksilo widget | Here                         |
 //! | ---------------------------------------------- | -------------- | ---------------------------- |
-//! | `StandardCheckbox` (55–208)                    | `Checkbox`     | [`checkbox_style`]           |
+//! | `StandardCheckbox` (55–208)                    | `Checkbox`     | [`checkbox`], [`checkbox_style`] |
 //! | `standard_toggler` / `_full` (1240–1317)       | `Toggle`       | [`toggle`], [`toggle_style`], [`ToggleLook`] |
 //! | `standard_radio` (1317–1357)                   | `RadioButton`  | [`radio_style`], [`radio`]   |
 //! | `standard_pick_list` (1357–1421)               | `ComboBox`     | [`combo_box_style`], [`combo_box`] |
@@ -31,7 +31,14 @@
 //!   WCAG 2.5.8 target floor), so a 13 px checkbox occupies a 24 × 24 slot.
 //!   The drawing is the Iced size.
 //! - A stock widget toggles on the release of the press; the Iced checkbox
-//!   toggles on the press.
+//!   and toggler toggle on the press.
+//!
+//! Two things a style cannot reach, kept as the framework draws them: the open
+//! list of a `ComboBox` is framed by the theme's menu surface
+//! (`menu::MenuSurfaceStyle`) and its rows are the framework's, where Iced
+//! draws a `COLOR_CONTRAST` list with no border and an accent selection; and
+//! a scroll bar style is told whether the pointer is on the bar, not on the
+//! scrolled area (see [`AudoxidyScrollBarStyle`]).
 
 use std::rc::Rc;
 
@@ -45,8 +52,8 @@ use teksilo::core::styles::{
 use teksilo::prelude::*;
 use teksilo::tokens::{FontWeight, VAlignment};
 use teksilo::widgets::{
-    ComboBox, FixedSize, HStack, IconWidget, Padding, RadioButton, RectWidget, ScrollArea, Spacer,
-    TextWidget, Toggle, ZStack,
+    Checkbox, ComboBox, FixedSize, HStack, IconWidget, Padding, RadioButton, RectWidget,
+    ScrollArea, Spacer, TextWidget, Toggle, ZStack,
 };
 
 use crate::teksilo_ui::style;
@@ -139,13 +146,14 @@ impl ToggleLook {
     }
 }
 
-/// A stock `Toggle` in the Iced look `look`, announced as `label`.
+/// `toggle` (a stock `Toggle`, with its `on_change` / `enabled` already set)
+/// in the Iced look `look`, announced as `label`.
 ///
 /// The Iced togglers have no label of their own (the text beside them is a
 /// separate widget), so the toggle shows none: it is labelled externally and
 /// carries `label` as its accessible name.
-pub fn toggle(on: Signal<bool>, look: ToggleLook, label: LocalizedString) -> impl Widget {
-    Toggle::new(on)
+pub fn toggle(toggle: Toggle, look: ToggleLook, label: LocalizedString) -> impl Widget {
+    toggle
         .labelled_externally()
         .style(toggle_style(look))
         .access_label(label)
@@ -251,6 +259,16 @@ pub struct AudoxidyCheckboxStyle;
 /// The checkbox style (per call: `Checkbox::style(checkbox_style())`).
 pub fn checkbox_style() -> AudoxidyCheckboxStyle {
     AudoxidyCheckboxStyle
+}
+
+/// `checkbox` (a stock `Checkbox`, with its `on_change` / `enabled` already
+/// set) in the Iced look, announced as `label`. The Iced checkbox has no label
+/// of its own (the text beside it is a separate widget), so it shows none.
+pub fn checkbox(checkbox: Checkbox, label: LocalizedString) -> impl Widget {
+    checkbox
+        .labelled_externally()
+        .style(checkbox_style())
+        .access_label(label)
 }
 
 impl CheckboxStyle for AudoxidyCheckboxStyle {

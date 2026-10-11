@@ -198,7 +198,7 @@ fn modal_text_centres_every_line_and_reads_as_one_text() {
 
 #[test]
 fn a_stock_button_in_the_dialog_style_pads_its_label() {
-    let (mut tree, id) = mounted(Button::new(lit!("Eliminar")).style(DialogButtonStyle));
+    let (mut tree, id) = mounted(Button::new(lit!("Eliminar")).style(DialogButtonStyle::default()));
     let label = first_of_type(&tree, id, "TextWidget").unwrap();
     assert_eq!(tree.bounds(label).x - tree.bounds(id).x, BUTTON_PADDING.1);
     tree.pointer_move(tree.bounds(id).center());
@@ -231,4 +231,26 @@ fn install_fills_the_dialog_button_and_field_slots() {
     for slot in ["dialog", "button", "text_input"] {
         assert!(installed.contains(&slot), "{slot} in {installed:?}");
     }
+}
+
+#[test]
+fn the_audio_center_buttons_take_the_larger_padding() {
+    let (tree, id) =
+        mounted(Button::new(lit!("Aplicar")).style(DialogButtonStyle::padded(8.0, 12.0)));
+    let label = first_of_type(&tree, id, "TextWidget").unwrap();
+    assert_eq!(tree.bounds(label).x - tree.bounds(id).x, 12.0);
+}
+
+#[test]
+fn a_text_button_is_named_by_its_label_and_can_be_disabled() {
+    let count = Rc::new(Cell::new(0));
+    let hits = count.clone();
+    let (mut tree, id) = mounted(
+        text_button(lit!("Aplicar"), 15.0, (8.0, 12.0))
+            .enabled(false)
+            .on_activate(move |_| hits.set(hits.get() + 1)),
+    );
+    assert_eq!(tree.accessibility_node(id).name(), Some("Aplicar"));
+    access_click(&mut tree, id);
+    assert_eq!(count.get(), 0);
 }
