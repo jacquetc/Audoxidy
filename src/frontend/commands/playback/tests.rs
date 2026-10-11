@@ -942,12 +942,11 @@ fn enabling_shuffle_saves_a_session_and_disabling_it_clears_it() {
         assert_eq!(session.shuffle_order.len(), 4);
         let stored = rig.stored_session(list).unwrap();
         assert_eq!(stored.session_id, session.session_id);
-        // `Database::save_shuffle_session` stores the first pending song with
-        // play order -0, which `load_shuffle_session` reads back as the first
-        // history entry: the round trip moves it from the order to the
-        // history (an existing database defect, kept).
-        assert_eq!(stored.shuffle_order, session.shuffle_order[1..]);
-        assert_eq!(stored.history, vec![session.shuffle_order[0], rig.id(2)]);
+        // The session reads back exactly as saved (defect D26, fixed in the
+        // database for both UIs: the round trip used to move the first pending
+        // song into the history).
+        assert_eq!(stored.shuffle_order, session.shuffle_order);
+        assert_eq!(stored.history, session.history);
         let row = rig.stored(list);
         assert!(row.shuffle_active);
         assert_eq!(row.shuffle_id.as_deref(), Some(session.session_id.as_str()));

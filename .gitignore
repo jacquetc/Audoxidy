@@ -29,3 +29,6 @@ AGENTS.md
 .claude/
 skills-lock.json
 
+
+# Python bytecode from the tools/ scripts
+__pycache__/

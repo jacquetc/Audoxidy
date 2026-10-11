@@ -50,7 +50,6 @@
 2	src/db/scanner.rs	clippy::clone_on_copy
 22	src/db/scanner.rs	clippy::collapsible_if
 2	src/db/scanner.rs	clippy::is_digit_ascii_radix
-2	src/db/scanner.rs	clippy::lines_filter_map_ok
 2	src/db/scanner.rs	clippy::unused_enumerate_index
 2	src/integrations/media_controls.rs	clippy::collapsible_if
 2	src/integrations/media_controls.rs	clippy::needless_update
