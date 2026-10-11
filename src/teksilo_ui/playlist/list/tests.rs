@@ -109,7 +109,7 @@ fn song(track: Option<&str>, year: Option<&str>) -> PlaylistSongRef {
 }
 
 #[test]
-fn a_song_shows_its_track_number_or_its_linear_index() {
+fn a_song_shows_its_track_number_or_its_position_in_its_group() {
     assert_eq!(track_prefix(&song(Some("6"), None), 6), "6.");
     assert_eq!(track_prefix(&song(None, None), 7), "07.");
     assert_eq!(
@@ -127,6 +127,7 @@ fn a_song_row_is_lit_when_it_plays_is_selected_or_its_group_is() {
     let item = SongItem {
         linear_idx: 3,
         separator_idx: 0,
+        number: 3,
         song: song(None, None),
     };
     let mut selection = PlaylistSelection::default();

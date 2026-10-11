@@ -412,7 +412,7 @@ impl PlaylistViewModel {
         let snapshot = self.read_cursor(|cursor| {
             let collapsed = inner.collapsed.borrow();
             (
-                visible_rows(cursor.active_groups(), &collapsed),
+                visible_rows(cursor.active_groups(), cursor.groups(), &collapsed),
                 content_key(cursor),
                 cursor.playing_index(),
             )

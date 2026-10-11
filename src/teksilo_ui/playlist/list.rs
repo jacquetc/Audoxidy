@@ -16,9 +16,10 @@
 //!   space. `COLOR_CONTRAST` behind it while selected;
 //! - a **song** (`build_song_row`, `:900`): 15 px in, a "•" (Inter 17 px) in
 //!   a 12 px column that enables or disables the song, invisible while it is
-//!   disabled; then two lines 2 px apart: the track number (or the row's
-//!   linear index, two digits) and a dot right-aligned in 20 px, 5 px, the
-//!   title, 5 px, the duration; under it, 25 px in, "artist - album :: year".
+//!   disabled; then two lines 2 px apart: the track number (or, without one,
+//!   the song's position in its group, two digits, quirk fix 57) and a dot
+//!   right-aligned in 20 px, 5 px, the title, 5 px, the duration; under it,
+//!   25 px in, "artist - album :: year".
 //!   Inter Medium 13 px, primary while the song plays, secondary otherwise.
 //!   `COLOR_CONTRAST` behind it while it plays, is selected, or its
 //!   separator is selected;
@@ -108,12 +109,15 @@ pub fn smart_truncate(text: &str, size: f32, width: f32) -> String {
     }
 }
 
-/// The track prefix of a song row: its track number and a dot, or its
-/// linear index on two digits when it has none (`src/gui/playlist.rs:931`).
-pub fn track_prefix(song: &crate::db::database::PlaylistSongRef, linear_idx: usize) -> String {
+/// The track prefix of a song row: its track number and a dot, or, when it
+/// has none, `number` on two digits: its position among the songs of its
+/// group in the whole playlist ([`SongItem::number`], quirk fix 57). Iced
+/// shows the row's linear index there, which counts the separators
+/// (`src/gui/playlist.rs:931-935`).
+pub fn track_prefix(song: &crate::db::database::PlaylistSongRef, number: usize) -> String {
     match &song.track_number {
-        Some(number) => format!("{number}."),
-        None => format!("{linear_idx:02}."),
+        Some(track) => format!("{track}."),
+        None => format!("{number:02}."),
     }
 }
 
@@ -355,7 +359,7 @@ impl PlaylistRow {
             }
             RowItem::Song(item) => format!(
                 "{} {}, {}, {}",
-                track_prefix(&item.song, item.linear_idx),
+                track_prefix(&item.song, item.number),
                 item.song.title,
                 song_details(&item.song),
                 format_duration(item.song.duration)
@@ -436,7 +440,7 @@ impl PlaylistRow {
                         .spacing(0.0)
                         .alignment(VAlignment::Center)
                         .child(Spacer::new())
-                        .child(line_text(track_prefix(song, linear_idx))),
+                        .child(line_text(track_prefix(song, item.number))),
                 ),
             )
             .child(SmartText::new(song.title.to_string(), 13.0).lit(playing.clone()))
