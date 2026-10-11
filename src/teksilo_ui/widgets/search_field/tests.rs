@@ -96,14 +96,57 @@ fn typing_writes_the_query() {
     assert_eq!(text.get(), "ziggy stardust");
 }
 
+/// The search field under a container that counts the Escape presses that
+/// reach it, as an overlay closing on Escape would.
+fn mounted_under_escape_counter(
+    text: Signal<String>,
+) -> (WidgetTree, std::rc::Rc<std::cell::Cell<u32>>) {
+    let mut tree = WidgetTree::new();
+    tree.set_theme(style::audoxidy_dark());
+    let escapes = std::rc::Rc::new(std::cell::Cell::new(0));
+    let seen = escapes.clone();
+    let id = tree.add(SearchField::new(text, lit!("Buscar..."), 180.0));
+    tree.add(
+        VStack::new()
+            .spacing(0.0)
+            .alignment(HAlignment::Leading)
+            .child(id)
+            .child(Spacer::new())
+            .on_key(move |event, _ctx| match event {
+                teksilo::core::WidgetEvent::KeyDown {
+                    key: Key::Escape, ..
+                } => {
+                    seen.set(seen.get() + 1);
+                    EventResponse::Handled
+                }
+                _ => EventResponse::Ignored,
+            }),
+    );
+    layout(&mut tree);
+    let _ = tree.render();
+    (tree, escapes)
+}
+
 #[test]
-fn escape_does_not_clear_the_query_as_in_iced() {
+fn escape_clears_the_query_without_reaching_the_overlay() {
     let text = Signal::new("ziggy".to_string());
-    let (mut tree, _) = mounted(text.clone());
+    let (mut tree, escapes) = mounted_under_escape_counter(text.clone());
     tree.focus(field(&tree));
     tree.press_key(Key::Escape, Modifiers::NONE);
     layout(&mut tree);
-    assert_eq!(text.get(), "ziggy");
+    assert_eq!(text.get(), "");
+    assert_eq!(escapes.get(), 0);
+}
+
+#[test]
+fn escape_on_an_empty_field_reaches_the_overlay() {
+    let text = Signal::new(String::new());
+    let (mut tree, escapes) = mounted_under_escape_counter(text.clone());
+    tree.focus(field(&tree));
+    tree.press_key(Key::Escape, Modifiers::NONE);
+    layout(&mut tree);
+    assert_eq!(text.get(), "");
+    assert_eq!(escapes.get(), 1);
 }
 
 #[test]

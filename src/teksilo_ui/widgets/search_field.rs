@@ -17,11 +17,13 @@
 //! `Signal<String>` the caller owns; the clear button writes an empty string to
 //! it, which is what the Iced `on_clear` message did.
 //!
-//! Escape: the Iced field only drops the keyboard focus on Escape
-//! (`text_input.rs` in iced_widget 0.14); it does not clear. This field keeps
-//! that: Escape does not clear it.
+//! Escape clears a field that holds text (quirk fix 35; the Iced field only
+//! drops the keyboard focus, `text_input.rs` in iced_widget 0.14). On an empty
+//! field Escape is left alone, so it still reaches the overlay or dialog
+//! around the field (quirk fix 4).
 
 use teksilo::core::styles::{TextInputStyle, TextInputStyleConfig};
+use teksilo::core::{Key, WidgetEvent};
 use teksilo::prelude::*;
 use teksilo::tokens::{Alignment, FontWeight};
 use teksilo::widgets::{Center, FixedSize, Padding, Panel, TextInput, TextWidget, ZStack};
@@ -112,6 +114,7 @@ impl Widget for SearchField {
             .label
             .clone()
             .unwrap_or_else(|| self.placeholder.clone());
+        let escape_query = self.text.clone();
         let field = FixedSize::new()
             .width(self.width)
             .height(FIELD_MIN_HEIGHT)
@@ -120,7 +123,17 @@ impl Widget for SearchField {
                     .style(SearchInputStyle)
                     .placeholder(self.placeholder.clone())
                     .label(label),
-            );
+            )
+            // A preview handler, so Escape is seen before the field consumes it.
+            .on_key_preview(move |event, _ctx| match event {
+                WidgetEvent::KeyDown {
+                    key: Key::Escape, ..
+                } if !escape_query.get().is_empty() => {
+                    escape_query.set(String::new());
+                    EventResponse::Handled
+                }
+                _ => EventResponse::Ignored,
+            });
         let has_text = self.text.map(|text| !text.is_empty());
         let query = self.text.clone();
         let clear = Pressable::new(

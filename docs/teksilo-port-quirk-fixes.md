@@ -48,6 +48,8 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 32 | The window can be moved by its title bar and resized from its edges |
 | 33 | The sliders, steppers and value fields work from the keyboard |
 | 34 | The VU meter's labels are drawn whole, and the compact meter stays in its bounds |
+| 35 | Escape clears a search field |
+| 36 | The library's column header scrolls sideways with the rows |
 
 ---
 
@@ -524,4 +526,24 @@ Unfinished Iced features (stubs) are not listed here; they are in
   - `teksilo_ui::widgets::vu_meter::paint::tests::the_compact_meter_paints_nothing_outside_its_twenty_four_pixels`
   - `teksilo_ui::widgets::vu_meter::tests::every_label_of_the_tall_meter_is_drawn_whole_and_unclipped`
   - `teksilo_ui::widgets::vu_meter::tests::the_compact_meter_draws_nothing_below_its_twenty_four_pixels`
+
+## 35. Escape clears a search field
+
+- **Iced:** in the library, playlist and filter search fields (`standard_search_input`,
+  `src/gui/widgets.rs:1852`), Escape only drops the keyboard focus (`text_input.rs` in iced_widget
+  0.14). Emptying the search takes the "x" button or deleting the text.
+- **Teksilo:** Escape in a search field that holds text empties it. In an empty field, Escape is
+  passed on to whatever surrounds the field, so an overlay or a dialog still closes on it (fix 4).
+- **Why:** the user's decision (2026-10-11). Escape is the usual "clear search" key.
+- **Pinned by:** `teksilo_ui::widgets::search_field::tests::escape_clears_the_query_without_reaching_the_overlay`
+  and `teksilo_ui::widgets::search_field::tests::escape_on_an_empty_field_reaches_the_overlay`.
+
+## 36. The library's column header scrolls sideways with the rows
+
+- **Iced:** in the list modes, only the column header scrolls horizontally (`src/gui/widgets.rs:1911`).
+  Once it has scrolled, the header's columns no longer line up with the rows below them.
+- **Teksilo:** the header and the rows share one horizontal offset, so every column stays over
+  its values.
+- **Why:** the user's decision (2026-10-11). A misaligned header labels the wrong values.
+- **Pinned by:** the library wave (Wave D) adds the test with the list views.
 
