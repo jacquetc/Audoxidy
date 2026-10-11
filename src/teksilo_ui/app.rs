@@ -33,6 +33,7 @@ use teksilo::widgets::{Expand, FixedSize, HStack, Panel, Spacer, VStack};
 
 pub use self::services::{AppServices, AudioCenterLink, Request, UiLinks, audio_center_tab};
 pub use self::session::{RestoreStatus, SessionState};
+use crate::teksilo_ui::filters::{FiltersPanel, FiltersViewModel};
 use crate::teksilo_ui::shell::main_window::AppHandles;
 use crate::teksilo_ui::shell::title_bar;
 
@@ -125,6 +126,21 @@ impl App {
     }
 }
 
+impl App {
+    /// Adds the panel `make` builds from the services, or an empty slot when
+    /// there are none (no async runtime: logged by `start_session`).
+    fn panel(
+        &self,
+        ctx: &mut BuildContext,
+        make: impl FnOnce(&AppServices) -> Box<dyn Widget>,
+    ) -> WidgetId {
+        match &self.services {
+            Some(services) => ctx.add_boxed(make(services)),
+            None => ctx.add(Spacer::new()),
+        }
+    }
+}
+
 /// A row as Iced lays one out by default: no spacing, children at the top.
 fn row() -> HStack {
     HStack::new().spacing(0.0).alignment(VAlignment::Top)
@@ -161,7 +177,10 @@ impl Widget for App {
             Some(host) => ctx.add(title_bar::custom(host)),
             None => ctx.add(title_bar::native()),
         };
-        let filters = ctx.add(FixedSize::new().width(FILTERS_WIDTH).child(Spacer::new()));
+        let filters_panel = self.panel(ctx, |services| {
+            Box::new(FiltersPanel::new(FiltersViewModel::new(services)))
+        });
+        let filters = ctx.add(FixedSize::new().width(FILTERS_WIDTH).child(filters_panel));
         let filters_column = ctx.add(Expand::vertical().child(filters));
         let library = ctx.add(Expand::new().child(Spacer::new()));
         let body = ctx.add(row().child(filters_column).child(library));
@@ -246,6 +265,16 @@ mod tests {
         assert_eq!(rect(&tree, r.title_bar), (400.0, 0.0, w - 400.0, 40.0));
         assert_eq!(rect(&tree, r.filters), (400.0, 40.0, 202.0, h - 40.0));
         assert_eq!(rect(&tree, r.library), (602.0, 40.0, w - 602.0, h - 40.0));
+        assert!(handles.ctx.shutdown());
+    }
+
+    #[test]
+    fn the_panels_are_mounted_in_their_regions() {
+        let (tree, _runtime, handles, r) = mounted();
+        assert!(
+            crate::teksilo_ui::test_support::first_of_type(&tree, r.filters, "FiltersPanel")
+                .is_some()
+        );
         assert!(handles.ctx.shutdown());
     }
 
