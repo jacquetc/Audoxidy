@@ -22,6 +22,7 @@ pub mod audio_center;
 pub mod event_source;
 pub mod filters;
 pub mod icons;
+pub mod library;
 #[cfg(any(test, feature = "teksilo-mocks"))]
 pub mod mock_data;
 pub mod models;

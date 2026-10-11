@@ -473,6 +473,120 @@ pub fn bulk_toggles(
     )
 }
 
+/// [`artist_to_toggle`] for the Teksilo UI, with defect D11 fixed
+/// (`docs/teksilo-port-iced-defects.md`; quirk fix 39).
+///
+/// The artist of a selected song is the header that groups it: the artist
+/// group whose name matches the song's **effective** artist (album artist
+/// first, `utils::get_effective_artist`), ignoring case as
+/// `library_groups::group_by_artist` does, under the group's own spelling.
+/// The original takes the `artist` tag first, so a song of a compilation (album
+/// artist "Various Artists") named a header that does not exist. A selected
+/// header is taken as it is. Returns the header only when [`toggle_wanted`].
+pub fn artist_to_toggle_fixed(
+    selected_header: Option<&str>,
+    selected_song: Option<&SongData>,
+    dir: LibraryNavDir,
+    artist_groups: &[ArtistGroup],
+    structure: &impl LibraryStructure,
+) -> Option<String> {
+    let artist = match selected_header {
+        Some(header) => header.to_string(),
+        None => {
+            let effective = crate::utils::get_effective_artist(selected_song?).to_lowercase();
+            artist_groups
+                .iter()
+                .find(|g| g.name.to_lowercase() == effective)?
+                .name
+                .clone()
+        }
+    };
+    toggle_wanted(dir, structure.is_artist_collapsed(&artist)).then_some(artist)
+}
+
+/// [`bulk_toggles`] for the Teksilo UI, with defect D9 fixed
+/// (`docs/teksilo-port-iced-defects.md`; quirk fix 37): the headers a
+/// Left/Right key collapses or expands, **in display order**.
+///
+/// The targets are those of [`bulk_toggles`] (the selected headers, the album
+/// of each selected song, or the focused item when nothing is selected, each
+/// only when [`toggle_wanted`]), returned once each as `Artist` and `Album`
+/// items in the order `display_order` lists them (a target missing from it
+/// comes last, artists before albums, in name order). The original returns two
+/// lists in hash order. Apply them with [`apply_bulk_toggle_fixed`].
+pub fn bulk_toggle_targets_fixed(
+    selected: &HashSet<LibraryListItem>,
+    focused: Option<&LibraryListItem>,
+    dir: LibraryNavDir,
+    structure: &impl LibraryStructure,
+    album_id_for_song: impl Fn(i64) -> Option<String>,
+    display_order: &[LibraryListItem],
+) -> Vec<LibraryListItem> {
+    let (albums, artists) = bulk_toggles(selected, focused, dir, structure, album_id_for_song);
+    let mut targets: Vec<LibraryListItem> = artists
+        .into_iter()
+        .map(LibraryListItem::Artist)
+        .chain(albums.into_iter().map(LibraryListItem::Album))
+        .collect();
+    let position = |item: &LibraryListItem| {
+        display_order
+            .iter()
+            .position(|it| it == item)
+            .unwrap_or(usize::MAX)
+    };
+    targets.sort_by(|a, b| {
+        let rank = |item: &LibraryListItem| match item {
+            LibraryListItem::Artist(name) => (0, name.clone()),
+            LibraryListItem::Album(id) => (1, id.clone()),
+            LibraryListItem::Song(id) => (2, id.to_string()),
+        };
+        position(a)
+            .cmp(&position(b))
+            .then_with(|| rank(a).cmp(&rank(b)))
+    });
+    targets
+}
+
+/// Applies a bulk Left/Right toggle ([`bulk_toggle_targets_fixed`]) for the
+/// Teksilo UI, with defect D9 fixed (quirk fix 37).
+///
+/// Left collapses every target and Right expands it. The selection then holds
+/// **every** target, and the first one (in display order) has the focus; the
+/// pivot is left as it is. The original applies the targets one by one with
+/// `set_album_collapsed` / `set_artist_collapsed`, each of which replaces the
+/// selection with its own header, so one arbitrary header stayed selected and
+/// the next key acted on it alone. With a single target this is the original
+/// behaviour. Does nothing and returns `false` when there is no target.
+pub fn apply_bulk_toggle_fixed(
+    selection: &mut LibrarySelection,
+    targets: &[LibraryListItem],
+    dir: LibraryNavDir,
+    collapsed_artists: &mut HashSet<String>,
+    collapsed_albums: &mut HashSet<String>,
+) -> bool {
+    let collapse = dir == LibraryNavDir::Left;
+    let mut applied: Vec<LibraryListItem> = Vec::new();
+    for target in targets {
+        let set = match target {
+            LibraryListItem::Artist(name) => (&mut *collapsed_artists, name),
+            LibraryListItem::Album(id) => (&mut *collapsed_albums, id),
+            LibraryListItem::Song(_) => continue,
+        };
+        if collapse {
+            set.0.insert(set.1.clone());
+        } else {
+            set.0.remove(set.1);
+        }
+        applied.push(target.clone());
+    }
+    let Some(first) = applied.first().cloned() else {
+        return false;
+    };
+    selection.selected = applied.into_iter().collect();
+    selection.focused = Some(first);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1019,5 +1133,243 @@ mod tests {
             ..data
         };
         assert_eq!(unloaded.album_song_ids("A|h9"), None);
+    }
+
+    /// What the Iced handler does with the original lists
+    /// (`src/gui/app.rs:3152-3163`): each `set_*_collapsed` replaces the
+    /// selection with its own header.
+    fn apply_like_iced(
+        selection: &mut LibrarySelection,
+        (albums, artists): (Vec<String>, Vec<String>),
+    ) {
+        for id in albums {
+            selection.selected = set(&[album(&id)]);
+            selection.focused = Some(album(&id));
+        }
+        for name in artists {
+            selection.selected = set(&[artist(&name)]);
+            selection.focused = Some(artist(&name));
+        }
+    }
+
+    fn album_of(id: i64) -> Option<String> {
+        match id {
+            1 | 2 => Some("A|1".to_string()),
+            3 => Some("A|2".to_string()),
+            4 | 5 => Some("B|1".to_string()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn d9_a_bulk_collapse_keeps_every_toggled_header_selected() {
+        let s = structure();
+        let selected = set(&[song(1), song(3), song(4)]);
+        let mut original = LibrarySelection {
+            selected: selected.clone(),
+            ..LibrarySelection::default()
+        };
+        apply_like_iced(
+            &mut original,
+            bulk_toggles(&selected, None, LibraryNavDir::Left, &s, album_of),
+        );
+        assert_eq!(original.selected.len(), 1, "the original keeps one header");
+
+        let targets = bulk_toggle_targets_fixed(
+            &selected,
+            None,
+            LibraryNavDir::Left,
+            &s,
+            album_of,
+            &expanded_items(),
+        );
+        assert_eq!(targets, vec![album("A|1"), album("A|2"), album("B|1")]);
+        let mut fixed = LibrarySelection {
+            selected,
+            pivot: Some(song(1)),
+            ..LibrarySelection::default()
+        };
+        let (mut artists, mut albums) = (HashSet::new(), HashSet::new());
+        assert!(apply_bulk_toggle_fixed(
+            &mut fixed,
+            &targets,
+            LibraryNavDir::Left,
+            &mut artists,
+            &mut albums
+        ));
+        assert_eq!(
+            fixed.selected,
+            set(&[album("A|1"), album("A|2"), album("B|1")])
+        );
+        assert_eq!(fixed.focused, Some(album("A|1")));
+        assert_eq!(fixed.pivot, Some(song(1)), "the pivot is left alone");
+        assert_eq!(
+            albums,
+            ["A|1", "A|2", "B|1"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        );
+        assert!(artists.is_empty());
+    }
+
+    #[test]
+    fn d9_collapse_then_expand_restores_the_layout_and_the_selection() {
+        let mut s = structure();
+        let selected = set(&[artist("B"), song(1)]);
+        let mut selection = LibrarySelection {
+            selected: selected.clone(),
+            ..LibrarySelection::default()
+        };
+        let left = bulk_toggle_targets_fixed(
+            &selected,
+            None,
+            LibraryNavDir::Left,
+            &s,
+            album_of,
+            &expanded_items(),
+        );
+        assert_eq!(left, vec![album("A|1"), artist("B")], "display order");
+        apply_bulk_toggle_fixed(
+            &mut selection,
+            &left,
+            LibraryNavDir::Left,
+            &mut s.collapsed_artists,
+            &mut s.collapsed_albums,
+        );
+        let right = bulk_toggle_targets_fixed(
+            &selection.selected,
+            selection.focused.as_ref(),
+            LibraryNavDir::Right,
+            &s,
+            album_of,
+            &[
+                artist("A"),
+                album("A|1"),
+                album("A|2"),
+                song(3),
+                artist("B"),
+            ],
+        );
+        assert_eq!(right, left, "every collapsed header expands again");
+        apply_bulk_toggle_fixed(
+            &mut selection,
+            &right,
+            LibraryNavDir::Right,
+            &mut s.collapsed_artists,
+            &mut s.collapsed_albums,
+        );
+        assert!(s.collapsed_artists.is_empty() && s.collapsed_albums.is_empty());
+        assert_eq!(selection.selected, set(&[album("A|1"), artist("B")]));
+    }
+
+    #[test]
+    fn d9_without_targets_nothing_changes_and_one_target_behaves_like_the_original() {
+        let s = structure();
+        let mut selection = LibrarySelection::default();
+        selection.select_only(song(1));
+        let before = selection.clone();
+        let targets = bulk_toggle_targets_fixed(
+            &selection.selected,
+            None,
+            LibraryNavDir::Right,
+            &s,
+            album_of,
+            &expanded_items(),
+        );
+        assert!(targets.is_empty());
+        let (mut a, mut b) = (HashSet::new(), HashSet::new());
+        assert!(!apply_bulk_toggle_fixed(
+            &mut selection,
+            &targets,
+            LibraryNavDir::Right,
+            &mut a,
+            &mut b
+        ));
+        assert_eq!(selection, before);
+
+        let one = bulk_toggle_targets_fixed(
+            &HashSet::new(),
+            Some(&artist("A")),
+            LibraryNavDir::Left,
+            &s,
+            album_of,
+            &expanded_items(),
+        );
+        let mut original = LibrarySelection::default();
+        apply_like_iced(
+            &mut original,
+            bulk_toggles(
+                &HashSet::new(),
+                Some(&artist("A")),
+                LibraryNavDir::Left,
+                &s,
+                album_of,
+            ),
+        );
+        let mut fixed = LibrarySelection::default();
+        apply_bulk_toggle_fixed(&mut fixed, &one, LibraryNavDir::Left, &mut a, &mut b);
+        assert_eq!(fixed.selected, original.selected);
+        assert_eq!(fixed.focused, original.focused);
+    }
+
+    fn compilation_groups() -> Vec<ArtistGroup> {
+        use crate::logic::library_groups::group_by_artist;
+        let songs: Vec<Arc<SongData>> = vec![
+            Arc::new(tagged_song(
+                Some("Mira"),
+                Some("Various Artists"),
+                Some("Mix"),
+            )),
+            Arc::new(tagged_song(Some("queen"), None, Some("Jazz"))),
+        ];
+        group_by_artist(&songs)
+    }
+
+    #[test]
+    fn d11_the_artist_of_a_song_is_the_header_that_groups_it() {
+        let groups = compilation_groups();
+        let song = tagged_song(Some("Mira"), Some("Various Artists"), Some("Mix"));
+        let s = FakeStructure::default();
+        assert_eq!(
+            artist_to_toggle(None, Some(&song), LibraryNavDir::Left, &s),
+            Some("Mira".to_string()),
+            "the original names a header that does not exist"
+        );
+        assert!(groups.iter().all(|g| g.name != "Mira"));
+        assert_eq!(
+            artist_to_toggle_fixed(None, Some(&song), LibraryNavDir::Left, &groups, &s),
+            Some("Various Artists".to_string())
+        );
+    }
+
+    #[test]
+    fn d11_the_header_keeps_the_spelling_of_its_group_and_follows_the_collapse_state() {
+        let groups = compilation_groups();
+        let mut s = FakeStructure::default();
+        let shouting = tagged_song(Some("QUEEN"), None, Some("Jazz"));
+        assert_eq!(
+            artist_to_toggle_fixed(None, Some(&shouting), LibraryNavDir::Left, &groups, &s),
+            Some("queen".to_string())
+        );
+        assert_eq!(
+            artist_to_toggle_fixed(None, Some(&shouting), LibraryNavDir::Right, &groups, &s),
+            None,
+            "an expanded header does not expand"
+        );
+        s.collapsed_artists.insert("queen".into());
+        assert_eq!(
+            artist_to_toggle_fixed(None, Some(&shouting), LibraryNavDir::Right, &groups, &s),
+            Some("queen".to_string())
+        );
+        let stranger = tagged_song(Some("Nobody"), None, None);
+        assert_eq!(
+            artist_to_toggle_fixed(None, Some(&stranger), LibraryNavDir::Left, &groups, &s),
+            None
+        );
+        assert_eq!(
+            artist_to_toggle_fixed(Some("X"), None, LibraryNavDir::Left, &groups, &s),
+            Some("X".to_string())
+        );
     }
 }
