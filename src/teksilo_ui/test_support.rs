@@ -8,8 +8,8 @@
 //! simply never delivered, since a headless tree has no event loop.
 //!
 //! The input helpers drive the real dispatch path ([`access_click`],
-//! [`key_down`], [`press`]), so a handler runs with a real `EventContext`
-//! rather than being called directly.
+//! [`key_down`], [`type_text`], [`pointer_click`], [`press`]), so a handler
+//! runs with a real `EventContext` rather than being called directly.
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -17,14 +17,16 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use teksilo::canvas::Point;
 use teksilo::core::WidgetEvent;
 use teksilo::core::accessibility::widget_id_to_node_id;
+use teksilo::core::accesskit::Node;
 use teksilo::core::event_source::{
     AppEventPoster, EventSourceAdapter, SubscriptionId, TreeAppContext,
 };
 use teksilo::core::widget_id::WidgetId;
 use teksilo::core::widget_tree::WidgetTree;
-use teksilo::core::{Key, Modifiers};
+use teksilo::core::{EventTime, Key, Modifiers, PointerButton, PointerPhase, PointerSample};
 use teksilo::prelude::{AsyncRuntimeHandle, EventContext, SizeProposal, lit};
 use teksilo::widgets::Button;
 
@@ -119,6 +121,61 @@ pub fn key_down_with(tree: &mut WidgetTree, id: WidgetId, key: Key, modifiers: M
         text: None,
     });
     layout(tree);
+}
+
+/// Types `text` into the focused widget: one `KeyDown` per character,
+/// carrying the character as its text (the way a text field receives typing),
+/// with a layout pass after each.
+pub fn type_text(tree: &mut WidgetTree, text: &str) {
+    for ch in text.chars() {
+        tree.dispatch_event(WidgetEvent::KeyDown {
+            key: Key::Character(ch),
+            modifiers: Modifiers::NONE,
+            text: Some(ch.to_string()),
+        });
+        layout(tree);
+    }
+}
+
+/// Sends one mouse event, `phase` of `button` at `at` (window coordinates),
+/// stamped `ms` milliseconds on the tree's input clock, then lays the tree
+/// out. This is the real pointer path: hit testing, capture, press-to-focus,
+/// gesture recognition. Space successive clicks a few hundred milliseconds
+/// apart when they must not count as a double click.
+pub fn pointer_event(
+    tree: &mut WidgetTree,
+    phase: PointerPhase,
+    at: Point,
+    button: PointerButton,
+    ms: u64,
+) {
+    tree.dispatch_pointer(
+        PointerSample::mouse(phase, at, EventTime::from_millis(ms)).with_button(button),
+    );
+    layout(tree);
+}
+
+/// A mouse click with `button` at `at`: down at `ms`, up 5 ms later (see
+/// [`pointer_event`]).
+pub fn pointer_click(tree: &mut WidgetTree, at: Point, button: PointerButton, ms: u64) {
+    pointer_event(tree, PointerPhase::Down, at, button, ms);
+    pointer_event(tree, PointerPhase::Up, at, button, ms + 5);
+}
+
+/// The accessibility node `id` publishes, as the platform adapter receives
+/// it. Unlike `WidgetTree::accessibility_node`, it carries the node's value,
+/// numeric value, range, step and custom actions.
+pub fn a11y_node(tree: &mut WidgetTree, id: WidgetId) -> Node {
+    let wanted = widget_id_to_node_id(id);
+    match tree
+        .sync_accessibility()
+        .nodes
+        .into_iter()
+        .find(|(node, _)| *node == wanted)
+    {
+        Some((_, node)) => node,
+        None => panic!("{id:?} publishes no accessibility node"),
+    }
 }
 
 /// Runs `f` with a real `EventContext`, as a button press would: a button

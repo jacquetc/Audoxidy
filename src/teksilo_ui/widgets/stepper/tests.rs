@@ -8,10 +8,8 @@ use std::time::{Duration, Instant};
 
 use teksilo::canvas::{Point, RenderFrame};
 use teksilo::core::accessibility::widget_id_to_node_id;
-use teksilo::core::accesskit::{Action, ActionData, Node, Role};
-use teksilo::core::{
-    EventTime, Key, Modifiers, PointerButton, PointerPhase, PointerSample, WidgetTree,
-};
+use teksilo::core::accesskit::{Action, ActionData, Role};
+use teksilo::core::{Key, Modifiers, PointerButton, PointerPhase, WidgetTree};
 use teksilo::prelude::*;
 use teksilo::tokens::{HAlignment, VAlignment};
 use teksilo::widgets::{HStack, Spacer, VStack};
@@ -19,7 +17,10 @@ use teksilo::widgets::{HStack, Spacer, VStack};
 use super::face::{WIDTH, Zone};
 use super::*;
 use crate::teksilo_ui::style;
-use crate::teksilo_ui::test_support::{key_down, key_down_with, layout, with_shipped_messages};
+use crate::teksilo_ui::test_support::{
+    a11y_node, key_down, key_down_with, layout, pointer_click, pointer_event, type_text,
+    with_shipped_messages,
+};
 
 struct Fixture {
     tree: WidgetTree,
@@ -90,44 +91,11 @@ const MINUS: Point = Point { x: 7.0, y: 6.0 };
 const VALUE: Point = Point { x: 48.0, y: 6.0 };
 const PLUS: Point = Point { x: 88.0, y: 6.0 };
 
-fn pointer(tree: &mut WidgetTree, phase: PointerPhase, at: Point, button: PointerButton) {
-    tree.dispatch_pointer(
-        PointerSample::mouse(phase, at, EventTime::from_millis(0)).with_button(button),
-    );
-    layout(tree);
-}
-
-fn click(tree: &mut WidgetTree, at: Point, button: PointerButton) {
-    pointer(tree, PointerPhase::Down, at, button);
-    pointer(tree, PointerPhase::Up, at, button);
-}
-
 /// Moves the manual clock to `t0 + offset` and runs one frame.
 fn frame_at(f: &mut Fixture, offset: Duration) {
     f.now.set(f.t0 + offset);
     f.tree.frame_tick().set(0.016);
     layout(&mut f.tree);
-}
-
-fn node(tree: &mut WidgetTree, id: WidgetId) -> Node {
-    let wanted = widget_id_to_node_id(id);
-    tree.sync_accessibility()
-        .nodes
-        .into_iter()
-        .find(|(id, _)| *id == wanted)
-        .map(|(_, node)| node)
-        .unwrap()
-}
-
-fn type_text(tree: &mut WidgetTree, text: &str) {
-    for ch in text.chars() {
-        tree.dispatch_event(WidgetEvent::KeyDown {
-            key: Key::Character(ch),
-            modifiers: Modifiers::NONE,
-            text: Some(ch.to_string()),
-        });
-        layout(tree);
-    }
 }
 
 fn retype(tree: &mut WidgetTree, text: &str) {
@@ -171,10 +139,10 @@ fn the_stepper_is_ninety_six_by_thirteen() {
 #[test]
 fn a_click_on_an_arrow_steps_once_by_the_unit_step() {
     let mut f = fixture(1000.0, plain);
-    click(&mut f.tree, PLUS, PointerButton::Primary);
+    pointer_click(&mut f.tree, PLUS, PointerButton::Primary, 0);
     assert_eq!(f.value.get(), 1050.0);
-    click(&mut f.tree, MINUS, PointerButton::Primary);
-    click(&mut f.tree, MINUS, PointerButton::Primary);
+    pointer_click(&mut f.tree, MINUS, PointerButton::Primary, 0);
+    pointer_click(&mut f.tree, MINUS, PointerButton::Primary, 0);
     assert_eq!(f.value.get(), 950.0);
     assert_eq!(*f.changes.borrow(), vec![1050.0, 1000.0, 950.0]);
 }
@@ -182,20 +150,21 @@ fn a_click_on_an_arrow_steps_once_by_the_unit_step() {
 #[test]
 fn a_step_is_clamped_to_the_range() {
     let mut f = fixture(9980.0, plain);
-    click(&mut f.tree, PLUS, PointerButton::Primary);
+    pointer_click(&mut f.tree, PLUS, PointerButton::Primary, 0);
     assert_eq!(f.value.get(), 10000.0);
-    click(&mut f.tree, PLUS, PointerButton::Primary);
+    pointer_click(&mut f.tree, PLUS, PointerButton::Primary, 0);
     assert_eq!(f.changes.borrow().len(), 1);
 }
 
 #[test]
 fn a_held_arrow_repeats_after_four_tenths_then_every_tenth_of_a_second() {
     let mut f = fixture(1000.0, plain);
-    pointer(
+    pointer_event(
         &mut f.tree,
         PointerPhase::Down,
         PLUS,
         PointerButton::Primary,
+        0,
     );
     assert_eq!(f.value.get(), 1050.0);
     frame_at(&mut f, ms(300));
@@ -213,16 +182,23 @@ fn a_held_arrow_repeats_after_four_tenths_then_every_tenth_of_a_second() {
 fn the_hold_wakes_the_window_at_each_deadline_and_never_after_the_release() {
     let mut f = fixture(1000.0, plain);
     let wake = f.tree.wake_at_handle();
-    pointer(
+    pointer_event(
         &mut f.tree,
         PointerPhase::Down,
         PLUS,
         PointerButton::Primary,
+        0,
     );
     assert_eq!(wake.get(), Some(f.t0 + ms(400)));
     frame_at(&mut f, ms(420));
     assert_eq!(wake.get(), Some(f.t0 + ms(500)));
-    pointer(&mut f.tree, PointerPhase::Up, PLUS, PointerButton::Primary);
+    pointer_event(
+        &mut f.tree,
+        PointerPhase::Up,
+        PLUS,
+        PointerButton::Primary,
+        0,
+    );
     assert_eq!(wake.get(), None);
     frame_at(&mut f, ms(2000));
     assert_eq!(f.value.get(), 1100.0);
@@ -245,7 +221,7 @@ fn a_cancelled_hold_stops_repeating() {
 #[test]
 fn a_secondary_press_resets_and_does_nothing_without_a_default() {
     let mut f = fixture(4000.0, plain);
-    click(&mut f.tree, VALUE, PointerButton::Secondary);
+    pointer_click(&mut f.tree, VALUE, PointerButton::Secondary, 0);
     assert_eq!(f.value.get(), 1000.0);
     assert!(!editing(&f));
     let mut f = fixture(4000.0, |s| {
@@ -256,7 +232,7 @@ fn a_secondary_press_resets_and_does_nothing_without_a_default() {
             lit!("Hold"),
         )
     });
-    click(&mut f.tree, PLUS, PointerButton::Secondary);
+    pointer_click(&mut f.tree, PLUS, PointerButton::Secondary, 0);
     assert_eq!(f.value.get(), 4000.0);
 }
 
@@ -271,7 +247,7 @@ fn the_caret_lands_where_iced_puts_it() {
 #[test]
 fn a_press_on_the_value_edits_it_and_enter_commits_without_rounding() {
     let mut f = fixture(1000.0, plain);
-    click(&mut f.tree, VALUE, PointerButton::Primary);
+    pointer_click(&mut f.tree, VALUE, PointerButton::Primary, 0);
     assert!(editing(&f));
     retype(&mut f.tree, "1234");
     let field = f.tree.focused().unwrap();
@@ -284,12 +260,12 @@ fn a_press_on_the_value_edits_it_and_enter_commits_without_rounding() {
 #[test]
 fn a_committed_value_is_clamped_and_an_unparsable_one_dropped() {
     let mut f = fixture(1000.0, plain);
-    click(&mut f.tree, VALUE, PointerButton::Primary);
+    pointer_click(&mut f.tree, VALUE, PointerButton::Primary, 0);
     retype(&mut f.tree, "99999 ms");
     let field = f.tree.focused().unwrap();
     key_down(&mut f.tree, field, Key::Enter);
     assert_eq!(f.value.get(), 10000.0);
-    click(&mut f.tree, VALUE, PointerButton::Primary);
+    pointer_click(&mut f.tree, VALUE, PointerButton::Primary, 0);
     retype(&mut f.tree, "-");
     let field = f.tree.focused().unwrap();
     key_down(&mut f.tree, field, Key::Enter);
@@ -299,7 +275,7 @@ fn a_committed_value_is_clamped_and_an_unparsable_one_dropped() {
 #[test]
 fn escape_cancels_the_edit() {
     let mut f = fixture(1000.0, plain);
-    click(&mut f.tree, VALUE, PointerButton::Primary);
+    pointer_click(&mut f.tree, VALUE, PointerButton::Primary, 0);
     retype(&mut f.tree, "42");
     let field = f.tree.focused().unwrap();
     key_down(&mut f.tree, field, Key::Escape);
@@ -311,9 +287,9 @@ fn escape_cancels_the_edit() {
 #[test]
 fn an_arrow_pressed_while_editing_steps_from_the_committed_value() {
     let mut f = fixture(1000.0, plain);
-    click(&mut f.tree, VALUE, PointerButton::Primary);
+    pointer_click(&mut f.tree, VALUE, PointerButton::Primary, 0);
     retype(&mut f.tree, "1234");
-    click(&mut f.tree, PLUS, PointerButton::Primary);
+    pointer_click(&mut f.tree, PLUS, PointerButton::Primary, 0);
     assert!(!editing(&f));
     assert_eq!(*f.changes.borrow(), vec![1234.0, 1284.0]);
 }
@@ -321,7 +297,7 @@ fn an_arrow_pressed_while_editing_steps_from_the_committed_value() {
 #[test]
 fn leaving_the_field_commits_it() {
     let mut f = fixture(1000.0, plain);
-    click(&mut f.tree, VALUE, PointerButton::Primary);
+    pointer_click(&mut f.tree, VALUE, PointerButton::Primary, 0);
     retype(&mut f.tree, "777");
     f.tree.focus(f.stepper);
     layout(&mut f.tree);
@@ -339,7 +315,7 @@ fn the_field_takes_only_number_characters() {
             lit!("Threshold"),
         )
     });
-    click(&mut f.tree, VALUE, PointerButton::Primary);
+    pointer_click(&mut f.tree, VALUE, PointerButton::Primary, 0);
     retype(&mut f.tree, "-1x2.5dB");
     let field = f.tree.focused().unwrap();
     key_down(&mut f.tree, field, Key::Enter);
@@ -369,19 +345,19 @@ fn a_disabled_stepper_ignores_every_path_and_dims() {
     let enabled = Signal::new(false);
     let flag = enabled.clone();
     let mut f = fixture(1000.0, move |s| s.enabled(flag));
-    click(&mut f.tree, PLUS, PointerButton::Primary);
-    click(&mut f.tree, VALUE, PointerButton::Primary);
-    click(&mut f.tree, VALUE, PointerButton::Secondary);
+    pointer_click(&mut f.tree, PLUS, PointerButton::Primary, 0);
+    pointer_click(&mut f.tree, VALUE, PointerButton::Primary, 0);
+    pointer_click(&mut f.tree, VALUE, PointerButton::Secondary, 0);
     key_down(&mut f.tree, f.stepper, Key::ArrowUp);
     assert_eq!(f.value.get(), 1000.0);
     assert!(!editing(&f));
-    let node = node(&mut f.tree, f.stepper);
+    let node = a11y_node(&mut f.tree, f.stepper);
     assert!(node.is_disabled());
     assert!(!node.supports_action(Action::Increment));
     assert!(!f.tree.tab_stops_within(f.stepper).contains(&f.stepper));
     enabled.set(true);
     layout(&mut f.tree);
-    click(&mut f.tree, PLUS, PointerButton::Primary);
+    pointer_click(&mut f.tree, PLUS, PointerButton::Primary, 0);
     assert_eq!(f.value.get(), 1050.0);
 }
 
@@ -393,21 +369,23 @@ fn the_arrow_under_the_pointer_lights_up() {
         fill_at(&f.tree.render(), minus),
         Some(style::CONTRAST.to_array())
     );
-    pointer(
+    pointer_event(
         &mut f.tree,
         PointerPhase::Move,
         MINUS,
         PointerButton::Primary,
+        0,
     );
     assert_eq!(
         fill_at(&f.tree.render(), minus),
         Some(style::ACCENT.to_array())
     );
-    pointer(
+    pointer_event(
         &mut f.tree,
         PointerPhase::Move,
         VALUE,
         PointerButton::Primary,
+        0,
     );
     assert_eq!(
         fill_at(&f.tree.render(), minus),
@@ -423,7 +401,7 @@ fn the_arrow_under_the_pointer_lights_up() {
 fn the_stepper_is_a_named_spin_button_with_its_value_and_actions() {
     with_shipped_messages("en-US", || {
         let mut f = fixture(1000.0, plain);
-        let n = node(&mut f.tree, f.stepper);
+        let n = a11y_node(&mut f.tree, f.stepper);
         assert_eq!(n.role(), Role::SpinButton);
         assert_eq!(n.label(), Some("Fade in"));
         assert_eq!(n.value(), Some("1000 ms"));
@@ -461,7 +439,7 @@ fn the_accessibility_actions_step_set_and_reset() {
             Some(ActionData::NumericValue(1234.0)),
         );
         assert_eq!(f.value.get(), 1234.0);
-        let reset = node(&mut f.tree, f.stepper).custom_actions().to_vec();
+        let reset = a11y_node(&mut f.tree, f.stepper).custom_actions().to_vec();
         assert_eq!(&*reset[0].description, "Restablecer al valor por defecto");
         act(
             &mut f.tree,
@@ -483,7 +461,7 @@ fn only_the_arrow_zones_count_as_hovered() {
 fn the_field_opens_again_after_a_commit() {
     let mut f = fixture(1000.0, plain);
     for (text, expected) in [("1111", 1111.0), ("2222", 2222.0)] {
-        click(&mut f.tree, VALUE, PointerButton::Primary);
+        pointer_click(&mut f.tree, VALUE, PointerButton::Primary, 0);
         assert!(editing(&f));
         retype(&mut f.tree, text);
         let field = f.tree.focused().unwrap();

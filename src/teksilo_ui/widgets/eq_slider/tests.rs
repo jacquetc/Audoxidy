@@ -6,15 +6,17 @@ use std::rc::Rc;
 
 use teksilo::canvas::{Point, RenderFrame};
 use teksilo::core::accessibility::widget_id_to_node_id;
-use teksilo::core::accesskit::{Action, ActionData, Node, Role};
-use teksilo::core::{EventTime, Key, PointerButton, PointerPhase, PointerSample, WidgetTree};
+use teksilo::core::accesskit::{Action, ActionData, Role};
+use teksilo::core::{Key, PointerButton, PointerPhase, WidgetTree};
 use teksilo::prelude::*;
 use teksilo::tokens::{Color, VAlignment};
 use teksilo::widgets::{HStack, Spacer};
 
 use super::*;
 use crate::teksilo_ui::style;
-use crate::teksilo_ui::test_support::{key_down, layout, with_shipped_messages};
+use crate::teksilo_ui::test_support::{
+    a11y_node, key_down, layout, pointer_event, with_shipped_messages,
+};
 
 /// A slider at the window's top-left corner (a tree's root always takes the
 /// whole viewport), its value and the values `on_change` reported.
@@ -56,23 +58,6 @@ fn fixture(initial: f32, eq_enabled: Signal<bool>) -> Fixture {
     }
 }
 
-fn pointer(tree: &mut WidgetTree, phase: PointerPhase, at: Point, button: PointerButton, ms: u64) {
-    tree.dispatch_pointer(
-        PointerSample::mouse(phase, at, EventTime::from_millis(ms)).with_button(button),
-    );
-    layout(tree);
-}
-
-fn node(tree: &mut WidgetTree, id: WidgetId) -> Node {
-    let wanted = widget_id_to_node_id(id);
-    tree.sync_accessibility()
-        .nodes
-        .into_iter()
-        .find(|(id, _)| *id == wanted)
-        .map(|(_, node)| node)
-        .unwrap()
-}
-
 /// The colour of the 16 × 16 handle quad painted at `(x, y)`, or of its
 /// outline when it has a border.
 fn handle_color(frame: &RenderFrame, y: f32) -> [f32; 4] {
@@ -99,7 +84,7 @@ fn the_slider_is_twenty_four_by_two_hundred_and_forty() {
 #[test]
 fn a_primary_press_moves_the_value_to_the_pointer_at_once() {
     let mut f = fixture(0.0, Signal::new(true));
-    pointer(
+    pointer_event(
         &mut f.tree,
         PointerPhase::Down,
         Point::new(12.0, 60.0),
@@ -108,7 +93,7 @@ fn a_primary_press_moves_the_value_to_the_pointer_at_once() {
     );
     assert!((f.value.get() - 4.5).abs() < 1e-5);
     assert_eq!(f.changes.borrow().len(), 1);
-    pointer(
+    pointer_event(
         &mut f.tree,
         PointerPhase::Up,
         Point::new(12.0, 60.0),
@@ -121,7 +106,7 @@ fn a_primary_press_moves_the_value_to_the_pointer_at_once() {
 #[test]
 fn a_drag_follows_the_pointer_and_clamps_at_the_ends() {
     let mut f = fixture(0.0, Signal::new(true));
-    pointer(
+    pointer_event(
         &mut f.tree,
         PointerPhase::Down,
         Point::new(12.0, 120.0),
@@ -129,7 +114,7 @@ fn a_drag_follows_the_pointer_and_clamps_at_the_ends() {
         10,
     );
     for (i, y) in [100.0, 60.0, 400.0].into_iter().enumerate() {
-        pointer(
+        pointer_event(
             &mut f.tree,
             PointerPhase::Move,
             Point::new(12.0, y),
@@ -138,7 +123,7 @@ fn a_drag_follows_the_pointer_and_clamps_at_the_ends() {
         );
     }
     assert_eq!(f.value.get(), -9.0);
-    pointer(
+    pointer_event(
         &mut f.tree,
         PointerPhase::Up,
         Point::new(12.0, 400.0),
@@ -152,14 +137,14 @@ fn a_drag_follows_the_pointer_and_clamps_at_the_ends() {
 #[test]
 fn a_secondary_press_resets_the_band_without_moving_it_first() {
     let mut f = fixture(3.0, Signal::new(true));
-    pointer(
+    pointer_event(
         &mut f.tree,
         PointerPhase::Down,
         Point::new(12.0, 20.0),
         PointerButton::Secondary,
         10,
     );
-    pointer(
+    pointer_event(
         &mut f.tree,
         PointerPhase::Up,
         Point::new(12.0, 20.0),
@@ -173,7 +158,7 @@ fn a_secondary_press_resets_the_band_without_moving_it_first() {
 #[test]
 fn the_reset_action_does_what_the_secondary_click_does() {
     let mut f = fixture(-4.2, Signal::new(true));
-    let actions = node(&mut f.tree, f.slider).custom_actions().to_vec();
+    let actions = a11y_node(&mut f.tree, f.slider).custom_actions().to_vec();
     assert_eq!(actions.len(), 1);
     f.tree.dispatch_event(WidgetEvent::AccessAction {
         action: Action::CustomAction,
@@ -269,7 +254,7 @@ fn the_track_has_no_coloured_part() {
 fn the_slider_is_announced_with_its_band_range_step_and_db_value() {
     with_shipped_messages("en-US", || {
         let mut f = fixture(-3.0, Signal::new(true));
-        let node = node(&mut f.tree, f.slider);
+        let node = a11y_node(&mut f.tree, f.slider);
         assert_eq!(node.role(), Role::Slider);
         assert_eq!(node.label(), Some("1k"));
         assert_eq!(node.numeric_value(), Some(-3.0));
@@ -288,7 +273,7 @@ fn the_slider_is_announced_with_its_band_range_step_and_db_value() {
 fn the_spanish_slider_offers_the_iced_reset_wording() {
     with_shipped_messages("es-ES", || {
         let mut f = fixture(1.5, Signal::new(true));
-        let node = node(&mut f.tree, f.slider);
+        let node = a11y_node(&mut f.tree, f.slider);
         assert_eq!(node.value(), Some("1.5 dB"));
         assert_eq!(
             &*node.custom_actions()[0].description,

@@ -7,16 +7,16 @@ use std::rc::Rc;
 
 use teksilo::canvas::{Point, RenderFrame};
 use teksilo::core::accessibility::widget_id_to_node_id;
-use teksilo::core::accesskit::{Action, ActionData, Node, Role};
-use teksilo::core::{
-    EventTime, Key, Modifiers, PointerButton, PointerPhase, PointerSample, WidgetTree,
-};
+use teksilo::core::accesskit::{Action, ActionData, Role};
+use teksilo::core::{Key, Modifiers, PointerButton, WidgetTree};
 use teksilo::prelude::*;
 use teksilo::tokens::{HAlignment, VAlignment};
 use teksilo::widgets::{FixedSize, HStack, Spacer, VStack};
 
 use super::*;
-use crate::teksilo_ui::test_support::{key_down, key_down_with, layout, with_shipped_messages};
+use crate::teksilo_ui::test_support::{
+    a11y_node, key_down, key_down_with, layout, pointer_click, type_text, with_shipped_messages,
+};
 
 /// The row width the slider is laid out in.
 const ROW: f32 = 300.0;
@@ -70,45 +70,12 @@ fn plain(slider: EffectSlider) -> EffectSlider {
     slider
 }
 
-fn click(tree: &mut WidgetTree, at: Point, button: PointerButton, ms: u64) {
-    for (phase, t) in [(PointerPhase::Down, ms), (PointerPhase::Up, ms + 5)] {
-        tree.dispatch_pointer(
-            PointerSample::mouse(phase, at, EventTime::from_millis(t)).with_button(button),
-        );
-        layout(tree);
-    }
-}
-
-/// Types `text` into the focused widget, one key per character.
-fn type_text(tree: &mut WidgetTree, text: &str) {
-    for ch in text.chars() {
-        let id = tree.focused().unwrap();
-        tree.dispatch_event(WidgetEvent::KeyDown {
-            key: Key::Character(ch),
-            modifiers: Modifiers::NONE,
-            text: Some(ch.to_string()),
-        });
-        layout(tree);
-        assert_eq!(tree.focused(), Some(id));
-    }
-}
-
 /// Replaces the focused field's text with `text`.
 fn retype(tree: &mut WidgetTree, text: &str) {
     let field = tree.focused().unwrap();
     key_down_with(tree, field, Key::A, Modifiers::COMMAND);
     key_down(tree, field, Key::Delete);
     type_text(tree, text);
-}
-
-fn node(tree: &mut WidgetTree, id: WidgetId) -> Node {
-    let wanted = widget_id_to_node_id(id);
-    tree.sync_accessibility()
-        .nodes
-        .into_iter()
-        .find(|(id, _)| *id == wanted)
-        .map(|(_, node)| node)
-        .unwrap()
 }
 
 /// The centre of the value box.
@@ -147,14 +114,14 @@ fn the_slider_fills_the_row_less_the_ten_pixel_gap_and_the_forty_pixel_field() {
 fn a_press_on_the_slider_moves_the_value_and_a_secondary_press_resets_it() {
     let mut f = fixture(0.0, plain);
     // Halfway along the 250 px track: -4 + 0.5 × 28 = 10.
-    click(
+    pointer_click(
         &mut f.tree,
         Point::new(125.0, 9.0),
         PointerButton::Primary,
         10,
     );
     assert!((f.value.get() - 10.0).abs() < 1e-4);
-    click(
+    pointer_click(
         &mut f.tree,
         Point::new(10.0, 9.0),
         PointerButton::Secondary,
@@ -215,7 +182,7 @@ fn the_caret_lands_where_iced_puts_it() {
 #[test]
 fn a_press_on_the_field_opens_it_and_enter_commits_the_rounded_value() {
     let mut f = fixture(0.0, plain);
-    click(&mut f.tree, input_point(), PointerButton::Primary, 10);
+    pointer_click(&mut f.tree, input_point(), PointerButton::Primary, 10);
     assert!(editing(&f));
     retype(&mut f.tree, "3.17");
     let field = f.tree.focused().unwrap();
@@ -229,7 +196,7 @@ fn a_press_on_the_field_opens_it_and_enter_commits_the_rounded_value() {
 #[test]
 fn escape_closes_the_field_without_writing() {
     let mut f = fixture(5.0, plain);
-    click(&mut f.tree, input_point(), PointerButton::Primary, 10);
+    pointer_click(&mut f.tree, input_point(), PointerButton::Primary, 10);
     retype(&mut f.tree, "7");
     let field = f.tree.focused().unwrap();
     key_down(&mut f.tree, field, Key::Escape);
@@ -241,10 +208,10 @@ fn escape_closes_the_field_without_writing() {
 #[test]
 fn pressing_the_slider_commits_the_field_clamped_but_not_rounded_first() {
     let mut f = fixture(0.0, plain);
-    click(&mut f.tree, input_point(), PointerButton::Primary, 10);
+    pointer_click(&mut f.tree, input_point(), PointerButton::Primary, 10);
     retype(&mut f.tree, "3.17");
     // The press commits 3.17, then moves the value to the pointer.
-    click(
+    pointer_click(
         &mut f.tree,
         Point::new(125.0, 9.0),
         PointerButton::Primary,
@@ -259,7 +226,7 @@ fn pressing_the_slider_commits_the_field_clamped_but_not_rounded_first() {
 #[test]
 fn leaving_the_field_commits_it_clamped_but_not_rounded() {
     let mut f = fixture(0.0, plain);
-    click(&mut f.tree, input_point(), PointerButton::Primary, 10);
+    pointer_click(&mut f.tree, input_point(), PointerButton::Primary, 10);
     retype(&mut f.tree, "3.17");
     f.tree.focus(f.slider);
     layout(&mut f.tree);
@@ -270,7 +237,7 @@ fn leaving_the_field_commits_it_clamped_but_not_rounded() {
 #[test]
 fn an_unparsable_field_writes_nothing() {
     let mut f = fixture(2.0, plain);
-    click(&mut f.tree, input_point(), PointerButton::Primary, 10);
+    pointer_click(&mut f.tree, input_point(), PointerButton::Primary, 10);
     retype(&mut f.tree, "-");
     let field = f.tree.focused().unwrap();
     key_down(&mut f.tree, field, Key::Enter);
@@ -281,7 +248,7 @@ fn an_unparsable_field_writes_nothing() {
 #[test]
 fn the_field_accepts_only_digits_dots_minus_and_spaces() {
     let mut f = fixture(0.0, plain);
-    click(&mut f.tree, input_point(), PointerButton::Primary, 10);
+    pointer_click(&mut f.tree, input_point(), PointerButton::Primary, 10);
     retype(&mut f.tree, "1a2,b");
     let field = f.tree.focused().unwrap();
     key_down(&mut f.tree, field, Key::Enter);
@@ -296,7 +263,7 @@ fn enter_on_the_slider_opens_the_field_and_a_secondary_press_on_the_box_resets()
     let field = f.tree.focused().unwrap();
     key_down(&mut f.tree, field, Key::Escape);
     assert_eq!(f.tree.focused(), Some(f.slider));
-    click(&mut f.tree, input_point(), PointerButton::Secondary, 300);
+    pointer_click(&mut f.tree, input_point(), PointerButton::Secondary, 300);
     assert_eq!(f.value.get(), 0.0);
 }
 
@@ -311,7 +278,7 @@ fn the_field_box_gets_an_accent_border_while_editing() {
             .any(|s| s.stroke_width == INPUT_BORDER && s.color == accent)
     };
     assert!(!border(&f.tree.render()));
-    click(&mut f.tree, input_point(), PointerButton::Primary, 10);
+    pointer_click(&mut f.tree, input_point(), PointerButton::Primary, 10);
     assert!(border(&f.tree.render()));
 }
 
@@ -319,7 +286,7 @@ fn the_field_box_gets_an_accent_border_while_editing() {
 fn the_slider_is_named_has_its_range_and_a_reset_action() {
     with_shipped_messages("es-ES", || {
         let mut f = fixture(3.0, plain);
-        let slider = node(&mut f.tree, f.slider);
+        let slider = a11y_node(&mut f.tree, f.slider);
         assert_eq!(slider.label(), Some("Nivel dB"));
         assert_eq!(slider.min_numeric_value(), Some(-4.0));
         assert_eq!(slider.max_numeric_value(), Some(24.0));
@@ -339,9 +306,9 @@ fn the_slider_is_named_has_its_range_and_a_reset_action() {
 #[test]
 fn the_open_field_is_a_text_input_named_after_the_parameter() {
     let mut f = fixture(3.0, plain);
-    click(&mut f.tree, input_point(), PointerButton::Primary, 10);
+    pointer_click(&mut f.tree, input_point(), PointerButton::Primary, 10);
     let field = f.tree.focused().unwrap();
-    let node = node(&mut f.tree, field);
+    let node = a11y_node(&mut f.tree, field);
     assert_eq!(node.role(), Role::TextInput);
     assert_eq!(node.label(), Some("Nivel dB"));
 }
@@ -349,11 +316,11 @@ fn the_open_field_is_a_text_input_named_after_the_parameter() {
 #[test]
 fn the_field_opens_again_after_a_commit() {
     let mut f = fixture(0.0, plain);
-    click(&mut f.tree, input_point(), PointerButton::Primary, 10);
+    pointer_click(&mut f.tree, input_point(), PointerButton::Primary, 10);
     retype(&mut f.tree, "2");
     let field = f.tree.focused().unwrap();
     key_down(&mut f.tree, field, Key::Enter);
-    click(&mut f.tree, input_point(), PointerButton::Primary, 500);
+    pointer_click(&mut f.tree, input_point(), PointerButton::Primary, 500);
     assert!(editing(&f));
     retype(&mut f.tree, "4");
     let field = f.tree.focused().unwrap();
