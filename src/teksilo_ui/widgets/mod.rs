@@ -2,6 +2,7 @@
 
 pub mod album_art;
 pub mod brand_logo;
+pub mod column_header;
 pub mod dialog_frame;
 pub mod icon_action;
 pub mod menu;
@@ -11,6 +12,7 @@ pub mod stock_styles;
 
 pub use album_art::{AlbumArt, CoverImage, Placeholder, RgbaCover, SharedCover};
 pub use brand_logo::BrandLogo;
+pub use column_header::ColumnHeader;
 pub use dialog_frame::{DialogFrame, Frame, ModalText};
 pub use icon_action::IconAction;
 pub use menu::{MenuEntry, PlayerMenu};
