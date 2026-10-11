@@ -56,6 +56,10 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 40 | An album of a collapsed artist has no position |
 | 41 | An album forms one run within its artist |
 | 42 | Clearing the sort keeps the open grid album |
+| 43 | The VU meter's peak hold decays and no longer pins the bars at 0 dBFS |
+| 44 | The VU meter's RMS bar shows the RMS |
+| 45 | The VU meter fades to silence on pause |
+| 46 | The VU meter's correlation and M/S come from the samples |
 | 47 | The list modes follow the sort |
 | 48 | The rubber band selects what it covers |
 | 49 | Delete takes only what is picked |
@@ -116,7 +120,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   - dialog. In the EQ preset Load dialog, Escape restores the previewed state, as Cancel does;
   - the Audio Center panel.
 - **Why:** standard desktop behaviour, and needed for keyboard users.
-- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{escape_closes_the_menu_without_acting, a_click_outside_closes_the_menu}`, the filter menu by `teksilo_ui::filters::panel::tests::escape_closes_the_menu_without_choosing`, the search fields by fix 35's tests; the playlist menus by `teksilo_ui::playlist::list::tests::escape_closes_the_row_menu` and `teksilo_ui::playlist::tabs::tests::{the_chevron_opens_every_playlist_under_itself, a_right_click_on_a_tab_opens_its_menu_and_on_the_strip_the_bar_menu}`; the Audio Center by `teksilo_ui::audio_center::shell::panel::tests::{escape_closes_the_panel, escape_from_a_control_inside_a_tab_closes_the_panel_too, escape_does_nothing_while_the_panel_is_closed, the_close_button_takes_the_focus_when_the_panel_opens}`, `teksilo_ui::audio_center::config::config_tab::tests::escape_closes_an_open_pick_list_before_it_closes_the_panel` and `teksilo_ui::audio_center::volume_mix::volume_mix_tab::tests::escape_cancels_an_open_field_before_it_closes_the_panel` (the innermost overlay closes first), the equalizer dialogs by `teksilo_ui::audio_center::equalizer::load_dialog::tests::escape_and_a_press_outside_restore_the_backup` and `teksilo_ui::audio_center::equalizer::save_dialog::tests::cancelar_and_a_press_outside_close_without_saving`; the meter popup by its wave.
+- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{escape_closes_the_menu_without_acting, a_click_outside_closes_the_menu}`, the filter menu by `teksilo_ui::filters::panel::tests::escape_closes_the_menu_without_choosing`, the search fields by fix 35's tests; the playlist menus by `teksilo_ui::playlist::list::tests::escape_closes_the_row_menu` and `teksilo_ui::playlist::tabs::tests::{the_chevron_opens_every_playlist_under_itself, a_right_click_on_a_tab_opens_its_menu_and_on_the_strip_the_bar_menu}`; the Audio Center by `teksilo_ui::audio_center::shell::panel::tests::{escape_closes_the_panel, escape_from_a_control_inside_a_tab_closes_the_panel_too, escape_does_nothing_while_the_panel_is_closed, the_close_button_takes_the_focus_when_the_panel_opens}`, `teksilo_ui::audio_center::config::config_tab::tests::escape_closes_an_open_pick_list_before_it_closes_the_panel` and `teksilo_ui::audio_center::volume_mix::volume_mix_tab::tests::escape_cancels_an_open_field_before_it_closes_the_panel` (the innermost overlay closes first), the equalizer dialogs by `teksilo_ui::audio_center::equalizer::load_dialog::tests::escape_and_a_press_outside_restore_the_backup` and `teksilo_ui::audio_center::equalizer::save_dialog::tests::cancelar_and_a_press_outside_close_without_saving`; the meter popup by `teksilo_ui::meter::tests::{escape_closes_the_popup, a_click_outside_closes_the_popup}`.
 
 ## 5. No blocking work on the UI thread
 
@@ -154,7 +158,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   opened them. Modal dialogs are centred, the framework default. The EQ preset dialogs stay
   positioned relative to the Audio Center.
 - **Why:** hard-coded and origin positions put popups away from what opened them.
-- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{the_menu_button_opens_the_menu_below_it, the_menu_follows_the_button_when_the_panel_moves_or_has_an_inset}` (Iced opens it at a fixed position; the popover API has no offset, so it opens at the button's leading edge, about 7 px left of Iced's x = 15); the filter menu by `teksilo_ui::filters::panel::tests::the_selector_opens_a_172_pixel_menu_of_five_types_anchored_at_it` (Iced: a fixed 70 px from the window top, `library_filters.rs:345`); the playlist row menu by `teksilo_ui::playlist::list::tests::the_row_menu_opens_at_the_pointer` and the tab overflow list by `teksilo_ui::playlist::tabs::tests::the_chevron_opens_every_playlist_under_itself` (Iced: a fixed (220, 440)); the Audio Center's pick lists by `teksilo_ui::audio_center::config::config_tab::tests::a_pick_list_opens_under_its_box`; the meter popup by its wave.
+- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{the_menu_button_opens_the_menu_below_it, the_menu_follows_the_button_when_the_panel_moves_or_has_an_inset}` (Iced opens it at a fixed position; the popover API has no offset, so it opens at the button's leading edge, about 7 px left of Iced's x = 15); the filter menu by `teksilo_ui::filters::panel::tests::the_selector_opens_a_172_pixel_menu_of_five_types_anchored_at_it` (Iced: a fixed 70 px from the window top, `library_filters.rs:345`); the playlist row menu by `teksilo_ui::playlist::list::tests::the_row_menu_opens_at_the_pointer` and the tab overflow list by `teksilo_ui::playlist::tabs::tests::the_chevron_opens_every_playlist_under_itself` (Iced: a fixed (220, 440)); the Audio Center's pick lists by `teksilo_ui::audio_center::config::config_tab::tests::a_pick_list_opens_under_its_box`; the meter popup by `teksilo_ui::meter::tests::{a_right_click_on_the_meter_opens_the_popup_above_the_slot, a_right_click_on_the_empty_slot_opens_the_popup_too, the_popup_follows_the_slot_wherever_it_is}` (it opens just above the slot, aligned with its leading edge, and below it when there is no room above; Iced opens it at the window's top-left).
 
 ## 8. Failed user actions show an error toast
 
@@ -193,7 +197,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
     the bar; Iced lets them fall off its end.
   - The popup stays open while values change.
 - **Why:** the setting was unreachable, and the popup closed under the user's hand.
-- **Pinned by:** the slot by `teksilo_ui::library::panel::tests::{quirk_10_without_a_meter_the_actions_end_the_bar_after_a_free_slot, quirk_10_a_meter_fills_its_slot_and_a_shown_one_gets_its_400_px, quirk_10_in_a_narrow_bar_the_figures_give_way_and_the_actions_stay}`; the meter and its popup by the meter wave.
+- **Pinned by:** the slot by `teksilo_ui::library::panel::tests::{quirk_10_without_a_meter_the_actions_end_the_bar_after_a_free_slot, quirk_10_a_meter_fills_its_slot_and_a_shown_one_gets_its_400_px, quirk_10_in_a_narrow_bar_the_figures_give_way_and_the_actions_stay}` and, with the real meter slot, `teksilo_ui::meter::tests::{the_library_bar_hosts_the_slot_between_the_figures_and_the_actions, the_disabled_slot_keeps_its_400_by_40_and_shows_no_meter}`; the right-click on an empty slot by `teksilo_ui::meter::tests::a_right_click_on_the_empty_slot_opens_the_popup_too`; enabling the meter from the popup by `teksilo_ui::meter::tests::the_checkboxes_show_the_options_and_flip_them_persistently` and `teksilo_ui::meter::meter_vm::tests::showing_the_meter_sets_the_engine_and_persists_it`; the popup staying open by `teksilo_ui::meter::tests::the_popup_stays_open_while_its_values_change`.
 
 ## 11. The playing row is tracked by song id
 
@@ -645,6 +649,55 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Why:** clearing the sort emptied the open album.
 - **Pinned by:** `teksilo_ui::library::library_vm::tests::{quirk_42_clearing_the_sort_keeps_the_expanded_album_and_restores_its_order, quirk_42_an_album_hidden_by_the_search_loads_from_its_parsed_artist_and_hash}`.
 
+## 43. The VU meter's peak hold decays and no longer pins the bars at 0 dBFS
+
+- **Iced:** `update_meter` (`src/gui/app.rs:6056`), on a 30 ms `MeterTick` (`src/gui/app.rs:5945`),
+  runs `logic::meter::MeterState::update` (`src/logic/meter.rs:207`). Its `peak_hold_step`
+  (`src/logic/meter.rs:31-68`) decays only when `decay > 0.0` (`:48`); readings are negative dBFS, so a
+  held peak never falls. The hold starts at 0.0, and the bars move towards `max(peak, hold)`
+  (`src/logic/meter.rs:265-266`), so they sit at 0 dBFS until "reset peak", which turns the hold into
+  a max-hold. Each decay step also assumes a 30 ms tick (defect D5).
+- **Teksilo:** `logic::meter::LiveMeter` and `PeakHold` hold each peak for 1.5 s, then lower it by
+  1.8 dB per second (Iced's constants) down to the −60 dB floor. A louder peak raises the hold again,
+  the hold time counts only while playing, and infinite hold never ages. The bars follow the RMS, not
+  the hold. Everything is computed from the time elapsed, whatever the tick rate.
+- **Why:** the hold marker never moved and the bars stayed at full scale.
+- **Pinned by:** `logic::meter::live_tests::{a_held_peak_stays_for_the_hold_time_then_falls_in_db_per_second, the_iced_hold_never_falls_where_the_correct_one_does, the_hold_marker_does_not_fall_while_paused, the_result_does_not_depend_on_the_tick_rate, an_infinite_hold_never_ages_and_never_falls}` and `teksilo_ui::meter::meter_vm::tests::{the_hold_marker_sits_at_the_peak_then_falls_with_time, infinite_hold_keeps_the_marker_for_ever}`.
+
+## 44. The VU meter's RMS bar shows the RMS
+
+- **Iced:** `MeterState::smooth_peak_*` and `smooth_rms_*` are never updated, yet `smooth_peak_*` is
+  what the widget draws as the RMS bar (`src/gui/library.rs:1889`, `:1892`), so that bar is always
+  empty (defect D6).
+- **Teksilo:** the bar shows the RMS with Iced's ballistics (fast attack, slow release), the "Pk"
+  readout the smoothed peak, and the crest factor comes from the instantaneous peak and RMS.
+- **Why:** the RMS bar showed nothing.
+- **Pinned by:** `logic::meter::live_tests::the_bar_level_is_the_rms_and_the_readout_the_peak` and `teksilo_ui::meter::meter_vm::tests::the_bars_show_the_rms_and_the_readout_the_peak`.
+
+## 45. The VU meter fades to silence on pause
+
+- **Iced:** on pause the meter multiplies the last dB levels by a factor falling to 0
+  (`src/logic/meter.rs:289-309`). Levels are negative dB, so the bars rise to 0 dBFS, full scale
+  (defect D7).
+- **Teksilo:** the bars fall linearly in dB to the −60 dB floor over 0.4 s (Iced's fade time); then the
+  meter goes idle, its `active` signal turns false and it draws no more frames. The hold markers stay
+  where they were.
+- **Why:** the meter jumped to full scale when the music stopped.
+- **Pinned by:** `logic::meter::live_tests::{the_fade_falls_to_the_floor_where_the_iced_fade_rises_to_full_scale, pausing_fades_the_bars_down_to_silence_and_never_up}` and `teksilo_ui::meter::meter_vm::tests::pausing_fades_the_bars_to_silence_then_the_meter_goes_idle`.
+
+## 46. The VU meter's correlation and M/S come from the samples
+
+- **Iced:** the phase correlation is the sign product of the two channels' dB RMS values
+  (`src/logic/meter.rs:270-275`), so it is +1 whenever both play. The M/S bars are the half sum and
+  half difference of dB peaks (`src/logic/meter.rs:222-224`), and an M/S RMS is computed and never
+  used (defect D8). The clip LED is never lit: Iced passes `false` (`src/gui/app.rs:5147`).
+- **Teksilo:** the decoder accumulates Σl², Σr², Σl·r and the mid and side peaks over each batch,
+  allocation-free (`audio::meter::StereoStats`), and publishes the correlation, the mid and side RMS and
+  their peaks beside the existing readings (the Iced UI ignores them). The meter draws them, and its clip
+  LED follows the peaks, held for 1.5 s.
+- **Why:** the correlation gauge and the M/S bars showed meaningless values.
+- **Pinned by:** `audio::meter::tests::{a_mono_signal_correlates_fully_and_is_all_mid, an_out_of_phase_signal_correlates_at_minus_one_and_is_all_side, a_quarter_period_offset_is_uncorrelated_and_splits_evenly, accumulating_and_reading_allocate_nothing}`, `logic::meter::live_tests::{a_hard_panned_signal_is_half_mid_and_half_side, identical_channels_correlate_at_plus_one_and_opposite_ones_at_minus_one, mid_side_mode_draws_the_linear_mid_and_side_levels}` and `teksilo_ui::meter::meter_vm::tests::{the_correlation_comes_from_the_linear_statistics, mid_side_mode_draws_the_linear_mid_and_side_levels, the_clip_led_follows_the_peaks_and_reset_peak_clears_it}`.
+
 ## 47. The list modes follow the sort
 
 - **Iced:** a click on a column header in the Simple, Thumbnail and Detailed modes changes the sort
@@ -665,26 +718,6 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:** the band and its hit rectangles use the list's own coordinates and width.
 - **Why:** the band selected rows it did not cover and missed rows it did.
 - **Pinned by:** `teksilo_ui::library::list_rows::tests::a_drag_over_the_rows_selects_them_with_the_marquee` and `teksilo_ui::library::library_vm::tests::the_marquee_selects_the_rows_it_crosses`.
-
-## 59. The equalizer's preset dialogs stay inside the window
-
-- **Iced:** the Load and Save preset dialogs open at a fixed offset from the Audio Center
-  (`src/gui/app.rs:5730-5740`). A dragged panel can push them partly off-screen.
-- **Teksilo:** they open at the same offset from the panel, clamped so the whole dialog stays inside
-  the window.
-- **Why:** a dialog whose buttons are off-screen cannot be answered.
-- **Pinned by:** `teksilo_ui::audio_center::equalizer::placement::tests` (the offset formulas and the clamp), `teksilo_ui::audio_center::equalizer::load_dialog::tests::a_dragged_panel_moves_the_dialog`.
-
-## 60. Cancelling the preset dialog after an import saves the restored equalizer
-
-- **Iced:** "Importar" in the Load dialog applies the file's preset and saves it at once. "Cancelar"
-  then restores the backup in the engine and on screen, without saving it
-  (`src/gui/app.rs:2163-2178`). The database keeps the imported preset, so the next start shows it.
-- **Teksilo:** Cancel saves the restored state too, so the database matches what the engine plays
-  and the tab shows.
-- **Why:** the equalizer that came back after a restart was not the one the user had cancelled back
-  to.
-- **Pinned by:** `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::quirk_60_cancelling_after_an_import_saves_the_restored_state` (it fails without the fix).
 
 ## 49. Delete takes only what is picked
 
@@ -751,17 +784,6 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Why:** the user's decision. A compilation opened empty whenever the current results did not hold it.
 - **Pinned by:** `frontend::commands::library::tests::{quirk_54_a_compilation_is_found_by_its_album_artist, the_album_artist_query_finds_an_ordinary_album_and_a_pipe_in_the_artist}` and `teksilo_ui::library::library_vm::tests::quirk_54_a_compilation_hidden_by_the_search_loads_from_its_album_artist`.
 
-## 61. A click on empty space commits an open value field
-
-- **Iced:** any click outside an open stepper or effect-slider value field commits it and deselects
-  the slider (the field loses focus on every outside click).
-- **Teksilo:** a click into non-focusable space keeps the keyboard focus where it was (review item 25),
-  which would leave the field open. So the Audio Center's frame takes the focus on a primary press,
-  and the open field blurs and commits as in Iced. This restores Iced's behaviour rather than changing
-  it; it is listed because the mechanism differs.
-- **Why:** an edited value left uncommitted until Enter or Tab.
-- **Pinned by:** `teksilo_ui::audio_center::volume_mix::volume_mix_tab::tests::a_press_on_the_background_commits_an_open_value_field` (it fails without the focusable frame).
-
 ## 55. Renaming the active playlist leaves the playing track alone
 
 - **Iced:** after a rename, `InternalPlaylistsRefreshed` sends `SwitchPlaylist(id, false)`
@@ -806,3 +828,34 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Why:** the user's decision. An entry that silently did nothing.
 - **Pinned by:** `teksilo_ui::playlist::playlist_vm::tests::{the_send_to_lists_leave_out_the_active_playlist, the_send_to_lists_put_the_system_lists_first_then_sort_the_rest}`, `teksilo_ui::playlist::menus::tests::the_send_to_submenu_lists_new_then_the_system_lists_then_the_rest_sorted`.
 
+## 59. The equalizer's preset dialogs stay inside the window
+
+- **Iced:** the Load and Save preset dialogs open at a fixed offset from the Audio Center
+  (`src/gui/app.rs:5730-5740`). A dragged panel can push them partly off-screen.
+- **Teksilo:** they open at the same offset from the panel, clamped so the whole dialog stays inside
+  the window.
+- **Why:** a dialog whose buttons are off-screen cannot be answered.
+- **Pinned by:** `teksilo_ui::audio_center::equalizer::placement::tests` (the offset formulas and the clamp), `teksilo_ui::audio_center::equalizer::load_dialog::tests::a_dragged_panel_moves_the_dialog`.
+
+## 60. Cancelling the preset dialog after an import saves the restored equalizer
+
+- **Iced:** "Importar" in the Load dialog applies the file's preset and saves it at once. "Cancelar"
+  then restores the backup in the engine and on screen, without saving it
+  (`src/gui/app.rs:2163-2178`). The database keeps the imported preset, so the next start shows it.
+- **Teksilo:** Cancel saves the restored state too, so the database matches what the engine plays
+  and the tab shows. A Cancel while the import is still reading its file wins: when the file has
+  been read, its presets join the list but the backup stays applied and saved.
+- **Why:** the equalizer that came back after a restart was not the one the user had cancelled back
+  to.
+- **Pinned by:** `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::{quirk_60_cancelling_after_an_import_saves_the_restored_state, quirk_60_a_cancel_before_the_import_finishes_still_restores_the_backup}` (each fails without its part of the fix).
+
+## 61. A click on empty space commits an open value field
+
+- **Iced:** any click outside an open stepper or effect-slider value field commits it and deselects
+  the slider (the field loses focus on every outside click).
+- **Teksilo:** a click into non-focusable space keeps the keyboard focus where it was (review item 25),
+  which would leave the field open. So the Audio Center's frame takes the focus on a primary press,
+  and the open field blurs and commits as in Iced. This restores Iced's behaviour rather than changing
+  it; it is listed because the mechanism differs.
+- **Why:** an edited value left uncommitted until Enter or Tab.
+- **Pinned by:** `teksilo_ui::audio_center::volume_mix::volume_mix_tab::tests::a_press_on_the_background_commits_an_open_value_field` (it fails without the focusable frame).

@@ -40,6 +40,7 @@ use crate::teksilo_ui::audio_center::shell::{AudioCenterPanel, AudioCenterViewMo
 use crate::teksilo_ui::audio_center::volume_mix::{VolumeMixTab, VolumeMixViewModel};
 use crate::teksilo_ui::filters::{FiltersPanel, FiltersViewModel};
 use crate::teksilo_ui::library::{LibraryPanel, LibraryViewModel};
+use crate::teksilo_ui::meter::{MeterSlot, MeterViewModel};
 use crate::teksilo_ui::player::{PlayerPanel, PlayerViewModel};
 use crate::teksilo_ui::playlist::{PlaylistPanel, PlaylistViewModel};
 use crate::teksilo_ui::shell::main_window::AppHandles;
@@ -203,7 +204,10 @@ impl Widget for App {
         let filters = ctx.add(FixedSize::new().width(FILTERS_WIDTH).child(filters_panel));
         let filters_column = ctx.add(Expand::vertical().child(filters));
         let library_panel = self.panel(ctx, |services| {
-            Box::new(LibraryPanel::new(LibraryViewModel::new(services)))
+            Box::new(
+                LibraryPanel::new(LibraryViewModel::new(services))
+                    .meter_slot(MeterSlot::new(MeterViewModel::new(services))),
+            )
         });
         let library = ctx.add(Expand::new().child(library_panel));
         let body = ctx.add(row().child(filters_column).child(library));
@@ -321,6 +325,7 @@ mod tests {
         assert!(first_of_type(&tree, r.filters, "FiltersPanel").is_some());
         assert!(first_of_type(&tree, r.player, "PlayerPanel").is_some());
         assert!(first_of_type(&tree, r.library, "LibraryPanel").is_some());
+        assert!(first_of_type(&tree, r.library, "MeterSlot").is_some());
         assert!(first_of_type(&tree, r.playlist, "PlaylistPanel").is_some());
         assert!(first_of_type(&tree, app, "AudioCenterPanel").is_some());
         assert!(handles.ctx.shutdown());

@@ -22,7 +22,7 @@ use crate::teksilo_ui::library::bottom_bar::{self, METER_SLOT_WIDTH};
 use crate::teksilo_ui::library::test_util as library_util;
 use crate::teksilo_ui::shell::main_window::AppHandles;
 use crate::teksilo_ui::test_support::{
-    VIEWPORT, access_click, first_of_type, key_down, layout, tap_at, tree_with_async,
+    VIEWPORT, access_click, find_by_name, first_of_type, key_down, layout, tap_at, tree_with_async,
     with_shipped_messages,
 };
 
@@ -469,21 +469,33 @@ fn a_label_press_flips_its_option_and_its_colour_follows() {
 // --- the library's slot -------------------------------------------------------------------
 
 #[test]
-fn the_library_bar_hosts_the_slot_at_its_400_by_40() {
-    let (services, vm) = library_util::loaded();
-    let meter_vm = MeterViewModel::new(&services);
-    let mut tree = library_util::tree_for(&services);
-    let id = library_util::mount_at(
-        &mut tree,
-        crate::teksilo_ui::library::LibraryPanel::new(vm).meter_slot(MeterSlot::new(meter_vm)),
-        library_util::REGION.0,
-        library_util::REGION.1,
-    );
-    library_util::settle_layout(&mut tree);
-    let slot = library_util::all_of_type(&tree, id, "MeterSlot")[0];
-    let b = tree.bounds(slot);
-    assert_eq!((b.width, b.height), (METER_SLOT_WIDTH, bottom_bar::HEIGHT));
-    services.ctx.shutdown();
+fn the_library_bar_hosts_the_slot_between_the_figures_and_the_actions() {
+    // The library of a 1600 px window. The slot is the free space between the
+    // figures and the actions, 10 px from each, and a shown meter gets its
+    // 400 px (quirk fix 10).
+    for shown in [false, true] {
+        let (services, vm) = library_util::loaded();
+        let meter_vm = MeterViewModel::new(&services);
+        meter_vm.enabled().set(shown);
+        let mut tree = library_util::tree_for(&services);
+        let id = library_util::mount_at(
+            &mut tree,
+            crate::teksilo_ui::library::LibraryPanel::new(vm).meter_slot(MeterSlot::new(meter_vm)),
+            998.0,
+            library_util::REGION.1,
+        );
+        library_util::settle_layout(&mut tree);
+        let slot = tree.bounds(library_util::all_of_type(&tree, id, "MeterSlot")[0]);
+        let stats = tree.bounds(library_util::all_of_type(&tree, id, "Stats")[0]);
+        let play = tree.bounds(find_by_name(&tree, id, "Play the selection")[0]);
+        assert_eq!(slot.height, bottom_bar::HEIGHT, "shown: {shown}");
+        assert_eq!(slot.x - (stats.x + stats.width), 10.0, "shown: {shown}");
+        assert_eq!(play.x - (slot.x + slot.width), 10.0, "shown: {shown}");
+        if shown {
+            assert!(slot.width > METER_SLOT_WIDTH - 0.1, "{}", slot.width);
+        }
+        services.ctx.shutdown();
+    }
 }
 
 // --- strings ------------------------------------------------------------------------------

@@ -19,10 +19,10 @@ Line numbers refer to the code before Wave A (commit `288477a`). Decisions were 
 | D3 | Portable export overwrites files with the same name | **fix (both)**, in `src/logic` with a regression test |
 | D4 | `\|` in a name breaks album and filter-node lookups | **fix (both)**, in `src/logic` with a regression test |
 | **VU meter maths** | | |
-| D5 | The peak hold never decays and pins the bars at 0 dBFS | **fix (Teksilo)**: a correct meter for the Teksilo UI; Iced keeps the old functions |
-| D6 | The RMS bar is always 0 | **fix (Teksilo)**: a correct meter for the Teksilo UI; Iced keeps the old functions |
-| D7 | The pause fade goes to full scale instead of silence | **fix (Teksilo)**: a correct meter for the Teksilo UI; Iced keeps the old functions |
-| D8 | Phase correlation and M/S are computed on dB values | **fix (Teksilo)**: a correct meter for the Teksilo UI; Iced keeps the old functions |
+| D5 | The peak hold never decays and pins the bars at 0 dBFS | **fix (Teksilo)**: a correct meter for the Teksilo UI; Iced keeps the old functions (quirk fix 43) |
+| D6 | The RMS bar is always 0 | **fix (Teksilo)**: a correct meter for the Teksilo UI; Iced keeps the old functions (quirk fix 44) |
+| D7 | The pause fade goes to full scale instead of silence | **fix (Teksilo)**: a correct meter for the Teksilo UI; Iced keeps the old functions (quirk fix 45) |
+| D8 | Phase correlation and M/S are computed on dB values | **fix (Teksilo)**: a correct meter for the Teksilo UI; Iced keeps the old functions (quirk fix 46) |
 | **Navigation and selection** | | |
 | D9 | Bulk Left/Right ends with one arbitrary header selected | **fix (Teksilo)**: fixed variants in `src/logic` used by the Teksilo view-models; Iced keeps the old ones |
 | D10 | Duplicate (artist, title) albums resolve to different hashes | **fix (Teksilo)**: fixed variants in `src/logic` used by the Teksilo view-models; Iced keeps the old ones |
@@ -83,7 +83,7 @@ Line numbers refer to the code before Wave A (commit `288477a`). Decisions were 
 
 ## VU meter maths
 
-These are all in `update_meter` (`src/gui/app.rs:6477-6600`), now `logic::meter::MeterState`.
+These are all in `update_meter` (`src/gui/app.rs:6056`), whose logic is now `logic::meter::MeterState` (`src/logic/meter.rs`).
 
 ### D5. The peak hold never decays and pins the bars at 0 dBFS
 
