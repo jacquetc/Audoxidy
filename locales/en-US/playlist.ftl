@@ -17,3 +17,32 @@ playlist-toast-create-failed = The playlist could not be created
 playlist-toast-rename-failed = The playlist could not be renamed
 playlist-toast-delete-failed = The playlist could not be deleted
 playlist-toast-location-failed = The file's location could not be opened
+
+## Menus
+playlist-menu-play = Play
+playlist-menu-new-list = New playlist
+playlist-menu-rename = Rename playlist
+playlist-menu-delete-list = Delete playlist
+playlist-menu-save = Save playlist
+playlist-menu-import = Import playlist
+playlist-menu-export = Export playlist
+playlist-menu-add-files = Add file
+playlist-menu-add-folder = Add folder
+playlist-menu-info = Information
+playlist-menu-file-location = File location
+playlist-menu-show-in-library = Show in library
+playlist-menu-send-to = Send to another playlist
+playlist-menu-tag-editor = Tag Editor
+playlist-menu-converter = Audio converter
+playlist-menu-toggle-enabled = Enable | Disable
+playlist-menu-fold = Collapse | Expand
+playlist-menu-remove = Remove from playlist
+
+## List
+# The list's accessible name.
+playlist-list = Playlist
+playlist-empty = There are no songs in this playlist
+# Read after a song row's name.
+playlist-row-playing = Playing
+playlist-row-disabled = Disabled
+

@@ -28,3 +28,33 @@ playlist-toast-rename-failed = No se pudo renombrar la lista
 playlist-toast-delete-failed = No se pudo eliminar la lista
 # Not in the Iced UI: quirk fix 8, a failure Iced ignores.
 playlist-toast-location-failed = No se pudo abrir la ubicación del archivo
+
+## Menus
+playlist-menu-play = Reproducir
+playlist-menu-new-list = Nueva lista
+playlist-menu-rename = Renombrar lista
+playlist-menu-delete-list = Eliminar lista
+playlist-menu-save = Guardar lista
+playlist-menu-import = Importar lista
+playlist-menu-export = Exportar lista
+playlist-menu-add-files = Agregar archivo
+playlist-menu-add-folder = Agregar carpeta
+playlist-menu-info = Información
+playlist-menu-file-location = Ubicación del archivo
+playlist-menu-show-in-library = Mostrar en la biblioteca
+playlist-menu-send-to = Enviar a otra lista
+playlist-menu-tag-editor = Editor de Etiquetas
+playlist-menu-converter = Convertidor de audio
+playlist-menu-toggle-enabled = Activar | Desactivar
+playlist-menu-fold = Plegar | Desplegar
+playlist-menu-remove = Eliminar de la lista
+
+## List
+# Not in the Iced UI: the list's accessible name (as in the player menu's "Lista de Reproducción").
+playlist-list = Lista de reproducción
+playlist-empty = No hay canciones en esta lista
+# Not in the Iced UI: read after the name of the playing song's row.
+playlist-row-playing = Reproduciendo
+# Not in the Iced UI: read after the name of a disabled song's row.
+playlist-row-disabled = Desactivada
+

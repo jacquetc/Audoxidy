@@ -11,9 +11,14 @@
 //!
 //! [`PlaylistViewModel`] holds the state and the behaviour; the views are thin.
 
+pub mod dialogs;
+pub mod list;
+pub mod menus;
 pub mod notice;
 pub mod playlist_vm;
 pub mod rows;
+#[cfg(test)]
+pub(crate) mod testing;
 
 pub use playlist_vm::{Notice, PlaylistViewModel};
 pub use rows::{PlaylistRowsSource, RowItem, ScrollTarget};

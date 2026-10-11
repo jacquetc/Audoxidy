@@ -5,126 +5,13 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use teksilo::prelude::AsyncRuntimeHandle;
-
 use super::*;
-use crate::frontend::AppContext;
 use crate::frontend::events::LongOpKind;
-use crate::frontend::fakes::{InMemoryFakes, PlayerCall};
+use crate::frontend::fakes::PlayerCall;
 use crate::frontend::long_ops::OpStatus;
 use crate::frontend::ports::PlayerPort;
-use crate::frontend::test_fixtures::SeededLibrary;
-use crate::teksilo_ui::mock_data::screenshot_library;
-use crate::teksilo_ui::shell::main_window::AppHandles;
-use crate::teksilo_ui::test_support::{run_until, with_shipped_messages};
-
-const TIMEOUT: Duration = Duration::from_secs(10);
-
-/// What a test drives: the services, the fakes behind them, the seeded data
-/// and the view-model.
-struct Env {
-    services: AppServices,
-    fakes: InMemoryFakes,
-    seeded: SeededLibrary,
-    vm: PlaylistViewModel,
-}
-
-impl Env {
-    fn runtime(&self) -> &AsyncRuntimeHandle {
-        &self.services.runtime
-    }
-
-    fn wait(&self, done: impl Fn() -> bool) {
-        assert!(run_until(self.runtime(), TIMEOUT, done), "timed out");
-    }
-
-    fn playlist_id(&self, name: &str) -> i64 {
-        self.seeded.playlist(name).unwrap().id
-    }
-
-    fn song_id(&self, linear_idx: usize) -> i64 {
-        self.vm.song_at(linear_idx).unwrap().song_id
-    }
-
-    fn rows(&self) -> Vec<usize> {
-        self.vm
-            .rows()
-            .get()
-            .iter()
-            .map(RowItem::linear_idx)
-            .collect()
-    }
-
-    fn selected(&self) -> Vec<usize> {
-        let mut selected: Vec<usize> = self.vm.selection().get().selected.into_iter().collect();
-        selected.sort_unstable();
-        selected
-    }
-
-    fn loads(&self) -> usize {
-        self.fakes
-            .player
-            .calls()
-            .iter()
-            .filter(|call| matches!(call, PlayerCall::Load { .. }))
-            .count()
-    }
-
-    fn reload_content(&self) {
-        let version = self.services.playlist_content.version().get();
-        self.services.playlist_content.reload();
-        self.wait(|| self.services.playlist_content.version().get() > version);
-    }
-
-    fn reload_tabs(&self) {
-        let version = self.services.playlist_tabs.version().get();
-        self.services.playlist_tabs.reload();
-        self.wait(|| self.services.playlist_tabs.version().get() > version);
-    }
-
-    fn wait_op(&self, op: OpId) {
-        let ops = self.services.ctx.ops.clone();
-        self.wait(|| ops.status(op) != Some(OpStatus::Running));
-    }
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        let _ = self.services.ctx.shutdown();
-    }
-}
-
-/// Services over the mock library with their fakes, and a view-model; the
-/// session is not restored.
-fn unrestored() -> Env {
-    let (ctx, fakes) = AppContext::in_memory_with_fakes().unwrap();
-    let seeded = screenshot_library()
-        .seed_on(&ctx.db)
-        .recv_blocking()
-        .unwrap();
-    let services = AppServices::new(&AppHandles::new(ctx), AsyncRuntimeHandle::new());
-    let vm = PlaylistViewModel::new(&services);
-    Env {
-        services,
-        fakes,
-        seeded,
-        vm,
-    }
-}
-
-/// [`unrestored`], restored, with the tabs loaded.
-fn restored() -> Env {
-    let env = unrestored();
-    env.services
-        .session
-        .start_restore(&env.services.ctx, &env.services.runtime);
-    env.services.playlist_tabs.reload();
-    env.wait(|| {
-        env.services.session.status().get().is_settled()
-            && env.services.playlist_tabs.list().len() == 3
-    });
-    env
-}
+use crate::teksilo_ui::playlist::testing::{Env, restored, unrestored};
+use crate::teksilo_ui::test_support::with_shipped_messages;
 
 const NONE: SelectModifiers = SelectModifiers {
     toggle: false,
@@ -947,4 +834,39 @@ fn a_tab_out_of_view_scrolls_to_15_pixels_from_the_edge() {
         None,
         "no such tab"
     );
+}
+
+#[test]
+fn added_songs_appear_without_reloading_the_playing_track() {
+    // Quirk fix 12, the view side: the rows grow, the track plays on.
+    let env = restored();
+    env.vm.play_row(13);
+    let loads = env.loads();
+    let calls = env.fakes.player.calls().len();
+    let bowie = env.playlist_id("David Bowie");
+    let in_playlist = env.seeded.playlist("David Bowie").unwrap().song_ids.clone();
+    let extra: Vec<i64> = env
+        .seeded
+        .songs
+        .iter()
+        .map(|song| song.id)
+        .filter(|id| !in_playlist.contains(id))
+        .take(2)
+        .collect();
+    playlist::add_songs(&env.services.ctx, bowie, extra)
+        .recv_blocking()
+        .unwrap();
+    env.reload_content();
+    assert!(env.rows().len() > 16, "the new songs have rows");
+    assert_eq!(env.loads(), loads, "no load");
+    assert_eq!(
+        env.fakes.player.calls().len(),
+        calls,
+        "no load, seek or play-state call"
+    );
+    assert_eq!(
+        env.vm.read_cursor(|c| c.playing_song_id()).flatten(),
+        Some(env.song_id(env.vm.playing_index().get().unwrap()))
+    );
+    assert_eq!(env.selected(), vec![env.vm.playing_index().get().unwrap()]);
 }
