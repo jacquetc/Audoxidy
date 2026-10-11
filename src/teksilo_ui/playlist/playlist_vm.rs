@@ -37,8 +37,9 @@
 //! view-model calls (`play_song`, `end_of_track`, `toggle_repeat`,
 //! `toggle_shuffle`, `switch_playlist`, …) persists the playlist state itself.
 //!
-//! A search keeps the selection on its rows (quirk fix 56,
-//! `docs/teksilo-port-quirk-fixes.md`).
+//! A search keeps the selection on its rows (quirk fix 56), and renaming the
+//! active playlist leaves the playing track alone (quirk fix 55); see
+//! `docs/teksilo-port-quirk-fixes.md`.
 //!
 //! Changing a playlist's content (adding, importing, sending songs, removing)
 //! reloads only its rows (quirk fix 12): the content model applies the new
@@ -982,8 +983,11 @@ impl PlaylistViewModel {
     }
 
     /// Renames playlist `id` to `name`, or, for a system playlist, makes a
-    /// renamed copy; then switches to it (`src/gui/app.rs:2248`). A blank name
-    /// does nothing, as in Iced. A failure is toasted in `window`.
+    /// renamed copy; then switches to it (`src/gui/app.rs:2248`). The active
+    /// playlist, renamed, only takes its new name: Iced switches to it again,
+    /// which reloads and seeks the playing track (`src/gui/app.rs:2404-2420`,
+    /// quirk fix 55). A blank name does nothing, as in Iced. A failure is
+    /// toasted in `window`.
     pub fn rename_playlist(&self, id: i64, name: &str, window: ToastWindow) {
         if name.trim().is_empty() {
             return;
@@ -991,6 +995,14 @@ impl PlaylistViewModel {
         let reply = playlist::rename_playlist(&self.inner.services.ctx, id, name);
         let vm = self.clone();
         self.finish(window, reply.recv(), move |result| match result {
+            Ok(RenameOutcome::Renamed(id))
+                if vm.inner.services.active_playlist.id().get() == Some(id) =>
+            {
+                // Quirk fix 55: the active playlist only takes its new name;
+                // the playing track is not reloaded, seeked or replayed.
+                vm.inner.services.active_playlist.refresh();
+                None
+            }
             Ok(RenameOutcome::Renamed(id) | RenameOutcome::Copied(id)) => {
                 vm.switch_playlist(id, false);
                 None
