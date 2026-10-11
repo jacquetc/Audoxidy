@@ -16,3 +16,6 @@ mod slot;
 pub use meter_vm::{MeterViewModel, frame_of};
 pub use popup::{MeterPopup, POPUP_WIDTH};
 pub use slot::{MeterSlot, SLOT_HEIGHT, SLOT_WIDTH};
+
+#[cfg(test)]
+mod tests;

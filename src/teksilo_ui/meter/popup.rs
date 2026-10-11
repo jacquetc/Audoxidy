@@ -35,7 +35,7 @@
 
 use teksilo::prelude::*;
 use teksilo::tokens::{FontWeight, VAlignment};
-use teksilo::widgets::{Checkbox, FixedSize, HStack, Padding, Spacer, TextWidget, VStack};
+use teksilo::widgets::{Checkbox, FixedSize, HStack, Spacer, TextWidget, VStack};
 
 use super::meter_vm::MeterViewModel;
 use crate::logic::stepper::StepperUnit;
@@ -221,10 +221,7 @@ impl Widget for MeterPopup {
             );
 
         let inner_width = POPUP_WIDTH - 2.0 * PADDING_HORIZONTAL;
-        let root = ctx.add(
-            Frame::new(
-                Padding::uniform(0.0).child(FixedSize::new().width(inner_width).child(content)),
-            )
+        let panel = Frame::new(FixedSize::new().width(inner_width).child(content))
             .fill(SurfaceRole::Raised)
             .border(TextRole::Secondary, BORDER_WIDTH)
             .radius(RADIUS)
@@ -234,8 +231,9 @@ impl Widget for MeterPopup {
                 PADDING_VERTICAL,
                 PADDING_HORIZONTAL,
             )
-            .min_width(POPUP_WIDTH),
-        );
+            .min_width(POPUP_WIDTH);
+        // The overlay offers at least the anchor's width: the panel keeps its own.
+        let root = ctx.add(FixedSize::new().width(POPUP_WIDTH).child(panel));
         self.root = Some(root);
         vec![root]
     }
