@@ -25,6 +25,7 @@ pub mod icons;
 #[cfg(any(test, feature = "teksilo-mocks"))]
 pub mod mock_data;
 pub mod models;
+pub mod player;
 pub mod shared;
 pub mod shell;
 pub mod singles;
