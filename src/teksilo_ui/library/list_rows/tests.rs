@@ -381,3 +381,50 @@ fn a_song_row_has_the_iced_cells() {
     );
     assert!(m.services.ctx.shutdown());
 }
+
+#[test]
+fn a_marquee_held_near_the_bottom_scrolls_the_list_from_the_time_elapsed() {
+    let mut m = mounted(LibraryViewMode::SimpleList);
+    let list = m.tree.bounds(m.id);
+    let rows = all_of_type(&m.tree, m.id, "SongRow");
+    let first = m.tree.bounds(rows[1]);
+    let start = Point::new(first.x + 200.0, first.y + 10.0);
+    let near_bottom = Point::new(first.x + 220.0, list.y + list.height - 10.0);
+    pointer_event(
+        &mut m.tree,
+        PointerPhase::Down,
+        start,
+        PointerButton::Primary,
+        1_000,
+    );
+    pointer_event(
+        &mut m.tree,
+        PointerPhase::Move,
+        near_bottom,
+        PointerButton::Primary,
+        1_020,
+    );
+    let before = m.scroll_y().get();
+    for _ in 0..5 {
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        m.tree.frame_tick().set(0.04);
+        layout(&mut m.tree);
+    }
+    let scrolled = m.scroll_y().get();
+    assert!(scrolled > before, "{before} -> {scrolled}");
+    pointer_event(
+        &mut m.tree,
+        PointerPhase::Up,
+        near_bottom,
+        PointerButton::Primary,
+        1_400,
+    );
+    // Released: the frame ticks no longer scroll.
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        m.tree.frame_tick().set(0.02);
+        layout(&mut m.tree);
+    }
+    assert_eq!(m.scroll_y().get(), scrolled);
+    assert!(m.services.ctx.shutdown());
+}
