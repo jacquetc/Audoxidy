@@ -46,6 +46,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 30 | The restore opens the first playlist when the saved one is gone |
 | 31 | Low-resource mode is detected before the audio engine starts |
 | 32 | The window can be moved by its title bar and resized from its edges |
+| 33 | The sliders, steppers and value fields work from the keyboard |
 
 ---
 
@@ -470,4 +471,28 @@ Unfinished Iced features (stubs) are not listed here; they are in
   These use a fake platform host: the strip is a `TitleBar`, and it sits in a `WindowFrame` exactly
   when the platform asks for resize strips. `teksilo_ui::shell::title_bar::tests::maximize_toggles_between_maximized_and_floating`
   covers the maximize button.
+
+## 33. The sliders, steppers and value fields work from the keyboard
+
+- **Iced:** an EQ or effect slider answers the arrow keys only after it has been clicked. Any other
+  key clears its keyboard focus, and the arrows stop working until the next click, while the handle
+  keeps its selected colour (`src/gui/widgets.rs:3952-3955`, `:4028-4033`). A stepper has no keyboard
+  access at all. A value field opens only with a click.
+- **Teksilo:** each control is a Tab stop:
+  - The EQ slider steps by 0.1 dB with Up/Down, by 1 dB with Page Up/Down, and Home/End reach the
+    limits. Left/Right do nothing, as in Iced.
+  - The effect slider steps with Left/Right, and Enter opens its value field.
+  - The stepper steps with Up/Down, and Enter opens its value field.
+  - The keys keep working whatever other key was pressed, until focus leaves the control.
+  - The secondary-click reset is also offered as an accessibility action.
+- **Why:** the controls were unreachable without a mouse, and the arrow keys stopped working after an
+  unrelated key press.
+- **Pinned by:**
+  - `teksilo_ui::widgets::eq_slider::tests::up_and_down_step_by_a_tenth_and_left_and_right_do_nothing`
+  - `teksilo_ui::widgets::eq_slider::tests::page_keys_step_by_one_db_and_home_and_end_reach_the_limits`
+  - `teksilo_ui::widgets::eq_slider::tests::the_reset_action_does_what_the_secondary_click_does`
+  - `teksilo_ui::widgets::effect_slider::tests::left_and_right_step_and_up_and_down_do_nothing`
+  - `teksilo_ui::widgets::effect_slider::tests::enter_on_the_slider_opens_the_field_and_a_secondary_press_on_the_box_resets`
+  - `teksilo_ui::widgets::stepper::tests::up_and_down_step_and_enter_edits_when_focused`
+  - `teksilo_ui::widgets::stepper::tests::the_stepper_is_a_tab_stop`
 
