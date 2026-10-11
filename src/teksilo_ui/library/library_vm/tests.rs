@@ -492,7 +492,7 @@ fn play_without_a_selection_or_an_active_playlist_does_nothing() {
 }
 
 #[test]
-fn the_delete_targets_add_whole_artists_and_albums_to_the_picked_songs() {
+fn quirk_49_delete_takes_only_the_songs_picked_inside_a_selected_album_as_play_does() {
     let (services, vm) = loaded();
     list_mode(&vm);
     let structure = vm.structure().get();
@@ -504,20 +504,63 @@ fn the_delete_targets_add_whole_artists_and_albums_to_the_picked_songs() {
     let album = &va.albums[0];
     let id = album_composite_id(BOWIE, &album.album_hash);
     let lone = va.albums[1].songs[0].0.id;
-    let selected: HashSet<LibraryListItem> = [
-        LibraryListItem::Album(id),
-        song(album.songs[0].0.id),
-        song(lone),
-    ]
-    .into_iter()
-    .collect();
+    let picked = album.songs[0].0.id;
+    let selected: HashSet<LibraryListItem> =
+        [LibraryListItem::Album(id.clone()), song(picked), song(lone)]
+            .into_iter()
+            .collect();
+    let mut expected = vec![picked, lone];
+    expected.sort_unstable();
+    assert_eq!(delete_target_ids(&selected, &structure.data()), expected);
+    let played: Vec<i64> = selected_songs(&selected, &structure.data(), &structure.songs)
+        .iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(played.len(), 2, "Play takes the same songs");
+    // With nothing picked inside it, the whole album goes.
+    let whole: HashSet<LibraryListItem> = [LibraryListItem::Album(id), song(lone)]
+        .into_iter()
+        .collect();
     let mut expected: Vec<i64> = album.songs.iter().map(|(s, _)| s.id).collect();
     expected.push(lone);
     expected.sort_unstable();
-    assert_eq!(delete_target_ids(&selected, &structure.data()), expected);
-    // Play narrows the album to the picked song; delete does not.
-    let narrowed = selected_songs(&selected, &structure.data(), &structure.songs);
-    assert_eq!(narrowed.len(), 2);
+    assert_eq!(delete_target_ids(&whole, &structure.data()), expected);
+    // A selected artist narrows the same way.
+    let artist: HashSet<LibraryListItem> =
+        [LibraryListItem::Artist(BOWIE.to_string()), song(picked)]
+            .into_iter()
+            .collect();
+    assert_eq!(delete_target_ids(&artist, &structure.data()), vec![picked]);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn quirk_49_the_confirmation_states_how_many_songs_go() {
+    let (services, vm) = loaded();
+    list_mode(&vm);
+    let structure = vm.structure().get();
+    let va = structure
+        .artists
+        .iter()
+        .find(|a| a.artist_name == BOWIE)
+        .unwrap();
+    let album = album_composite_id(BOWIE, &va.albums[0].album_hash);
+    vm.click(LibraryListItem::Album(album), Modifiers::NONE, at(0));
+    vm.click(song(va.albums[0].songs[1].0.id), ctrl(), at(5_000));
+    assert_eq!(vm.delete_targets().len(), 1);
+    let text =
+        |count| crate::teksilo_ui::library::test_util::plain(&delete_text(count).resolve_now());
+    assert!(
+        text(1).contains("1 song") && !text(1).contains("1 songs"),
+        "{}",
+        text(1)
+    );
+    assert!(text(12).contains("12 songs"), "{}", text(12));
+    assert!(
+        text(1_234).contains("1234 songs"),
+        "no grouping: {}",
+        text(1_234)
+    );
     assert!(services.ctx.shutdown());
 }
 
@@ -700,6 +743,83 @@ fn a_reveal_in_detailed_mode_opens_the_collapsed_album() {
 }
 
 #[test]
+fn quirk_51_a_reveal_in_the_simple_and_thumbnail_modes_opens_the_collapsed_album() {
+    for mode in [LibraryViewMode::SimpleList, LibraryViewMode::ThumbnailList] {
+        let (services, vm) = loaded();
+        vm.set_view_mode(mode);
+        let structure = vm.structure().get();
+        let va = structure
+            .artists
+            .iter()
+            .find(|a| a.artist_name == BOWIE)
+            .unwrap();
+        let run = &va.albums[2];
+        let target = run.songs[0].0.clone();
+        let album = album_composite_id(BOWIE, &run.album_hash);
+        vm.toggle_album(&album);
+        assert!(vm.is_album_collapsed(&album));
+        assert!(!vm.structure().get().items().contains(&song(target.id)));
+        vm.reveal_path(&target.full_file_path);
+        assert!(!vm.is_album_collapsed(&album), "{mode:?}");
+        assert!(
+            vm.structure().get().items().contains(&song(target.id)),
+            "{mode:?}: the song is shown"
+        );
+        assert!(vm.selection().get().selected.contains(&song(target.id)));
+        assert!(services.ctx.shutdown());
+    }
+}
+
+#[test]
+fn quirk_52_with_nothing_focused_down_and_up_select_the_first_row() {
+    for dir in [LibraryNavDir::Down, LibraryNavDir::Up] {
+        let (services, vm) = loaded();
+        list_mode(&vm);
+        assert_eq!(vm.selection().get().focused, None);
+        assert!(vm.navigate(dir, Modifiers::NONE));
+        let first = vm.structure().get().items()[0].clone();
+        let selection = vm.selection().get();
+        assert_eq!(selection.selected, [first.clone()].into_iter().collect());
+        assert_eq!(selection.focused, Some(first));
+        // From there Down moves on as before.
+        assert!(vm.navigate(LibraryNavDir::Down, Modifiers::NONE));
+        let second = vm.structure().get().items()[1].clone();
+        assert_eq!(vm.selection().get().focused, Some(second));
+        assert!(services.ctx.shutdown());
+    }
+}
+
+#[test]
+fn a_reveal_that_clears_the_search_and_the_filters_says_what_it_cleared() {
+    let (services, vm) = loaded();
+    list_mode(&vm);
+    let target = bowie(&vm).songs[0].clone();
+    vm.search().set("Placebo".to_string());
+    services
+        .library_songs
+        .update_params(|p| p.folder_id = Some(-1));
+    settle(&services);
+    assert!(vm.reveal_cleared().get().is_none());
+    vm.reveal_path(&target.full_file_path);
+    let (_, cleared) = vm.reveal_cleared().get().unwrap();
+    assert_eq!(cleared.query.as_deref(), Some("Placebo"));
+    assert_eq!(cleared.folder_id, Some(-1));
+    assert_eq!(
+        (cleared.artist, cleared.album, cleared.genre, cleared.year),
+        (None, None, None, None)
+    );
+    let now = services.library_songs.params();
+    assert!(now.query.is_none() && !has_any_filter(&now));
+    settle(&services);
+    assert!(vm.selection().get().selected.contains(&song(target.id)));
+    // A reveal of a song the results show clears nothing.
+    let sent = vm.reveal_cleared().get().map(|(n, _)| n);
+    vm.reveal_path(&bowie(&vm).songs[1].full_file_path);
+    assert_eq!(vm.reveal_cleared().get().map(|(n, _)| n), sent);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
 fn a_reveal_clears_the_search_that_hides_the_song_and_resumes_after_the_reload() {
     let (services, vm) = loaded();
     list_mode(&vm);
@@ -843,8 +963,10 @@ fn a_new_search_keeps_the_expanded_songs_it_finds_and_closes_the_album_without_a
     assert!(services.ctx.shutdown());
 }
 
-#[test]
-fn a_compilation_opens_with_the_songs_of_its_album_artist() {
+/// Services over the demo library (a compilation, "Summer Mix" by Various
+/// Artists, whose tracks have two other artists), loaded, a view-model over
+/// them, and the compilation's card id.
+fn demo() -> (AppServices, LibraryViewModel, String) {
     let services = {
         let ctx = crate::frontend::AppContext::in_memory().unwrap();
         LibraryFixture::demo()
@@ -866,8 +988,81 @@ fn a_compilation_opens_with_the_songs_of_its_album_artist() {
                 .flatten()
         })
         .unwrap();
+    (services, vm, summer)
+}
+
+#[test]
+fn a_compilation_opens_with_the_songs_of_its_album_artist() {
+    let (services, vm, summer) = demo();
     vm.toggle_album(&summer);
     assert_eq!(vm.expanded_songs().get().len(), 2);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn quirk_54_a_compilation_hidden_by_the_search_loads_from_its_album_artist() {
+    let (services, vm, summer) = demo();
+    vm.search().set("Night Signals".to_string());
+    settle(&services);
+    let snapshot = services.library_songs.snapshot().get();
+    assert_eq!(
+        album_songs_in_memory(&summer, &snapshot.songs, &snapshot.albums).map(|s| s.len()),
+        Some(0),
+        "the results hold none of its songs"
+    );
+    vm.toggle_album(&summer);
+    let songs = vm.expanded_songs();
+    assert!(
+        run_until(&services.runtime, TIMEOUT, || songs.get().len() == 2),
+        "the database fallback finds the compilation: {}",
+        songs.get().len()
+    );
+    assert!(
+        songs
+            .get()
+            .iter()
+            .all(|s| s.album.as_deref() == Some("Summer Mix"))
+    );
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn quirk_50_a_grid_reveal_finds_a_compilation_track_s_album() {
+    let (services, vm, summer) = demo();
+    let snapshot = services.library_songs.snapshot().get();
+    let track = snapshot
+        .songs
+        .iter()
+        .find(|s| s.title.as_deref() == Some("Sol y Sombra"))
+        .cloned()
+        .unwrap();
+    assert_ne!(track.artist.as_deref(), Some("Various Artists"));
+    vm.reveal_path(&track.full_file_path);
+    assert_eq!(vm.expanded_album().get(), Some(summer));
+    assert_eq!(
+        vm.selection().get().selected,
+        [song(track.id)].into_iter().collect()
+    );
+    assert!(matches!(
+        vm.scroll_request().get().map(|r| r.1),
+        Some(ScrollRequest::GridSong { .. })
+    ));
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn quirk_53_the_open_album_s_songs_match_the_search_whatever_its_case() {
+    let (services, vm) = loaded();
+    let id = first_card(&services);
+    vm.toggle_album(&id);
+    let songs = vm.expanded_songs().get();
+    let title = songs[0].title.as_deref().unwrap_or_default().to_string();
+    let lower = visible_album_songs(&songs, &title.to_lowercase());
+    let upper = visible_album_songs(&songs, &format!("  {}  ", title.to_uppercase()));
+    assert!(!lower.is_empty());
+    let ids = |found: &[Arc<SongData>]| found.iter().map(|s| s.id).collect::<Vec<_>>();
+    assert_eq!(ids(&upper), ids(&lower));
+    assert_eq!(visible_album_songs(&songs, "   ").len(), songs.len());
     assert!(services.ctx.shutdown());
 }
 
@@ -953,9 +1148,8 @@ fn a_reveal_in_the_grid_opens_the_album_and_selects_the_song() {
     assert_eq!(vm.grid_selection().count(), 0);
     assert_eq!(
         vm.scroll_request().get().map(|r| r.1),
-        Some(ScrollRequest::DetailRow(1))
+        Some(ScrollRequest::GridSong { tile, row: 1 })
     );
-    let _ = tile;
     assert!(services.ctx.shutdown());
 }
 

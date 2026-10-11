@@ -309,7 +309,7 @@ fn quirk_2_the_search_field_keeps_enter_delete_and_the_arrows() {
 }
 
 #[test]
-fn alt_down_in_the_grid_opens_the_selected_album_in_the_detail_panel() {
+fn alt_down_in_the_grid_opens_the_selected_album_under_its_row_of_cards() {
     let mut m = mounted();
     let card = m
         .services
@@ -322,34 +322,30 @@ fn alt_down_in_the_grid_opens_the_selected_album_in_the_detail_panel() {
     let target = m.tree.children(grid)[0];
     key_down_with(&mut m.tree, target, Key::ArrowDown, Modifiers::ALT);
     assert_eq!(m.vm.expanded_album().get(), Some(card));
-    // The pane slides open: pump frames until it has (at most a second).
-    let deadline = std::time::Instant::now() + Duration::from_secs(1);
-    loop {
-        m.tree.frame_tick().set(0.016);
-        m.relayout();
-        if m.tree.bounds(m.node("GridDetail")).height >= MIN_PANE
-            || std::time::Instant::now() > deadline
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let detail = m.tree.bounds(m.node("GridDetail"));
-    assert!(
-        detail.height >= MIN_PANE,
-        "the detail pane shows: {detail:?}"
+    m.relayout();
+    let band = m.node("GridDetail");
+    let tile = m.tree.bounds(m.node("AlbumTile"));
+    assert_eq!(
+        m.tree.bounds(band).y,
+        tile.y + crate::teksilo_ui::library::grid::ROW_HEIGHT,
+        "directly under the album's row"
     );
-    assert!(!all_of_type(&m.tree, m.node("GridDetail"), "SongRow").is_empty());
+    assert!(!all_of_type(&m.tree, band, "SongRow").is_empty());
+    key_down_with(&mut m.tree, target, Key::ArrowUp, Modifiers::ALT);
+    assert_eq!(m.vm.expanded_album().get(), None);
+    m.relayout();
+    assert!(all_of_type(&m.tree, m.id, "GridDetail").is_empty());
     assert!(m.services.ctx.shutdown());
 }
 
 #[test]
-fn the_detail_pane_is_hidden_while_no_album_is_open() {
+fn the_grid_takes_the_whole_body() {
     let mut m = mounted();
     m.relayout();
     let grid = m.tree.bounds(m.node("LibraryGrid"));
     let body = m.tree.bounds(m.node("ModeBody"));
-    assert_eq!(grid.height, body.height, "the grid takes the whole body");
+    assert_eq!(grid, body);
+    assert!(all_of_type(&m.tree, m.id, "GridDetail").is_empty());
     assert!(m.services.ctx.shutdown());
 }
 

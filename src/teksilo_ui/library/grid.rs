@@ -18,10 +18,20 @@
 //!   in the primary colour (artist, album, genre, year; 14 px lines 2 px
 //!   apart; the first three cut to fit 122 px as Iced estimates it) beside
 //!   the 30 px chevron. The card is `COLOR_CONTRAST` with a 10 px radius while
-//!   its album is selected or open in the detail panel;
+//!   its album is selected or open;
 //! - a click selects the card (Ctrl toggles, Shift extends, a drag on the
 //!   background sweeps a selection: `GridView`'s own), a double click or the
-//!   chevron opens or closes the album in the detail panel;
+//!   chevron opens or closes the album: its songs open inside the grid,
+//!   directly under the album's row of cards, and push the rows below down
+//!   (`GridView::detail_row`, the band of [`GridDetail`]), as Iced shows them
+//!   (`library.rs:1653-1719`). The open album is the view-model's
+//!   [`expanded_album`](LibraryViewModel::expanded_album), kept in step with
+//!   the grid's disclosed tile both ways: the chevron and the keys open it
+//!   from the view-model, the grid's own gestures (a double click, Space on
+//!   the open card, a screen reader's Expand and Collapse) from the grid. A
+//!   band closed because its card left the grid (a search) leaves the
+//!   album open, as Iced keeps `expanded_album`; it shows again with the
+//!   card;
 //! - with no album, "La biblioteca está vacía." (or "No se encontraron
 //!   álbumes." while a search is typed), centred, Inter Medium, secondary.
 
@@ -40,6 +50,7 @@ use teksilo::widgets::{
     TextWidget, TileContext, VStack, ZStack,
 };
 
+use super::grid_detail::{BandPlacement, GridDetail};
 use super::library_vm::{LibraryViewModel, ScrollRequest, grid_columns};
 use crate::teksilo_ui::icons;
 use crate::teksilo_ui::models::AlbumCard;
@@ -302,7 +313,7 @@ impl Widget for AlbumTile {
 }
 
 /// The card's 30 px chevron in the primary colour: up while the album is open
-/// in the detail panel (`library.rs:1596-1611`).
+/// (`library.rs:1596-1611`).
 struct ChevronIcon {
     up: Signal<bool>,
     root: Option<WidgetId>,
@@ -356,13 +367,22 @@ impl Widget for ChevronIcon {
     }
 }
 
+/// The index of the album `id` in `list`.
+fn index_of(list: &ListModel<AlbumCard>, id: &str) -> Option<usize> {
+    (0..list.len()).find(|&i| list.with_item(i, |card| card.id == id) == Some(true))
+}
+
 /// The album grid; see the module documentation.
 pub struct LibraryGrid {
     vm: LibraryViewModel,
     sizing: Signal<GridSizing>,
+    expanded: Signal<Option<usize>>,
+    /// Set while the view-model's album is written to the grid, so the
+    /// grid's echo is not taken for a gesture.
+    syncing: Rc<Cell<bool>>,
     scroll_y: Option<Signal<f32>>,
-    height: Rc<Cell<f32>>,
-    grid: Option<WidgetId>,
+    height: Signal<f32>,
+    grid: Rc<Cell<Option<WidgetId>>>,
     root: Option<WidgetId>,
 }
 
@@ -381,9 +401,11 @@ impl LibraryGrid {
         Self {
             vm,
             sizing,
+            expanded: Signal::new(None),
+            syncing: Rc::new(Cell::new(false)),
             scroll_y: None,
-            height: Rc::new(Cell::new(0.0)),
-            grid: None,
+            height: Signal::new(0.0),
+            grid: Rc::new(Cell::new(None)),
             root: None,
         }
     }
@@ -391,6 +413,68 @@ impl LibraryGrid {
     /// The sizing the grid uses (its column count follows the width).
     pub fn sizing(&self) -> Signal<GridSizing> {
         self.sizing.clone()
+    }
+
+    /// The tile whose band is open.
+    pub fn expanded(&self) -> Signal<Option<usize>> {
+        self.expanded.clone()
+    }
+
+    /// Writes the view-model's open album to the grid's disclosed tile.
+    fn album_to_grid(
+        vm: &LibraryViewModel,
+        list: &ListModel<AlbumCard>,
+        expanded: &Signal<Option<usize>>,
+        syncing: &Cell<bool>,
+    ) {
+        let wanted = vm.expanded_album().get().and_then(|id| index_of(list, &id));
+        if expanded.get() != wanted {
+            syncing.set(true);
+            expanded.set(wanted);
+            syncing.set(false);
+        }
+    }
+
+    /// Keeps the grid's disclosed tile and the view-model's open album in
+    /// step; see the module documentation. The grid follows its tile through
+    /// the album list's changes itself (a sort, a filter); an album its list
+    /// did not hold is looked for again after each layout
+    /// ([`place_children`](Widget::place_children)).
+    fn sync_open_album(&self, ctx: &mut BuildContext, list: &ListModel<AlbumCard>) {
+        let vm = &self.vm;
+        let syncing = self.syncing.clone();
+        Self::album_to_grid(vm, list, &self.expanded, &syncing);
+        {
+            let (vm, list, expanded, syncing) = (
+                vm.clone(),
+                list.clone(),
+                self.expanded.clone(),
+                syncing.clone(),
+            );
+            ctx.effect(&vm.expanded_album(), move |_| {
+                Self::album_to_grid(&vm, &list, &expanded, &syncing)
+            });
+        }
+        let (vm, list) = (vm.clone(), list.clone());
+        ctx.effect(&self.expanded, move |index| {
+            if syncing.get() {
+                return;
+            }
+            match index.and_then(|i| list.with_item(i, |card| card.id.clone())) {
+                Some(id) => vm.show_album(Some(&id)),
+                // A band closed with its card still in the grid is a user's
+                // close; one whose card left the grid is not.
+                None => {
+                    if vm
+                        .expanded_album()
+                        .get()
+                        .is_some_and(|open| index_of(&list, &open).is_some())
+                    {
+                        vm.show_album(None);
+                    }
+                }
+            }
+        });
     }
 
     /// The empty grid's message (`library.rs:1487-1501`).
@@ -417,12 +501,10 @@ impl Widget for LibraryGrid {
         let vm = self.vm.clone();
         let list = vm.services().albums.list();
         let tile_vm = vm.clone();
-        let activate_vm = vm.clone();
-        let activate_list = list.clone();
         let label_list = list.clone();
         let search = vm.search();
         let grid = GridView::from_source_keyed(
-            AlbumSource::new(list),
+            AlbumSource::new(list.clone()),
             vm.grid_selection(),
             move |tile: &TileContext<'_, AlbumCard>| {
                 Box::new(AlbumTile::new(tile.item.clone(), tile_vm.clone())) as Box<dyn Widget>
@@ -435,11 +517,7 @@ impl Widget for LibraryGrid {
         .scroll_bar_style(ScrollBarMode::Overlay)
         .smooth_scrolling(false)
         .style(LibraryGridStyle)
-        .on_tile_activate(move |index, _ctx| {
-            if let Some(id) = activate_list.with_item(index, |card| card.id.clone()) {
-                activate_vm.toggle_album(&id);
-            }
-        })
+        .expanded_index(self.expanded.clone())
         .tile_a11y_label(move |index| {
             label_list
                 .with_item(index, |card| format!("{} — {}", card.artist, card.title))
@@ -448,29 +526,66 @@ impl Widget for LibraryGrid {
         .empty_view(move || Self::empty_view(search.clone()));
         let scroll_y = grid.scroll_y_signal().clone();
         self.scroll_y = Some(scroll_y.clone());
+        // Every album has songs to show: the band's content follows the
+        // view-model's open album (it takes no space while they load).
+        let placement = BandPlacement {
+            scroll_y: scroll_y.clone(),
+            viewport: self.height.clone(),
+            sizing: self.sizing.clone(),
+            expanded: self.expanded.clone(),
+            low_resource: vm.low_resource(),
+            ready: Rc::new(Cell::new(None)),
+            pending_reveal: Rc::new(Cell::new(None)),
+        };
+        {
+            // A band that moves is not laid out yet.
+            let ready = placement.ready.clone();
+            ctx.effect(&self.expanded, move |_| ready.set(None));
+        }
+        let reveal = placement.clone();
+        let band_vm = vm.clone();
+        let focus = self.grid.clone();
+        let grid = grid.detail_row(move |_tile| {
+            Some(Box::new(
+                GridDetail::new(band_vm.clone())
+                    .placed(placement.clone())
+                    .focus_on_press(focus.clone()),
+            ) as Box<dyn Widget>)
+        });
         let grid = ctx.add(grid.access_label(tr!(library_grid())));
-        self.grid = Some(grid);
+        self.grid.set(Some(grid));
+        self.sync_open_album(ctx, &list);
 
         // Back to the top on a new search (`app.rs:2810`), and reveal a tile
-        // the view-model asks for (a reveal by path).
+        // or a song of the open album the view-model asks for (a reveal by
+        // path).
         let height = self.height.clone();
         let sizing = self.sizing.clone();
-        ctx.effect(&vm.scroll_request(), move |request| match request {
-            Some((_, ScrollRequest::Top)) => scroll_y.set(0.0),
-            Some((_, ScrollRequest::GridTile(index))) => {
-                let GridSizing::FixedColumnCount { count, .. } = sizing.get() else {
-                    return;
-                };
-                let top = (index / count.max(1)) as f32 * ROW_HEIGHT;
-                let viewport = height.get();
-                let current = scroll_y.get();
-                if top < current {
-                    scroll_y.set(top);
-                } else if top + ROW_HEIGHT > current + viewport {
-                    scroll_y.set((top + ROW_HEIGHT - viewport).max(0.0));
+        ctx.effect(&vm.scroll_request(), move |request| {
+            let columns = match sizing.get() {
+                GridSizing::FixedColumnCount { count, .. } => count.max(1),
+                _ => 1,
+            };
+            match request {
+                Some((_, ScrollRequest::Top)) => scroll_y.set(0.0),
+                Some((_, ScrollRequest::GridTile(index))) => {
+                    let top = (index / columns) as f32 * ROW_HEIGHT;
+                    let viewport = height.get();
+                    let current = scroll_y.get();
+                    if top < current {
+                        scroll_y.set(top);
+                    } else if top + ROW_HEIGHT > current + viewport {
+                        scroll_y.set((top + ROW_HEIGHT - viewport).max(0.0));
+                    }
                 }
+                // The song at the top (its span, `app.rs:6242-6258`, then
+                // `get_scroll_task(true)`, `:3319`): under its tile's row and
+                // the band's padding (Iced counts 30 px of it, and draws 32).
+                Some((_, ScrollRequest::GridSong { tile, row })) => {
+                    reveal.request_reveal(*tile, *row);
+                }
+                _ => {}
             }
-            _ => {}
         });
         self.root = Some(grid);
         vec![grid]
@@ -494,13 +609,20 @@ impl Widget for LibraryGrid {
             child.origin = bounds.origin();
             child.size = bounds.size();
         }
-        self.height.set(bounds.height);
+        self.height.set_if_changed(bounds.height);
         // The column count follows the width the grid is given; written from
         // layout behind an equality guard, as the framework's own responsive
         // widgets do (it never changes the grid's width, so it cannot loop).
         let wanted = grid_sizing(bounds.width, self.vm.low_resource());
         if self.sizing.get() != wanted {
             self.sizing.set(wanted);
+        }
+        // An open album whose card was not in the grid (a search hid it, or
+        // a reveal opened it before the cards came) shows again once its card
+        // is there; same guard, same reason.
+        if self.expanded.get().is_none() && self.vm.expanded_album().get().is_some() {
+            let list = self.vm.services().albums.list();
+            Self::album_to_grid(&self.vm, &list, &self.expanded, &self.syncing);
         }
     }
 
