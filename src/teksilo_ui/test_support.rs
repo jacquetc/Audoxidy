@@ -155,8 +155,31 @@ pub fn pointer_event(
     layout(tree);
 }
 
+/// A primary-button tap at `at`, hit-tested and recognised as a tap, so it
+/// reaches `on_tap` handlers and the stock widgets' activation (`Button`,
+/// `Pressable`).
+///
+/// [`pointer_click`] does not do that: its pointer samples reach raw pointer
+/// handlers (`on_pointer_event`), but no tap is recognised from them in a
+/// headless tree. This goes through the legacy pointer events, as Teksilo's own
+/// tests and Skribisto's do.
+pub fn tap_at(tree: &mut WidgetTree, at: Point) {
+    tree.dispatch_event(WidgetEvent::pointer_down(
+        at,
+        PointerButton::Primary,
+        Modifiers::NONE,
+    ));
+    tree.dispatch_event(WidgetEvent::pointer_up(
+        at,
+        PointerButton::Primary,
+        Modifiers::NONE,
+    ));
+    layout(tree);
+}
+
 /// A mouse click with `button` at `at`: down at `ms`, up 5 ms later (see
-/// [`pointer_event`]).
+/// [`pointer_event`]). It drives raw pointer handlers; to activate a tap
+/// handler use [`tap_at`].
 pub fn pointer_click(tree: &mut WidgetTree, at: Point, button: PointerButton, ms: u64) {
     pointer_event(tree, PointerPhase::Down, at, button, ms);
     pointer_event(tree, PointerPhase::Up, at, button, ms + 5);

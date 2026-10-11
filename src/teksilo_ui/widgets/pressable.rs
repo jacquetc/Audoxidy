@@ -296,6 +296,48 @@ mod tests {
     }
 
     #[test]
+    fn a_primary_click_activates_it_whatever_its_content_draws() {
+        use teksilo::prelude::Point;
+
+        use crate::teksilo_ui::test_support::tap_at;
+
+        // Spacer content, as the window buttons' icons sit on nothing, and a
+        // painted panel, as the source pills do.
+        let mut tree = WidgetTree::new();
+        let (id, count) = counting(&mut tree, Signal::new(true));
+        let bounds = tree.bounds(id);
+        let centre = Point::new(
+            bounds.x + bounds.width / 2.0,
+            bounds.y + bounds.height / 2.0,
+        );
+        tap_at(&mut tree, centre);
+        assert_eq!(count.get(), 1, "spacer content");
+
+        let mut tree = WidgetTree::new();
+        let hits = Rc::new(Cell::new(0));
+        let seen = hits.clone();
+        let id = tree.add(
+            Pressable::new(
+                teksilo::widgets::Panel::new()
+                    .padding(0.0)
+                    .background(SurfaceRole::Raised)
+                    .child(square()),
+                lit!("Library"),
+            )
+            .on_activate(move |_| seen.set(seen.get() + 1)),
+        );
+        tree.add(HStack::new().child(id).child(Spacer::new()));
+        tree.layout(SizeProposal::exact(100.0, 100.0));
+        let bounds = tree.bounds(id);
+        let centre = Point::new(
+            bounds.x + bounds.width / 2.0,
+            bounds.y + bounds.height / 2.0,
+        );
+        tap_at(&mut tree, centre);
+        assert_eq!(hits.get(), 1, "painted content");
+    }
+
+    #[test]
     fn a_disabled_pressable_ignores_every_activation_path() {
         let mut tree = WidgetTree::new();
         let enabled = Signal::new(false);
