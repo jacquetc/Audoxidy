@@ -47,6 +47,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 31 | Low-resource mode is detected before the audio engine starts |
 | 32 | The window can be moved by its title bar and resized from its edges |
 | 33 | The sliders, steppers and value fields work from the keyboard |
+| 34 | The VU meter's labels are drawn whole, and the compact meter stays in its bounds |
 
 ---
 
@@ -495,4 +496,32 @@ Unfinished Iced features (stubs) are not listed here; they are in
   - `teksilo_ui::widgets::effect_slider::tests::enter_on_the_slider_opens_the_field_and_a_secondary_press_on_the_box_resets`
   - `teksilo_ui::widgets::stepper::tests::up_and_down_step_and_enter_edits_when_focused`
   - `teksilo_ui::widgets::stepper::tests::the_stepper_is_a_tab_stop`
+
+## 34. The VU meter's labels are drawn whole, and the compact meter stays in its bounds
+
+- **Iced:** the meter's texts are anchored at the centre of their box and clipped to a box that
+  starts at that anchor (`iced_wgpu` 0.14 `Text::Cached`), so only part of each label shows:
+  - the "L"/"R" ("M"/"S") bar labels (`src/gui/widgets.rs:4897-4934`) show their lower-right quarter;
+  - the numeric readout (`:4950-4995`) and the correlation value (`:5064-5082`) show their lower half;
+  - each scale label (`:5131-5170`) shows its right half.
+  
+  The compact 24 px meter also draws its crest row (y = 24) and its scale (y = 33) outside its own
+  bounds (`:4784-4793`).
+- **Teksilo:** every label is drawn whole, at Iced's size and colour:
+  - the bar labels are centred in the 10 × 6 box Iced gives them;
+  - the readout keeps its left edge (x = 289), centred on its bar row;
+  - the correlation value keeps its left edge (x = 21), centred on its row;
+  - each scale label is centred on its tick.
+  
+  The compact meter draws only what fits in its 24 px: the crest row and the scale appear only in
+  the 48 px meter. This is part of the user's decision to give the Teksilo UI a correct meter (Iced
+  defects D5–D8).
+- **Why:** the labels were unreadable fragments, and the compact meter painted over whatever lay
+  below it.
+- **Pinned by:**
+  - `teksilo_ui::widgets::vu_meter::paint::tests::every_label_is_centred_in_the_box_iced_gives_it`
+  - `teksilo_ui::widgets::vu_meter::paint::tests::every_label_and_shape_of_the_tall_meter_lies_inside_it`
+  - `teksilo_ui::widgets::vu_meter::paint::tests::the_compact_meter_paints_nothing_outside_its_twenty_four_pixels`
+  - `teksilo_ui::widgets::vu_meter::tests::every_label_of_the_tall_meter_is_drawn_whole_and_unclipped`
+  - `teksilo_ui::widgets::vu_meter::tests::the_compact_meter_draws_nothing_below_its_twenty_four_pixels`
 
