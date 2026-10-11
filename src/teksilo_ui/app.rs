@@ -34,6 +34,7 @@ use teksilo::widgets::{Expand, FixedSize, HStack, Panel, Spacer, VStack};
 pub use self::services::{AppServices, AudioCenterLink, Request, UiLinks, audio_center_tab};
 pub use self::session::{RestoreStatus, SessionState};
 use crate::teksilo_ui::filters::{FiltersPanel, FiltersViewModel};
+use crate::teksilo_ui::player::{PlayerPanel, PlayerViewModel};
 use crate::teksilo_ui::shell::main_window::AppHandles;
 use crate::teksilo_ui::shell::title_bar;
 
@@ -156,11 +157,20 @@ impl Widget for App {
     fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
         self.start_session(ctx);
 
+        // On macOS the OS draws the window buttons over the player's
+        // top-leading corner; the player's top row starts after them.
+        let leading_inset = self
+            .host
+            .as_ref()
+            .map_or(0.0, |host| host.reserved_leading_inset().width);
+        let player_panel = self.panel(ctx, |services| {
+            Box::new(PlayerPanel::new(PlayerViewModel::new(services)).leading_inset(leading_inset))
+        });
         let player = ctx.add(
             FixedSize::new()
                 .width(LEFT_COLUMN_WIDTH)
                 .height(PLAYER_HEIGHT)
-                .child(Spacer::new()),
+                .child(player_panel),
         );
         let playlist = ctx.add(Expand::new().child(Spacer::new()));
         // `Expand::vertical` in a row claims the row's full height without
@@ -271,10 +281,9 @@ mod tests {
     #[test]
     fn the_panels_are_mounted_in_their_regions() {
         let (tree, _runtime, handles, r) = mounted();
-        assert!(
-            crate::teksilo_ui::test_support::first_of_type(&tree, r.filters, "FiltersPanel")
-                .is_some()
-        );
+        use crate::teksilo_ui::test_support::first_of_type;
+        assert!(first_of_type(&tree, r.filters, "FiltersPanel").is_some());
+        assert!(first_of_type(&tree, r.player, "PlayerPanel").is_some());
         assert!(handles.ctx.shutdown());
     }
 
