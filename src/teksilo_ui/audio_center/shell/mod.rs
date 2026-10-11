@@ -83,6 +83,27 @@ pub(crate) mod testing {
         found
     }
 
+    /// Every widget at or under `root` whose published accessibility node has
+    /// `role`, in tree order, skipping parked ones.
+    pub fn all_of_role(tree: &mut WidgetTree, root: WidgetId, role: Role) -> Vec<WidgetId> {
+        let published: HashSet<_> = tree
+            .sync_accessibility()
+            .nodes
+            .into_iter()
+            .filter(|(_, node)| node.role() == role)
+            .map(|(id, _)| id)
+            .collect();
+        let mut found = Vec::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if published.contains(&widget_id_to_node_id(id)) {
+                found.push(id);
+            }
+            stack.extend(tree.children(id).into_iter().rev());
+        }
+        found
+    }
+
     /// The toasts a test tree has shown.
     pub struct Toasts {
         archive: Rc<NotificationArchiveModel>,
