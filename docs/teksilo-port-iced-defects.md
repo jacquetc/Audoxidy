@@ -36,7 +36,7 @@ Line numbers refer to the code before Wave A (commit `288477a`). Decisions were 
 | D17 | 20/31-band EQ gains are not converted when saved | **fix (Teksilo)** |
 | D18 | Apply and startup resolve Automatic rate/quantum differently | **fix (Teksilo)** |
 | D19 | M3U and M3U8 output is identical; durations are truncated | **fix (Teksilo)** |
-| D22 | Clearing the sort empties the expanded grid album | **fix (Teksilo)**: the Teksilo grid detail panel loads an album's songs from its parsed (artist, hash) |
+| D22 | Clearing the sort empties the expanded grid album | **fix (Teksilo)**: the Teksilo grid's open album (inline band) loads an album's songs from its parsed (artist, hash) |
 | D23 | The 75 % RAM hard cap purges on every tick, with no cooldown | **fix (Teksilo)**: the frontend monitor applies a cooldown |
 | D24 | Startup applies the stream settings before the PipeWire clock | **fix (Teksilo)**: the Teksilo restore sets the clock first, like Apply |
 | D25 | Restored compressor intensity and reverb room size wait for a stream rebuild | **fix (Teksilo)**: the Teksilo startup restore applies their derived parameters |
@@ -164,7 +164,7 @@ M3U and M3U8 differ only by extension. Durations are truncated with `as i32`.
 
 - **Where:** `LibrarySortChanged` (`src/gui/app.rs`, the branch that clears the sort and reloads the database order; line 2849 after Wave A).
 - **Defect:** it calls `db.get_songs_by_album(album_id)` with the grid's expanded album id. That id is a composite `"{artist}|{hash}"`, but the function expects a bare album hash. The query matches nothing, so the expanded album shows no songs after the sort is cleared.
-- **Found by:** Wave A3. Decided with the same rule as the other non-crash defects: the Teksilo UI does not have this path, because its grid detail panel loads the album from its parsed (artist, hash).
+- **Found by:** Wave A3. Decided with the same rule as the other non-crash defects: the Teksilo UI does not have this path, because its grid's open album (inline band) loads the album from its parsed (artist, hash).
 
 ### D23. The 75 % RAM hard cap purges on every tick, with no cooldown
 

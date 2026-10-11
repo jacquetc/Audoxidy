@@ -58,6 +58,12 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 42 | Clearing the sort keeps the open grid album |
 | 47 | The list modes follow the sort |
 | 48 | The rubber band selects what it covers |
+| 49 | Delete takes only what is picked |
+| 50 | The Grid reveal finds a compilation track's album |
+| 51 | A reveal opens the song's collapsed album in every list mode |
+| 52 | Down with nothing focused selects the first row |
+| 53 | The open grid album follows the search whatever its case |
+| 54 | The open grid album's database fallback finds compilations |
 | 59 | The equalizer's preset dialogs stay inside the window |
 | 60 | Cancelling the preset dialog after an import saves the restored equalizer |
 
@@ -618,10 +624,10 @@ Unfinished Iced features (stubs) are not listed here; they are in
 
 - **Iced:** `LibrarySortChanged` (`src/gui/app.rs:2849-2853`) reloads the expanded album with
   `get_songs_by_album(composite id)`, which matches nothing, so the open album empties (defect D22).
-- **Teksilo:** the detail panel resolves its album from the parsed `(artist, hash)`. It looks first
-  in memory, in the library results, as Iced's `ToggleAlbumExpansion` does
-  (`src/gui/app.rs:2924-2955`), and otherwise in the database
-  (`commands::library::album_songs_by_composite_id`). A sort change only re-sorts the loaded songs,
+- **Teksilo:** the grid's open album (the inline band under its row of cards) resolves its album from
+  the parsed `(artist, hash)`. It looks first in memory, in the library results, as Iced's
+  `ToggleAlbumExpansion` does (`src/gui/app.rs:2924-2955`), and otherwise in the database
+  (`commands::library::album_songs_by_album_artist`, quirk fix 54). A sort change only re-sorts the loaded songs,
   back to their canonical order when the sort is cleared.
 - **Why:** clearing the sort emptied the open album.
 - **Pinned by:** `teksilo_ui::library::library_vm::tests::{quirk_42_clearing_the_sort_keeps_the_expanded_album_and_restores_its_order, quirk_42_an_album_hidden_by_the_search_loads_from_its_parsed_artist_and_hash}`.
@@ -666,4 +672,69 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Why:** the equalizer that came back after a restart was not the one the user had cancelled back
   to.
 - **Pinned by:** `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::quirk_60_cancelling_after_an_import_saves_the_restored_state` (it fails without the fix).
+
+## 49. Delete takes only what is picked
+
+- **Iced:** `LibraryDeleteSelection` (`src/gui/app.rs:3717-3790`) deletes the selected songs plus every
+  song of each selected album and artist (`:3741-3785`), even when songs are picked inside that album
+  or artist. Play (`get_selected_songs`, `src/gui/library.rs:991`) narrows such an album or artist to
+  the picked songs.
+- **Teksilo:** Delete takes the songs Play takes (`logic::library_selection::selected_song_ids`): a
+  selected album or artist adds its songs only when none of them is picked. The confirmation of fix 1
+  states the count.
+- **Why:** the user's decision (2026-10-11). After selecting an album and Ctrl-picking two of its songs,
+  Delete removed the whole album where Play acted on the two songs.
+- **Pinned by:** `teksilo_ui::library::library_vm::tests::{quirk_49_delete_takes_only_the_songs_picked_inside_a_selected_album_as_play_does, quirk_49_the_confirmation_states_how_many_songs_go}`.
+
+## 50. The Grid reveal finds a compilation track's album
+
+- **Iced:** in Grid mode the reveal looks for the card whose title is the song's album and whose artist
+  is the song's `artist` tag (`src/gui/app.rs:6125-6140`). A card bears the album artist, so a
+  compilation track finds no card, and the reveal opens and selects nothing.
+- **Teksilo:** the card is found by the artist the grid groups the album under: the album artist,
+  else the artist (`utils::get_effective_artist`). The album opens, and the song is selected and
+  brought to the top.
+- **Why:** the user's decision. "Show playing" and the playlist's "Mostrar en la biblioteca" did
+  nothing for a compilation's tracks in Grid mode.
+- **Pinned by:** `teksilo_ui::library::library_vm::tests::quirk_50_a_grid_reveal_finds_a_compilation_track_s_album`.
+
+## 51. A reveal opens the song's collapsed album in every list mode
+
+- **Iced:** the list-mode reveal (`src/gui/app.rs:6266-6300`) expands the song's artist, but opens its
+  collapsed album only in the Detailed mode (`:6273-6274`). In the Simple and Thumbnail modes the song
+  is selected inside a collapsed album and stays hidden.
+- **Teksilo:** the reveal also opens the album run that holds the song, in every list mode.
+- **Why:** the user's decision. The revealed song was not shown.
+- **Pinned by:** `teksilo_ui::library::library_vm::tests::quirk_51_a_reveal_in_the_simple_and_thumbnail_modes_opens_the_collapsed_album`.
+
+## 52. Down with nothing focused selects the first row
+
+- **Iced:** with nothing focused, key navigation starts from row 0 as if it were focused
+  (`src/gui/library.rs:768-800`), so the first Down selects the second row.
+- **Teksilo:** with nothing focused (or the focused row hidden by a collapse), Up and Down select the
+  first row; from there they move as before.
+- **Why:** the user's decision. The first row was skipped.
+- **Pinned by:** `teksilo_ui::library::library_vm::tests::quirk_52_with_nothing_focused_down_and_up_select_the_first_row`.
+
+## 53. The open grid album follows the search whatever its case
+
+- **Iced:** the open grid album shows the songs `song_matches_search(song, query)` keeps, with the
+  search trimmed but not lowercased (`src/gui/library.rs:481-489`, `:548-551`), while
+  `song_matches_search` expects a lowercase query (`src/utils/mod.rs:13-16`). Any capital letter hides
+  every song of the open album, while the rest of the search ignores case.
+- **Teksilo:** the open album's songs are matched against the lowercased search text.
+- **Why:** the user's decision. Typing "Starman" kept the album's card but showed none of its songs.
+- **Pinned by:** `teksilo_ui::library::library_vm::tests::quirk_53_the_open_album_s_songs_match_the_search_whatever_its_case` and `teksilo_ui::library::grid_detail::tests::quirk_53_the_rows_follow_the_search_whatever_its_case`.
+
+## 54. The open grid album's database fallback finds compilations
+
+- **Iced:** when the open album's songs are not in memory, they are read with
+  `get_songs_by_album_and_artist(hash, artist)` (`src/gui/app.rs:2957-2977`, `:6150-6160`), whose
+  artist is the **track** artist (`src/db/database.rs:1088-1104`), while the album id carries the album
+  artist. A compilation's songs match none, and the album opens empty.
+- **Teksilo:** the fallback goes through `commands::library::album_songs_by_album_artist`, a facade query
+  for the Teksilo UI: the album's songs by hash, kept when their album artist is the id's artist. The
+  Iced UI keeps its query.
+- **Why:** the user's decision. A compilation opened empty whenever the current results did not hold it.
+- **Pinned by:** `frontend::commands::library::tests::{quirk_54_a_compilation_is_found_by_its_album_artist, the_album_artist_query_finds_an_ordinary_album_and_a_pipe_in_the_artist}` and `teksilo_ui::library::library_vm::tests::quirk_54_a_compilation_hidden_by_the_search_loads_from_its_album_artist`.
 
