@@ -7,7 +7,9 @@
 //! (`src/gui/library.rs:1887-1900`).
 //!
 //! Here the meter paints one [`VuMeterFrame`], a plain value the meter
-//! feature's view-model produces; [`paint`] is the Iced drawing, item by item.
+//! feature's view-model produces; [`paint`] is the Iced drawing, item by item,
+//! except that every label is drawn whole and a compact 24 px meter draws only
+//! what fits in it, where Iced clips labels and overflows (quirk fix 34).
 //! The view-model's maths are not this widget's concern: it draws whatever
 //! frame it is handed.
 //!

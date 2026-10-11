@@ -5,11 +5,11 @@
 //! - [`Tone`] names a colour by its role in the Audoxidy palette, resolved
 //!   against the theme at paint time, so the controls follow the theme like
 //!   every other widget (`style.rs` maps the seven Iced colours onto it).
-//! - [`IcedText`] places a line of text the way Iced's renderer does
+//! - [`IcedText`] places a line of text the way Iced's renderer anchors it
 //!   (`iced_wgpu` 0.14, `text.rs`, the `Text::Cached` arm): the anchor point is
 //!   the text's left edge or its centre, its top or its middle, on a line box
-//!   as tall as the font size; the text is then clipped to a rectangle. The
-//!   Iced meter relies on all three, clipping included.
+//!   as tall as the font size. Unlike Iced's `fill_text`, it takes no clip
+//!   rectangle: the text is always drawn whole (the meter's quirk fix 34).
 
 use teksilo::canvas::{Canvas, Point, Rect};
 use teksilo::prelude::PaintContext;
@@ -91,8 +91,6 @@ pub struct IcedText {
     pub anchor_x: AnchorX,
     /// What the anchor's y names.
     pub anchor_y: AnchorY,
-    /// The rectangle the text is clipped to.
-    pub clip: Rect,
     /// The colour.
     pub tone: Tone,
 }
@@ -112,8 +110,17 @@ impl IcedText {
         Point::new(left, line_top + self.size / 2.0 - height / 2.0)
     }
 
-    /// Draws the text, clipped to its rectangle (within whatever clip the
-    /// ancestors set). Draws nothing when the canvas has no text backend.
+    /// The top and the bottom of the text's line box.
+    pub fn line_span(&self) -> (f32, f32) {
+        let top = match self.anchor_y {
+            AnchorY::Top => self.anchor.y,
+            AnchorY::Center => self.anchor.y - self.size / 2.0,
+        };
+        (top, top + self.size)
+    }
+
+    /// Draws the text, whole. Draws nothing when the canvas has no text
+    /// backend.
     pub fn paint(&self, canvas: &mut Canvas, ctx: &PaintContext) {
         let style = style::inter(self.size, FontWeight::MEDIUM);
         let Some(layout) = canvas.text_backend().map(|backend| {
@@ -123,20 +130,8 @@ impl IcedText {
         }) else {
             return;
         };
-        let clip = match ctx.clip_bounds {
-            Some(outer) => intersection(outer, self.clip),
-            None => Some(self.clip),
-        };
-        let Some(clip) = clip else {
-            return;
-        };
-        canvas.set_clip(clip);
         let origin = self.origin(layout.width, layout.height);
         canvas.draw_text_layout(&layout, origin, self.tone.resolve(&ctx.theme.colors));
-        match ctx.clip_bounds {
-            Some(outer) => canvas.set_clip(outer),
-            None => canvas.clear_clip(),
-        }
     }
 }
 
@@ -156,15 +151,6 @@ pub fn draw_centered(canvas: &mut Canvas, text: &str, style: &TextStyle, rect: R
     canvas.draw_text_layout(&layout, origin, color);
 }
 
-/// The overlap of two rectangles, if they overlap.
-pub fn intersection(a: Rect, b: Rect) -> Option<Rect> {
-    let left = a.x.max(b.x);
-    let top = a.y.max(b.y);
-    let right = (a.x + a.width).min(b.x + b.width);
-    let bottom = (a.y + a.height).min(b.y + b.height);
-    (right > left && bottom > top).then(|| Rect::new(left, top, right - left, bottom - top))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,7 +162,6 @@ mod tests {
             anchor: Point::new(11.0, 1.0),
             anchor_x,
             anchor_y,
-            clip: Rect::new(11.0, 1.0, 10.0, 6.0),
             tone: Tone::TextSecondary,
         }
     }
@@ -196,13 +181,12 @@ mod tests {
     }
 
     #[test]
-    fn rectangles_intersect_only_where_they_overlap() {
-        let a = Rect::new(0.0, 0.0, 10.0, 10.0);
+    fn the_line_box_is_as_tall_as_the_font_size() {
         assert_eq!(
-            intersection(a, Rect::new(5.0, 5.0, 10.0, 10.0)),
-            Some(Rect::new(5.0, 5.0, 5.0, 5.0))
+            text(AnchorX::Center, AnchorY::Center).line_span(),
+            (-3.0, 5.0)
         );
-        assert_eq!(intersection(a, Rect::new(10.0, 0.0, 5.0, 5.0)), None);
+        assert_eq!(text(AnchorX::Left, AnchorY::Top).line_span(), (1.0, 9.0));
     }
 
     #[test]

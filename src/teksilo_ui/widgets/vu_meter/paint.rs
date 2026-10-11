@@ -1,7 +1,6 @@
 //! What the VU meter paints: Iced's `VuMeterWidget::draw`
-//! (`src/gui/widgets.rs:4737-5171`), transcribed into a list of
-//! [`MeterPaint`] items in Iced's drawing order, so the geometry can be
-//! tested without a renderer.
+//! (`src/gui/widgets.rs:4737-5171`), as a list of [`MeterPaint`] items in
+//! Iced's drawing order, so the geometry can be tested without a renderer.
 //!
 //! The layout, at the meter's top-left corner, 400 px wide:
 //!
@@ -17,12 +16,17 @@
 //! - the crest factor ("Crest: 12.0 dB") at y = 24 with a small bar;
 //! - the dB scale at y = 33: 1 × 4 px ticks and 7 px labels.
 //!
-//! Iced keeps drawing the crest factor and the scale below a 24 px compact
-//! meter, outside its bounds. Its text anchoring also clips several labels:
-//! the bar labels and the numeric readout are centred on the top edge of the
-//! box they are clipped to, and each scale label is centred 10 px left of its
-//! tick, in a clip box that starts there. Both are kept as Iced draws them
-//! (see [`IcedText`]).
+//! Sizes, colours and positions are Iced's, with two differences (quirk
+//! fix 34), both pinned by the tests below:
+//!
+//! - **Every label is drawn whole**, centred in the box Iced gives it: the
+//!   bar labels in their 10 × 6 box beside the bar, the numeric readout and
+//!   the correlation value on the middle of their row, each scale label on
+//!   its tick. Iced anchors these on the box's top or left edge and clips them
+//!   to the box, so only part of each shows.
+//! - **The compact 24 px meter draws only what fits in it**: the crest row and
+//!   the scale, which Iced draws below it at y = 24 and y = 33, are left out;
+//!   the 48 px meter shows them.
 
 use teksilo::canvas::{Point, Rect};
 use teksilo::tokens::Color;
@@ -190,7 +194,6 @@ fn text(
     anchor: Point,
     x: AnchorX,
     y: AnchorY,
-    clip: Rect,
     tone: Tone,
 ) -> MeterPaint {
     MeterPaint::Text(IcedText {
@@ -199,14 +202,16 @@ fn text(
         anchor,
         anchor_x: x,
         anchor_y: y,
-        clip,
         tone,
     })
 }
 
-/// Everything the meter draws for `frame` at `bounds`, in Iced's order.
+/// Everything the meter draws for `frame` at `bounds`, in Iced's order. A
+/// row that does not fit in `bounds` (the crest factor and the scale of a
+/// 24 px meter) is left out.
 pub fn meter_paint(frame: &VuMeterFrame, bounds: Rect, words: &MeterWords) -> Vec<MeterPaint> {
     let (bx, by, bw) = (bounds.x, bounds.y, bounds.width);
+    let bottom = by + bounds.height;
     let mut out = vec![MeterPaint::Fill {
         rect: bounds,
         tone: Tone::Background,
@@ -263,7 +268,8 @@ pub fn meter_paint(frame: &VuMeterFrame, bounds: Rect, words: &MeterWords) -> Ve
         fill: led_fill,
         border: led_border,
     });
-    // The bar labels (`widgets.rs:4892-4934`).
+    // The bar labels (`widgets.rs:4892-4934`), centred in their 10 × 6 box.
+    // Quirk fix 34: Iced centres them on the box's top-left corner and clips them to the box (widgets.rs:4897-4934).
     let label_x = (bx + LED_SIZE + 3.0).round();
     let names = if frame.mid_side {
         [&words.mid, &words.side]
@@ -274,14 +280,15 @@ pub fn meter_paint(frame: &VuMeterFrame, bounds: Rect, words: &MeterWords) -> Ve
         out.push(text(
             name.clone(),
             8.0,
-            Point::new(label_x, y),
+            Point::new(label_x + 5.0, y + BAR_HEIGHT / 2.0),
             AnchorX::Center,
             AnchorY::Center,
-            Rect::new(label_x, y, 10.0, BAR_HEIGHT),
             Tone::TextSecondary,
         ));
     }
-    // The numeric readout (`widgets.rs:4936-4996`).
+    // The numeric readout (`widgets.rs:4936-4996`), on the middle of each bar's
+    // row.
+    // Quirk fix 34: Iced centres it on the row's top edge and clips it to the row (widgets.rs:4950-4995).
     if frame.show_numeric {
         let num_x = (bar_left + bar_width + 4.0).round();
         let prefixes = if frame.mid_side {
@@ -299,10 +306,9 @@ pub fn meter_paint(frame: &VuMeterFrame, bounds: Rect, words: &MeterWords) -> Ve
                     format_db(frame.level_db[channel]),
                 ),
                 7.0,
-                Point::new(num_x, y),
+                Point::new(num_x, y + BAR_HEIGHT / 2.0),
                 AnchorX::Left,
                 AnchorY::Center,
-                Rect::new(num_x, y, NUMERIC_WIDTH, BAR_HEIGHT),
                 Tone::TextSecondary,
             ));
         }
@@ -338,16 +344,54 @@ pub fn meter_paint(frame: &VuMeterFrame, bounds: Rect, words: &MeterWords) -> Ve
     } else {
         Tone::TextSecondary
     };
+    // The correlation value, on the middle of its 6 px row.
+    // Quirk fix 34: Iced centres it on the row's top edge and clips it to the row (widgets.rs:5064-5082).
     out.push(text(
         format!("{corr:.2}"),
         7.0,
-        Point::new(bar_left, gauge_y - 1.0),
+        Point::new(bar_left, gauge_y - 1.0 + gauge_area_h / 2.0),
         AnchorX::Left,
         AnchorY::Center,
-        Rect::new(bar_left, gauge_y - 1.0, 40.0, gauge_area_h),
         corr_tone,
     ));
-    // The crest factor of the more dynamic channel (`widgets.rs:5084-5129`).
+    // The crest factor of the more dynamic channel (`widgets.rs:5084-5129`),
+    // when its row fits.
+    // Quirk fix 34: Iced draws this row below a 24 px meter, outside its bounds (widgets.rs:5084-5129).
+    if crest_y + crest_h <= bottom {
+        paint_crest(&mut out, frame, words, bar_left, crest_y);
+    }
+    // The scale (`widgets.rs:5131-5170`), when it fits, each label centred on
+    // its tick.
+    // Quirk fix 34: Iced draws the scale below a 24 px meter, and centres each label 10 px left of its tick, clipped from there (widgets.rs:5131-5170).
+    let label_top = scale_y + 4.0;
+    if label_top + 7.0 <= bottom {
+        for db in TICKS {
+            let tx = db_to_x(db, bar_left, bar_width);
+            out.push(MeterPaint::Fill {
+                rect: Rect::new(tx, scale_y, 1.0, 4.0),
+                tone: Tone::TextSecondary,
+            });
+            out.push(text(
+                tick_label(db),
+                7.0,
+                Point::new(tx, label_top),
+                AnchorX::Center,
+                AnchorY::Top,
+                Tone::TextSecondary,
+            ));
+        }
+    }
+    out
+}
+
+/// The crest-factor text and its small bar (`widgets.rs:5084-5129`).
+fn paint_crest(
+    out: &mut Vec<MeterPaint>,
+    frame: &VuMeterFrame,
+    words: &MeterWords,
+    bar_left: f32,
+    crest_y: f32,
+) {
     let crest = frame.crest_db[0].max(frame.crest_db[1]);
     out.push(text(
         format!("{}: {crest:.1} dB", words.crest),
@@ -355,7 +399,6 @@ pub fn meter_paint(frame: &VuMeterFrame, bounds: Rect, words: &MeterWords) -> Ve
         Point::new(bar_left, crest_y),
         AnchorX::Left,
         AnchorY::Top,
-        Rect::new(bar_left, crest_y, NUMERIC_WIDTH, crest_h),
         Tone::TextSecondary,
     ));
     let crest_bar_w = (crest / 20.0 * 60.0).clamp(0.0, 60.0);
@@ -372,24 +415,6 @@ pub fn meter_paint(frame: &VuMeterFrame, bounds: Rect, words: &MeterWords) -> Ve
             tone: Tone::Fixed(tone),
         });
     }
-    // The scale (`widgets.rs:5131-5170`).
-    for db in TICKS {
-        let tx = db_to_x(db, bar_left, bar_width);
-        out.push(MeterPaint::Fill {
-            rect: Rect::new(tx, scale_y, 1.0, 4.0),
-            tone: Tone::TextSecondary,
-        });
-        out.push(text(
-            tick_label(db),
-            7.0,
-            Point::new(tx - 10.0, scale_y + 4.0),
-            AnchorX::Center,
-            AnchorY::Top,
-            Rect::new(tx - 10.0, scale_y + 4.0, 20.0, 7.0),
-            Tone::TextSecondary,
-        ));
-    }
-    out
 }
 
 #[cfg(test)]
@@ -565,33 +590,132 @@ mod tests {
     }
 
     #[test]
-    fn the_texts_are_anchored_and_clipped_as_iced_draws_them() {
+    fn every_label_is_centred_in_the_box_iced_gives_it() {
         let paint = meter_paint(&frame(), bounds(), &MeterWords::english());
         let texts = texts(&paint);
-        let label = &texts[0];
-        assert_eq!(label.content, "L");
+        let at = |t: &IcedText| (t.anchor, t.anchor_x, t.anchor_y);
+        // The bar labels, in the middle of their 10 × 6 boxes at (11, 1) and (11, 9).
+        assert_eq!(texts[0].content, "L");
         assert_eq!(
-            (label.anchor, label.anchor_x, label.anchor_y),
-            (Point::new(11.0, 1.0), AnchorX::Center, AnchorY::Center)
+            at(&texts[0]),
+            (Point::new(16.0, 4.0), AnchorX::Center, AnchorY::Center)
         );
-        assert_eq!(label.clip, Rect::new(11.0, 1.0, 10.0, 6.0));
         assert_eq!(texts[1].content, "R");
+        assert_eq!(texts[1].anchor, Point::new(16.0, 12.0));
+        // The readout, on the middle of each bar's row.
         assert_eq!(texts[2].content, "Pk:-6.0 Rms:-12.0");
-        assert_eq!(texts[2].anchor, Point::new(289.0, 1.0));
+        assert_eq!(
+            at(&texts[2]),
+            (Point::new(289.0, 4.0), AnchorX::Left, AnchorY::Center)
+        );
         assert_eq!(texts[3].content, "Pk:-12.0 Rms:-1.5");
+        assert_eq!(texts[3].anchor, Point::new(289.0, 12.0));
+        // The correlation, on the middle of its row at y = 16.
         assert_eq!(texts[4].content, "0.50");
         assert_eq!(texts[4].tone, Tone::Fixed(zone::GREEN));
-        assert_eq!(texts[4].anchor, Point::new(21.0, 16.0));
+        assert_eq!(
+            at(&texts[4]),
+            (Point::new(21.0, 19.0), AnchorX::Left, AnchorY::Center)
+        );
         assert_eq!(texts[5].content, "Crest: 12.0 dB");
         assert_eq!(
-            (texts[5].anchor, texts[5].anchor_y),
-            (Point::new(21.0, 24.0), AnchorY::Top)
+            at(&texts[5]),
+            (Point::new(21.0, 24.0), AnchorX::Left, AnchorY::Top)
         );
-        let first_tick = &texts[6];
-        assert_eq!(first_tick.content, "-60");
-        assert_eq!(first_tick.anchor, Point::new(11.0, 37.0));
-        assert_eq!(first_tick.clip, Rect::new(11.0, 37.0, 20.0, 7.0));
+        // Each scale label is centred on its tick.
+        assert_eq!(texts[6].content, "-60");
+        assert_eq!(
+            at(&texts[6]),
+            (Point::new(21.0, 37.0), AnchorX::Center, AnchorY::Top)
+        );
+        assert_eq!(texts[16].content, "+6");
+        assert_eq!(texts[16].anchor, Point::new(285.0, 37.0));
         assert_eq!(texts.len(), 6 + TICKS.len());
+    }
+
+    /// The frames whose layouts differ: readout on or off, L/R or M/S.
+    fn variants() -> Vec<VuMeterFrame> {
+        vec![
+            frame(),
+            VuMeterFrame {
+                show_numeric: false,
+                ..frame()
+            },
+            VuMeterFrame {
+                mid_side: true,
+                ..frame()
+            },
+            VuMeterFrame {
+                show_numeric: false,
+                mid_side: true,
+                ..frame()
+            },
+        ]
+    }
+
+    /// A generous width for `text` in Inter Medium: 0.7 em per character
+    /// (its widest glyphs here, "m" and "M", are about 0.85 em, its digits
+    /// about 0.6 em). The real widths are measured at paint time.
+    fn wide_estimate(text: &IcedText) -> f32 {
+        text.content.chars().count() as f32 * 0.7 * text.size
+    }
+
+    /// Whether every rectangle and every text line box of `paint` lies inside
+    /// `bounds`, each text's width taken generously.
+    fn inside(paint: &[MeterPaint], bounds: Rect) -> bool {
+        let (left, top) = (bounds.x, bounds.y);
+        let (right, bottom) = (bounds.x + bounds.width, bounds.y + bounds.height);
+        let rect_inside = |r: &Rect| {
+            r.x >= left && r.y >= top && r.x + r.width <= right && r.y + r.height <= bottom
+        };
+        paint.iter().all(|item| match item {
+            MeterPaint::Fill { rect, .. } | MeterPaint::Led { rect, .. } => rect_inside(rect),
+            MeterPaint::Text(text) => {
+                let (line_top, line_bottom) = text.line_span();
+                let width = wide_estimate(text);
+                let (text_left, text_right) = match text.anchor_x {
+                    AnchorX::Left => (text.anchor.x, text.anchor.x + width),
+                    AnchorX::Center => (text.anchor.x - width / 2.0, text.anchor.x + width / 2.0),
+                };
+                line_top >= top && line_bottom <= bottom && text_left >= left && text_right <= right
+            }
+        })
+    }
+
+    #[test]
+    fn every_label_and_shape_of_the_tall_meter_lies_inside_it() {
+        for frame in variants() {
+            let paint = meter_paint(&frame, bounds(), &MeterWords::english());
+            assert!(inside(&paint, bounds()), "{frame:?}");
+        }
+    }
+
+    #[test]
+    fn the_compact_meter_paints_nothing_outside_its_twenty_four_pixels() {
+        let compact_bounds = Rect::new(0.0, 0.0, WIDTH, HEIGHT);
+        let compact = VuMeterFrame {
+            show_numeric: false,
+            correlation: 0.0,
+            crest_db: [0.0, 0.0],
+            ..frame()
+        };
+        assert!(!compact.is_tall());
+        for frame in [
+            compact.clone(),
+            VuMeterFrame {
+                mid_side: true,
+                ..compact
+            },
+        ] {
+            let paint = meter_paint(&frame, compact_bounds, &MeterWords::english());
+            assert!(inside(&paint, compact_bounds), "{frame:?}");
+            // No crest row and no scale: the 48 px meter is the one that shows them.
+            assert!(!texts(&paint).iter().any(|t| t.content.starts_with("Crest")));
+            assert!(!fills(&paint).iter().any(|(rect, _)| rect.y >= HEIGHT));
+            // The bars, the LED, the labels and the gauge are all there.
+            assert_eq!(texts(&paint).len(), 3);
+            assert!(paint.iter().any(|p| matches!(p, MeterPaint::Led { .. })));
+        }
     }
 
     #[test]
