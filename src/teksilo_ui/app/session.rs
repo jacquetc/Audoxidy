@@ -49,6 +49,7 @@ impl RestoreStatus {
 struct Inner {
     status: Signal<RestoreStatus>,
     cursor: RefCell<Option<PlaybackCursor>>,
+    cursor_version: Signal<u64>,
     settings: RefCell<Option<RestoreReport>>,
     started: Cell<bool>,
 }
@@ -81,6 +82,7 @@ impl SessionState {
             inner: Rc::new(Inner {
                 status: Signal::new(RestoreStatus::Idle),
                 cursor: RefCell::new(None),
+                cursor_version: Signal::new(0),
                 settings: RefCell::new(None),
                 started: Cell::new(false),
             }),
@@ -113,6 +115,7 @@ impl SessionState {
             Ok(restore) => {
                 *self.inner.cursor.borrow_mut() = Some(restore.cursor);
                 *self.inner.settings.borrow_mut() = Some(restore.settings);
+                self.bump_cursor_version();
                 self.inner
                     .status
                     .set(RestoreStatus::Restored(restore.session));
@@ -127,8 +130,34 @@ impl SessionState {
     }
 
     /// Runs `f` on the playback cursor; `None` until the restore succeeded.
+    ///
+    /// `f` may change the cursor, so [`SessionState::cursor_version`] moves
+    /// after it runs (outside the borrow, so an observer may read the cursor).
+    /// Do not call it again from inside `f`: the cursor is borrowed.
     pub fn with_cursor<R>(&self, f: impl FnOnce(&mut PlaybackCursor) -> R) -> Option<R> {
-        self.inner.cursor.borrow_mut().as_mut().map(f)
+        let result = self.inner.cursor.borrow_mut().as_mut().map(f);
+        if result.is_some() {
+            self.bump_cursor_version();
+        }
+        result
+    }
+
+    /// Runs `f` on the playback cursor without changing it; `None` until the
+    /// restore succeeded. The version does not move.
+    pub fn read_cursor<R>(&self, f: impl FnOnce(&PlaybackCursor) -> R) -> Option<R> {
+        self.inner.cursor.borrow().as_ref().map(f)
+    }
+
+    /// A counter that moves after each [`SessionState::with_cursor`] and when
+    /// the restore installs the cursor: what a view showing the playlist or
+    /// the playing song observes, whichever panel moved the cursor.
+    pub fn cursor_version(&self) -> Signal<u64> {
+        self.inner.cursor_version.clone()
+    }
+
+    fn bump_cursor_version(&self) {
+        let version = &self.inner.cursor_version;
+        version.set(version.get().wrapping_add(1));
     }
 
     /// What the settings restore applied, taken once (the Audio Center starts
@@ -183,6 +212,28 @@ mod tests {
         assert!(state.with_cursor(|cursor| cursor.playlist_id()).is_some());
         assert!(state.take_settings().is_some());
         assert!(state.take_settings().is_none());
+        assert!(ctx.shutdown());
+    }
+
+    #[test]
+    fn the_cursor_version_moves_on_restore_and_after_every_change() {
+        let ctx = seeded_context();
+        let runtime = AsyncRuntimeHandle::new();
+        let state = SessionState::new();
+        let version = state.cursor_version();
+        assert_eq!(version.get(), 0);
+        assert!(state.with_cursor(|_| ()).is_none());
+        assert_eq!(version.get(), 0, "no cursor, no change");
+        state.start_restore(&ctx, &runtime);
+        assert!(run_until(&runtime, TIMEOUT, || state
+            .status()
+            .get()
+            .is_settled()));
+        assert_eq!(version.get(), 1);
+        state.with_cursor(|cursor| cursor.set_search("x"));
+        assert_eq!(version.get(), 2);
+        assert!(state.read_cursor(|cursor| cursor.playlist_id()).is_some());
+        assert_eq!(version.get(), 2, "reading does not move it");
         assert!(ctx.shutdown());
     }
 
