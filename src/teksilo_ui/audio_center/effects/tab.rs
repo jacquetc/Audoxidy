@@ -556,3 +556,6 @@ fn heading() -> impl Widget + 'static {
         ),
     )
 }
+
+#[cfg(test)]
+mod tests;
