@@ -451,11 +451,13 @@ impl Widget for LibraryGrid {
         let grid = ctx.add(grid.access_label(tr!(library_grid())));
         self.grid = Some(grid);
 
-        // Reveal a tile the view-model asks for (a reveal by path).
+        // Back to the top on a new search (`app.rs:2810`), and reveal a tile
+        // the view-model asks for (a reveal by path).
         let height = self.height.clone();
         let sizing = self.sizing.clone();
-        ctx.effect(&vm.scroll_request(), move |request| {
-            if let Some((_, ScrollRequest::GridTile(index))) = request {
+        ctx.effect(&vm.scroll_request(), move |request| match request {
+            Some((_, ScrollRequest::Top)) => scroll_y.set(0.0),
+            Some((_, ScrollRequest::GridTile(index))) => {
                 let GridSizing::FixedColumnCount { count, .. } = sizing.get() else {
                     return;
                 };
@@ -468,6 +470,7 @@ impl Widget for LibraryGrid {
                     scroll_y.set((top + ROW_HEIGHT - viewport).max(0.0));
                 }
             }
+            _ => {}
         });
         self.root = Some(grid);
         vec![grid]

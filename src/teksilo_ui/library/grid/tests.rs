@@ -234,3 +234,33 @@ fn the_empty_messages_are_the_iced_spanish_ones() {
         );
     });
 }
+
+#[test]
+fn a_reveal_scrolls_the_grid_to_the_tile_and_a_search_back_to_the_top() {
+    let (services, vm) = loaded();
+    let mut tree = tree_for(&services);
+    let grid = LibraryGrid::new(vm.clone());
+    let id = mount_at(&mut tree, grid, REGION.0, 500.0);
+    settle_layout(&mut tree);
+    let list = services.albums.list();
+    let last = list.len() - 1;
+    let card = list.with_item(last, |c| c.clone()).unwrap();
+    let snapshot = services.library_songs.snapshot().get();
+    let song = crate::teksilo_ui::library::library_vm::album_songs_in_memory(
+        &card.id,
+        &snapshot.songs,
+        &snapshot.albums,
+    )
+    .unwrap()
+    .remove(0);
+    vm.reveal_path(&song.full_file_path);
+    settle_layout(&mut tree);
+    let grid_bounds = tree.bounds(id);
+    let first = tree.bounds(all_of_type(&tree, id, "AlbumTile")[0]);
+    assert!(first.y < grid_bounds.y, "scrolled down to the last row");
+    vm.search().set("a".to_string());
+    settle_layout(&mut tree);
+    let first = tree.bounds(all_of_type(&tree, id, "AlbumTile")[0]);
+    assert_eq!(first.y, grid_bounds.y, "back at the top");
+    assert!(services.ctx.shutdown());
+}
