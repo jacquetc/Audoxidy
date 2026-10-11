@@ -1,13 +1,12 @@
 //! Headless tests of [`VuMeter`]: the Iced sizes, the frame-tick subscription
 //! following `active`, what the meter paints, and its accessible node.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use teksilo::canvas::RenderFrame;
+use teksilo::canvas::{DrawCommand, MockTextBackend, RenderFrame};
 use teksilo::core::WidgetTree;
-use teksilo::core::accessibility::widget_id_to_node_id;
-use teksilo::core::accesskit::{Node, Role};
+use teksilo::core::accesskit::Role;
 use teksilo::prelude::*;
 use teksilo::tokens::{HAlignment, VAlignment};
 use teksilo::widgets::{HStack, Spacer, VStack};
@@ -15,7 +14,7 @@ use teksilo::widgets::{HStack, Spacer, VStack};
 use super::paint::{db_to_x, zone};
 use super::*;
 use crate::teksilo_ui::style;
-use crate::teksilo_ui::test_support::{layout, with_shipped_messages};
+use crate::teksilo_ui::test_support::{a11y_node, layout, with_shipped_messages};
 
 struct Fixture {
     tree: WidgetTree,
@@ -38,7 +37,11 @@ fn playing() -> VuMeterFrame {
 
 /// A meter at the top-left corner of the window.
 fn fixture(frame: VuMeterFrame, active: bool) -> Fixture {
-    let mut tree = WidgetTree::new();
+    // A real text backend is not available headlessly; the mock lays out
+    // every character 8 px wide, so the labels are drawn but not at their
+    // real widths.
+    let mut tree =
+        WidgetTree::new().with_text_backend(Rc::new(RefCell::new(MockTextBackend::new())));
     tree.set_theme(style::audoxidy_dark());
     let frame = Signal::new(frame);
     let active = Signal::new(active);
@@ -80,16 +83,6 @@ fn render(tree: &mut WidgetTree) -> Rc<RenderFrame> {
 /// Runs the frame-tick effects once, as a frame the event loop pumps does.
 fn frame_tick(tree: &mut WidgetTree) {
     tree.frame_tick().set(0.033);
-}
-
-fn node(tree: &mut WidgetTree, id: WidgetId) -> Node {
-    let wanted = widget_id_to_node_id(id);
-    tree.sync_accessibility()
-        .nodes
-        .into_iter()
-        .find(|(id, _)| *id == wanted)
-        .map(|(_, node)| node)
-        .unwrap()
 }
 
 fn has_fill(frame: &RenderFrame, rect: [f32; 4], color: [f32; 4]) -> bool {
@@ -238,7 +231,7 @@ fn a_new_frame_repaints_without_a_rebuild() {
 fn the_meter_reads_its_levels_in_whole_decibels() {
     with_shipped_messages("en-US", || {
         let mut f = fixture(playing(), false);
-        let meter = node(&mut f.tree, f.meter);
+        let meter = a11y_node(&mut f.tree, f.meter);
         assert_eq!(meter.role(), Role::Meter);
         assert_eq!(meter.label(), Some("VU meter"));
         assert_eq!(meter.value(), Some("L -12 dB, R -2 dB"));
@@ -257,7 +250,7 @@ fn the_spanish_meter_names_mid_side_and_silence() {
             },
             false,
         );
-        let meter = node(&mut f.tree, f.meter);
+        let meter = a11y_node(&mut f.tree, f.meter);
         assert_eq!(meter.label(), Some("Medidor VU"));
         assert_eq!(meter.value(), Some("M -3 dB, S silencio"));
     });
@@ -277,4 +270,109 @@ fn the_spoken_levels_change_only_with_a_whole_decibel() {
     };
     assert_eq!(a.spoken_levels(), b.spoken_levels());
     assert_eq!(a.spoken_levels(), [Some(-12), Some(-3)]);
+}
+
+/// Every fill and shape the frame paints, as `[x, y, width, height]`.
+fn painted_rects(frame: &RenderFrame) -> Vec<[f32; 4]> {
+    frame
+        .decorations
+        .iter()
+        .map(|d| d.rect)
+        .chain(frame.shapes.iter().map(|s| s.screen))
+        .collect()
+}
+
+fn within(rect: [f32; 4], width: f32, height: f32) -> bool {
+    let [x, y, w, h] = rect;
+    x >= 0.0 && y >= 0.0 && x + w <= width && y + h <= height
+}
+
+/// The centre of a glyph quad.
+fn centre(glyph: [f32; 4]) -> (f32, f32) {
+    (glyph[0] + glyph[2] / 2.0, glyph[1] + glyph[3] / 2.0)
+}
+
+fn clips(frame: &RenderFrame) -> bool {
+    frame
+        .draw_order
+        .iter()
+        .any(|cmd| matches!(cmd, DrawCommand::SetClip(_) | DrawCommand::ClearClip))
+}
+
+/// The characters of every label the meter draws for `frame`, `height` px
+/// tall.
+fn label_chars(frame: &VuMeterFrame, height: f32) -> usize {
+    paint::meter_paint(
+        frame,
+        teksilo::canvas::Rect::new(0.0, 0.0, 400.0, height),
+        &paint::MeterWords::english(),
+    )
+    .iter()
+    .map(|item| match item {
+        paint::MeterPaint::Text(text) => text.content.chars().count(),
+        _ => 0,
+    })
+    .sum()
+}
+
+#[test]
+fn every_label_of_the_tall_meter_is_drawn_whole_and_unclipped() {
+    let frame = VuMeterFrame {
+        mid_side: true,
+        correlation: -0.6,
+        ..playing()
+    };
+    with_shipped_messages("en-US", || {
+        let mut f = fixture(frame.clone(), false);
+        let rendered = render(&mut f.tree);
+        assert!(!clips(&rendered), "no label is clipped");
+        assert_eq!(
+            rendered.glyphs.len(),
+            label_chars(&frame, 48.0),
+            "every character is drawn"
+        );
+        // The mock lays each character out 8 × 16, so a label's first glyph
+        // shows where it is anchored: "M" centred in its box beside the top
+        // bar, the readout from x = 289 on the middle of that bar's row.
+        assert_eq!(centre(rendered.glyphs[0].screen), (16.0, 4.0));
+        assert_eq!(centre(rendered.glyphs[1].screen), (16.0, 12.0));
+        assert_eq!(rendered.glyphs[2].screen[0], 289.0);
+        assert_eq!(centre(rendered.glyphs[2].screen).1, 4.0);
+        for rect in painted_rects(&rendered) {
+            assert!(within(rect, 400.0, 48.0), "{rect:?} leaves the meter");
+        }
+    });
+}
+
+#[test]
+fn the_compact_meter_draws_nothing_below_its_twenty_four_pixels() {
+    let compact = VuMeterFrame {
+        show_numeric: false,
+        correlation: 0.0,
+        crest_db: [0.0, 0.0],
+        ..playing()
+    };
+    with_shipped_messages("en-US", || {
+        let mut f = fixture(compact.clone(), false);
+        assert_eq!(f.tree.bounds(f.meter).height, 24.0);
+        let rendered = render(&mut f.tree);
+        assert!(!clips(&rendered));
+        // "L", "R" and "0.00": no crest row, no scale.
+        assert_eq!(rendered.glyphs.len(), 6);
+        assert_eq!(label_chars(&compact, 24.0), 6);
+        for glyph in &rendered.glyphs {
+            let (_, y) = centre(glyph.screen);
+            assert!(
+                (0.0..=24.0).contains(&y),
+                "{:?} is centred outside",
+                glyph.screen
+            );
+        }
+        for rect in painted_rects(&rendered) {
+            assert!(
+                within(rect, 400.0, 24.0),
+                "{rect:?} leaves the compact meter"
+            );
+        }
+    });
 }
