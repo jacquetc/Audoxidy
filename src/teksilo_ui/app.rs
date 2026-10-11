@@ -14,8 +14,11 @@
 //!
 //! Each region is a slot the feature panels are mounted in. Building the root
 //! also starts the startup restore ([`SessionState::start_restore`]) on the
-//! main-thread executor.
+//! main-thread executor, and creates the [`AppServices`] every panel's
+//! view-model is built from, subscribed to the facade's events for the life
+//! of the window.
 
+pub mod services;
 pub mod session;
 
 use std::cell::Cell;
@@ -28,6 +31,7 @@ use teksilo::prelude::*;
 use teksilo::tokens::{HAlignment, VAlignment};
 use teksilo::widgets::{Expand, FixedSize, HStack, Panel, Spacer, VStack};
 
+pub use self::services::{AppServices, AudioCenterLink, Request, UiLinks, audio_center_tab};
 pub use self::session::{RestoreStatus, SessionState};
 use crate::teksilo_ui::shell::main_window::AppHandles;
 use crate::teksilo_ui::shell::title_bar;
@@ -58,6 +62,7 @@ pub struct Regions {
 /// The root widget; see the module documentation.
 pub struct App {
     handles: AppHandles,
+    services: Option<AppServices>,
     host: Option<Rc<dyn PlatformTitleBarHost>>,
     regions: Rc<Cell<Option<Regions>>>,
     root: Option<WidgetId>,
@@ -78,6 +83,7 @@ impl App {
     pub fn new(handles: AppHandles, host: Option<Rc<dyn PlatformTitleBarHost>>) -> Self {
         Self {
             handles,
+            services: None,
             host,
             regions: Rc::new(Cell::new(None)),
             root: None,
@@ -90,7 +96,14 @@ impl App {
     }
 
     /// Starts the startup restore on the executor `install_async` registered.
-    fn start_session(&self, ctx: &mut BuildContext) {
+    /// The services, once the root is built.
+    pub fn services(&self) -> Option<&AppServices> {
+        self.services.as_ref()
+    }
+
+    /// Starts the startup restore on the executor `install_async` registered,
+    /// and builds and wires the services every panel is built from.
+    fn start_session(&mut self, ctx: &mut BuildContext) {
         let Some(runtime) = ctx.app_state::<AsyncRuntimeHandle>().cloned() else {
             tracing::error!("no async runtime is installed; the session cannot be restored");
             return;
@@ -104,6 +117,11 @@ impl App {
         self.handles
             .session
             .start_restore(&self.handles.ctx, &runtime);
+        if self.services.is_none() {
+            let services = AppServices::new(&self.handles, runtime);
+            services.wire(ctx);
+            self.services = Some(services);
+        }
     }
 }
 
