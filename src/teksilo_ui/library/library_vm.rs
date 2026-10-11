@@ -933,6 +933,15 @@ impl LibraryViewModel {
         self.refresh_stats();
     }
 
+    /// A click on the detail panel's album header: the open album's tile
+    /// becomes the selection.
+    pub fn select_open_album(&self, id: &str) {
+        self.select_tile(id);
+        self.inner
+            .selection
+            .set_if_changed(LibrarySelection::default());
+    }
+
     /// The album the last grid gesture was on (Iced's `selected_album`).
     pub fn grid_anchor(&self) -> Option<String> {
         self.inner.grid_anchor.borrow().clone()
@@ -1103,7 +1112,10 @@ impl LibraryViewModel {
         let vm = self.clone();
         confirm_box(
             tr!(library_delete_title()),
-            tr!(library_delete_text(count = count)),
+            tr!(library_delete_text(
+                count = count,
+                count_text = ids.len().to_string()
+            )),
             tr!(library_delete_confirm()),
         )
         .on_result(move |result: MessageBoxResult, _ctx| {

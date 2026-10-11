@@ -4,8 +4,15 @@
 //! Port of `src/gui/library.rs` and of the library rows of
 //! `src/gui/widgets.rs`.
 
+pub mod grid;
+pub mod grid_detail;
+pub mod header_rows;
+pub mod hshift;
 pub mod library_vm;
+pub mod song_row;
 pub mod structure;
+#[cfg(test)]
+pub mod test_util;
 
 pub use library_vm::LibraryViewModel;
 pub use structure::ListStructure;
