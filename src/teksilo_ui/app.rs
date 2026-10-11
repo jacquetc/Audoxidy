@@ -34,6 +34,7 @@ use teksilo::widgets::{Expand, FixedSize, HStack, Panel, Spacer, VStack};
 pub use self::services::{AppServices, AudioCenterLink, Request, UiLinks, audio_center_tab};
 pub use self::session::{RestoreStatus, SessionState};
 use crate::teksilo_ui::filters::{FiltersPanel, FiltersViewModel};
+use crate::teksilo_ui::library::{LibraryPanel, LibraryViewModel};
 use crate::teksilo_ui::player::{PlayerPanel, PlayerViewModel};
 use crate::teksilo_ui::shell::main_window::AppHandles;
 use crate::teksilo_ui::shell::title_bar;
@@ -192,7 +193,10 @@ impl Widget for App {
         });
         let filters = ctx.add(FixedSize::new().width(FILTERS_WIDTH).child(filters_panel));
         let filters_column = ctx.add(Expand::vertical().child(filters));
-        let library = ctx.add(Expand::new().child(Spacer::new()));
+        let library_panel = self.panel(ctx, |services| {
+            Box::new(LibraryPanel::new(LibraryViewModel::new(services)))
+        });
+        let library = ctx.add(Expand::new().child(library_panel));
         let body = ctx.add(row().child(filters_column).child(library));
         let right = ctx.add(
             Expand::new().child(
@@ -284,6 +288,7 @@ mod tests {
         use crate::teksilo_ui::test_support::first_of_type;
         assert!(first_of_type(&tree, r.filters, "FiltersPanel").is_some());
         assert!(first_of_type(&tree, r.player, "PlayerPanel").is_some());
+        assert!(first_of_type(&tree, r.library, "LibraryPanel").is_some());
         assert!(handles.ctx.shutdown());
     }
 

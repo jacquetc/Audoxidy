@@ -50,6 +50,14 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 34 | The VU meter's labels are drawn whole, and the compact meter stays in its bounds |
 | 35 | Escape clears a search field |
 | 36 | The library's column header scrolls sideways with the rows |
+| 37 | Bulk Left/Right keeps every toggled header selected |
+| 38 | An album shared by two cached entries resolves to one id everywhere |
+| 39 | A song's artist is the header that groups it |
+| 40 | An album of a collapsed artist has no position |
+| 41 | An album forms one run within its artist |
+| 42 | Clearing the sort keeps the open grid album |
+| 47 | The list modes follow the sort |
+| 48 | The rubber band selects what it covers |
 
 ---
 
@@ -61,7 +69,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   "Eliminar" runs the deletion; Escape and "Cancelar" leave the library untouched.
 - **Why:** it is destructive and cannot be undone. Removing playlist entries (not songs) keeps
   Iced's behaviour.
-- **Pinned by:** to be filled by the library wave.
+- **Pinned by:** `teksilo_ui::library::library_vm::tests::quirk_1_delete_asks_first_and_deletes_only_after_the_confirmation`, `…::quirk_1_nothing_selected_asks_nothing` and `teksilo_ui::library::panel::tests::quirk_1_delete_on_the_list_asks_for_confirmation`.
 
 ## 2. Enter, Delete, Space and Ctrl+A act on the focused panel
 
@@ -74,8 +82,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   - The library's Play button plays the library selection.
   - Text fields, menus and dialogs keep these keys.
 - **Why:** a key that acts on a panel the user is not in is surprising.
-- **Pinned by:** to be filled by the playlist and library waves, plus the "space and Enter in
-  every text field" probe.
+- **Pinned by:** the library by `teksilo_ui::library::library_vm::tests::quirk_2_play_appends_the_library_selection_to_the_active_playlist` and `teksilo_ui::library::panel::tests::{quirk_2_enter_on_the_list_appends_the_selection_to_the_active_playlist, quirk_2_the_arrows_move_the_library_selection, quirk_2_the_search_field_keeps_enter_delete_and_the_arrows}`; the filter column by `teksilo_ui::filters::panel::tests::{the_keyboard_walks_the_tree_and_enter_selects_a_node, the_arrows_move_the_focus_between_the_cells_and_enter_chooses_one}`; the playlist part by the playlist wave, Ctrl+A by the integration wave, plus the "space and Enter in every text field" probe.
 
 ## 3. Closing the window saves state and stops cleanly
 
@@ -97,7 +104,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   - dialog. In the EQ preset Load dialog, Escape restores the previewed state, as Cancel does;
   - the Audio Center panel.
 - **Why:** standard desktop behaviour, and needed for keyboard users.
-- **Pinned by:** to be filled by the integration wave.
+- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{escape_closes_the_menu_without_acting, a_click_outside_closes_the_menu}`, the filter menu by `teksilo_ui::filters::panel::tests::escape_closes_the_menu_without_choosing`, the search fields by fix 35's tests; the playlist, Audio Center and meter overlays by their waves.
 
 ## 5. No blocking work on the UI thread
 
@@ -135,7 +142,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   opened them. Modal dialogs are centred, the framework default. The EQ preset dialogs stay
   positioned relative to the Audio Center.
 - **Why:** hard-coded and origin positions put popups away from what opened them.
-- **Pinned by:** to be filled by the meter and playlist waves.
+- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{the_menu_button_opens_the_menu_below_it, the_menu_follows_the_button_when_the_panel_moves_or_has_an_inset}` (Iced opens it at a fixed position; the popover API has no offset, so it opens at the button's leading edge, about 7 px left of Iced's x = 15); the filter menu by `teksilo_ui::filters::panel::tests::the_selector_opens_a_172_pixel_menu_of_five_types_anchored_at_it` (Iced: a fixed 70 px from the window top, `library_filters.rs:345`); the playlist and meter popups by their waves.
 
 ## 8. Failed user actions show an error toast
 
@@ -143,7 +150,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   external file import, applying audio settings, EQ preset import and export.
 - **Teksilo:** the same failures are logged and also shown as an error toast.
 - **Why:** the user saw nothing happen and had no hint why.
-- **Pinned by:** the command side (the failure comes back as an error and a `LongOperation::Failed` event, not only a log line) by `frontend::commands::playlist::tests::quirk_8_an_export_that_cannot_write_its_list_fails`, `frontend::commands::playlist::tests::quirk_25_an_entry_outside_latin_1_fails_the_m3u_export_without_writing` and `frontend::commands::playlist::tests::quirk_8_an_import_that_finds_nothing_or_no_file_fails` (export and import), and `frontend::commands::audio_settings::tests::a_stream_error_comes_back_as_err_and_the_keys_are_still_persisted` (Apply); the toasts are to be filled by the playlist and Audio Center waves.
+- **Pinned by:** the command side (the failure comes back as an error and a `LongOperation::Failed` event, not only a log line) by `frontend::commands::playlist::tests::quirk_8_an_export_that_cannot_write_its_list_fails`, `frontend::commands::playlist::tests::quirk_25_an_entry_outside_latin_1_fails_the_m3u_export_without_writing` and `frontend::commands::playlist::tests::quirk_8_an_import_that_finds_nothing_or_no_file_fails` (export and import), and `frontend::commands::audio_settings::tests::a_stream_error_comes_back_as_err_and_the_keys_are_still_persisted` (Apply); the toasts are to be filled by the playlist and Audio Center waves; the UI side by `teksilo_ui::library::library_vm::tests::{quirk_8_a_failed_delete_shows_an_error_toast_and_a_cancelled_one_does_not, quirk_8_a_folder_that_cannot_be_scanned_shows_an_error_toast}` and `teksilo_ui::player::panel::tests::{a_scan_that_cannot_start_shows_an_error_toast, a_folder_dialog_that_cannot_open_shows_an_error_toast, a_track_that_cannot_be_played_shows_an_error_toast}`; the playlist and Audio Center by their waves.
 
 ## 9. Downmix settings apply at startup
 
@@ -165,7 +172,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
     right-click on it still opens the popup.
   - The popup stays open while values change.
 - **Why:** the setting was unreachable, and the popup closed under the user's hand.
-- **Pinned by:** to be filled by the meter wave.
+- **Pinned by:** the slot by `teksilo_ui::library::panel::tests::{quirk_10_the_meter_slot_keeps_400_px_without_a_meter, quirk_10_the_meter_fills_its_slot}`; the meter and its popup by the meter wave.
 
 ## 11. The playing row is tracked by song id
 
@@ -545,5 +552,96 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:** the header and the rows share one horizontal offset, so every column stays over
   its values.
 - **Why:** the user's decision (2026-10-11). A misaligned header labels the wrong values.
-- **Pinned by:** the library wave (Wave D) adds the test with the list views.
+- **Pinned by:** `teksilo_ui::library::panel::tests::quirk_36_the_column_header_and_the_rows_share_one_offset`, `teksilo_ui::library::list_rows::tests::{quirk_36_the_rows_follow_the_shared_offset_and_the_headers_stay, a_sideways_wheel_over_the_list_moves_the_shared_offset}` and `teksilo_ui::library::library_vm::tests::quirk_36_the_shared_offset_stays_within_the_overflowing_content`. The header and the rows with columns sit in one `HShift`, laid out `max(width + offset, natural)` wide and shifted by the offset; the artist headers (and the Simple/Thumbnail album headers), which have no columns, stay put.
+
+## 37. Bulk Left/Right keeps every toggled header selected
+
+- **Iced:** `LibraryKeyNav` (`src/gui/app.rs:3149-3168`) takes its targets from `get_bulk_toggles`
+  (`src/gui/library.rs:1082`), two lists in hash order. It applies them one by one with
+  `set_album_collapsed` / `set_artist_collapsed` (`src/gui/library.rs:339-376`), and each call
+  replaces the selection with its own header (defect D9). One arbitrary header stays selected, and
+  the next key acts on it alone.
+- **Teksilo:** `logic::library_selection::bulk_toggle_targets_fixed` returns the targets in display
+  order. `apply_bulk_toggle_fixed` then collapses them all (Left) or expands them all (Right). It
+  keeps every one of them selected and focuses the first. With one target this is Iced's behaviour,
+  and Left then Right restores both the layout and the selection.
+- **Why:** a multi-selection collapsed with Left must be expandable again with Right.
+- **Pinned by:** `logic::library_selection::tests::{d9_a_bulk_collapse_keeps_every_toggled_header_selected, d9_collapse_then_expand_restores_the_layout_and_the_selection, d9_without_targets_nothing_changes_and_one_target_behaves_like_the_original}` and `teksilo_ui::library::library_vm::tests::quirk_37_left_collapses_every_selected_album_and_keeps_them_all_selected`.
+
+## 38. An album shared by two cached entries resolves to one id everywhere
+
+- **Iced:** when two cached albums share an artist and a title (defect D10), the list structure
+  keeps the last one (`src/logic/library_geometry.rs:325-331`), while the filtered albums, the album
+  of a song, the Detailed covers (`src/gui/widgets.rs:2882-2886`) and the delete map
+  (`src/gui/app.rs:3754-3757`) keep the first.
+- **Teksilo:** `logic::library_geometry::build_view_structure_fixed` keeps the first, like the rest
+  of the library. The rows, the selection, the delete targets and the covers all resolve through it.
+- **Why:** with two ids for one album, selecting, collapsing and deleting it acted on different
+  albums.
+- **Pinned by:** `logic::library_geometry::tests::d10_duplicate_albums_resolve_to_the_first_cached_hash_like_the_rest_of_the_library`.
+
+## 39. A song's artist is the header that groups it
+
+- **Iced:** `artist_to_toggle` (`src/logic/library_selection.rs:390`) takes the `artist` tag first,
+  while the grouping uses the effective artist (album artist first) under the group's spelling
+  (defect D11). The reveal opens `get_effective_artist(song)` verbatim
+  (`src/gui/app.rs:6269-6271`), which misses a group spelled with different case.
+- **Teksilo:** `artist_to_toggle_fixed` resolves the group by effective artist, ignoring case, and
+  returns the group's own name. The reveal (by path and "show playing") uses it to open the song's
+  collapsed artist.
+- **Why:** the header to open must be one that exists.
+- **Pinned by:** `logic::library_selection::tests::{d11_the_artist_of_a_song_is_the_header_that_groups_it, d11_the_header_keeps_the_spelling_of_its_group_and_follows_the_collapse_state}` and `teksilo_ui::library::library_vm::tests::a_reveal_by_path_opens_the_collapsed_artist_and_selects_the_song`.
+
+## 40. An album of a collapsed artist has no position
+
+- **Iced:** `get_item_y_range(Album)` (`src/gui/library.rs:581`; `item_y_range`,
+  `src/logic/library_geometry.rs:746-759`) returns the y its header would have, inside a collapsed
+  artist (defect D12), and reads the first two parts of a malformed id.
+- **Teksilo:** `item_y_range_fixed` returns nothing for a hidden album or a malformed id. Every
+  scroll the library view-model asks for goes through it.
+- **Why:** a reveal scrolled to a row that was not shown.
+- **Pinned by:** `logic::library_geometry::tests::{d12_an_album_of_a_collapsed_artist_has_no_span, d12_the_fixed_span_matches_every_visible_rectangle_and_rejects_malformed_ids}`.
+
+## 41. An album forms one run within its artist
+
+- **Iced:** `build_view_structure` (`src/logic/library_geometry.rs:342-362`) opens a new run whenever
+  the album tag changes. Sorted by another column, one album forms several runs: duplicate
+  `Album(id)` items sharing one collapsed state (defect D13).
+- **Teksilo:** `build_view_structure_fixed` gives each album one run, at its first song, with its
+  songs in list order. Without duplicates the result is identical to Iced's.
+- **Why:** duplicate items with one id broke ranges, collapsing and keyboard navigation.
+- **Pinned by:** `logic::library_geometry::tests::{d13_an_album_whose_songs_are_not_consecutive_forms_one_run, d13_collapsing_the_album_hides_all_its_songs, the_fixed_structure_matches_the_original_without_duplicates}`.
+
+## 42. Clearing the sort keeps the open grid album
+
+- **Iced:** `LibrarySortChanged` (`src/gui/app.rs:2849-2853`) reloads the expanded album with
+  `get_songs_by_album(composite id)`, which matches nothing, so the open album empties (defect D22).
+- **Teksilo:** the detail panel resolves its album from the parsed `(artist, hash)`. It looks first
+  in memory, in the library results, as Iced's `ToggleAlbumExpansion` does
+  (`src/gui/app.rs:2924-2955`), and otherwise in the database
+  (`commands::library::album_songs_by_composite_id`). A sort change only re-sorts the loaded songs,
+  back to their canonical order when the sort is cleared.
+- **Why:** clearing the sort emptied the open album.
+- **Pinned by:** `teksilo_ui::library::library_vm::tests::{quirk_42_clearing_the_sort_keeps_the_expanded_album_and_restores_its_order, quirk_42_an_album_hidden_by_the_search_loads_from_its_parsed_artist_and_hash}`.
+
+## 47. The list modes follow the sort
+
+- **Iced:** a click on a column header in the Simple, Thumbnail and Detailed modes changes the sort
+  arrow but not the rows. `LibrarySortChanged` (`src/gui/app.rs:2819-2876`) sorts the grid's
+  albums, the expanded album and the cached songs, but never `filtered_songs` / `artist_groups`,
+  which the lists are built from (`src/gui/library.rs:1189-1221`).
+- **Teksilo:** the list rows follow the sort through the three-state cycle, as the grid does, and
+  return to the database order when the sort is cleared.
+- **Why:** a sort control that sorts nothing in three of the four modes. The approved plan
+  specified the working sort.
+- **Pinned by:** `teksilo_ui::library::library_vm::tests::a_sort_reorders_the_rows_and_clearing_it_restores_the_database_order`.
+
+## 48. The rubber band selects what it covers
+
+- **Iced:** the marquee is drawn 2 px off the pointer (`pos.y − 72` for a list starting at y = 70,
+  `src/gui/app.rs:3333`, `:4704`). Its hit rectangles use `window width − 722`
+  (`src/gui/app.rs:3429`), so the last 120 px of the list can never be selected by it.
+- **Teksilo:** the band and its hit rectangles use the list's own coordinates and width.
+- **Why:** the band selected rows it did not cover and missed rows it did.
+- **Pinned by:** `teksilo_ui::library::list_rows::tests::a_drag_over_the_rows_selects_them_with_the_marquee` and `teksilo_ui::library::library_vm::tests::the_marquee_selects_the_rows_it_crosses`.
 
