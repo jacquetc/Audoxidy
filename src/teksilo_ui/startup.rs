@@ -55,6 +55,8 @@ pub const LOCALE_FILES: &[&str] = &[
     "ac-volume-mix.ftl",
     "meter.ftl",
     "dialogs.ftl",
+    "controls.ftl",
+    "chrome.ftl",
 ];
 
 /// RAM below which the low-resource mode is enabled, in GiB (`app.rs:517`).
@@ -86,6 +88,8 @@ pub fn app_locales() -> &'static [(&'static str, &'static [&'static str])] {
             "ac-volume-mix.ftl",
             "meter.ftl",
             "dialogs.ftl",
+            "controls.ftl",
+            "chrome.ftl",
         ],
     )
 }
