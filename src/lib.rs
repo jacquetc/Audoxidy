@@ -5,6 +5,8 @@ pub mod frontend;
 pub mod gui;
 pub mod integrations;
 pub mod logic;
+#[cfg(feature = "teksilo-ui")]
+pub mod teksilo_ui;
 pub mod utils;
 
 #[cfg(test)]

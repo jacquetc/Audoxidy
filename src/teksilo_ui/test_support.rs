@@ -1,0 +1,200 @@
+//! Test-only scaffolding for headless widget and view-model tests.
+//!
+//! A bare `WidgetTree` has no event source, and `ctx.subscribe_event` panics
+//! without one, so a widget that subscribes to the facade's events could not
+//! be laid out in a test. [`tree_with_events`] registers the same
+//! [`FrontendEventSource`] the app does, over the test's [`AppContext`], with a
+//! poster that drops what it is given: the subscriptions are real, they are
+//! simply never delivered, since a headless tree has no event loop.
+//!
+//! The input helpers drive the real dispatch path ([`access_click`],
+//! [`key_down`], [`press`]), so a handler runs with a real `EventContext`
+//! rather than being called directly.
+
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use teksilo::core::WidgetEvent;
+use teksilo::core::accessibility::widget_id_to_node_id;
+use teksilo::core::event_source::{
+    AppEventPoster, EventSourceAdapter, SubscriptionId, TreeAppContext,
+};
+use teksilo::core::widget_id::WidgetId;
+use teksilo::core::widget_tree::WidgetTree;
+use teksilo::core::{Key, Modifiers};
+use teksilo::prelude::{AsyncRuntimeHandle, EventContext, SizeProposal, lit};
+use teksilo::widgets::Button;
+
+use super::event_source::FrontendEventSource;
+use crate::frontend::AppContext;
+
+/// The viewport the input helpers lay the tree out in.
+pub const VIEWPORT: (f32, f32) = (1360.0, 880.0);
+
+/// A poster that drops everything: there is no event loop to post to.
+struct NullPoster;
+
+impl AppEventPoster for NullPoster {
+    fn post_subscription_event(&self, _sub_id: SubscriptionId, _event: Box<dyn Any + Send>) {}
+}
+
+/// A `WidgetTree` whose widgets can subscribe to the facade's events.
+pub fn tree_with_events(ctx: &AppContext) -> WidgetTree {
+    tree_with_app_state(ctx, HashMap::new())
+}
+
+/// [`tree_with_events`], with `state` registered as app state (what
+/// `TeksiloAppBuilder::app_state` registers in the app).
+pub fn tree_with_app_state(ctx: &AppContext, state: HashMap<TypeId, Box<dyn Any>>) -> WidgetTree {
+    let mut tree = WidgetTree::new();
+    tree.set_theme(super::style::audoxidy_dark());
+    let adapter = EventSourceAdapter::new(FrontendEventSource::new(ctx.hub.clone()));
+    tree.set_app_context(Rc::new(
+        TreeAppContext::with_source_and_poster(adapter, Arc::new(NullPoster)).with_app_state(state),
+    ));
+    tree
+}
+
+/// [`tree_with_events`] with a main-thread async runtime registered, as
+/// `install_async` does in the app. The returned handle is the test's executor:
+/// drive it with [`run_until`].
+pub fn tree_with_async(ctx: &AppContext) -> (WidgetTree, AsyncRuntimeHandle) {
+    let runtime = AsyncRuntimeHandle::new();
+    let mut state: HashMap<TypeId, Box<dyn Any>> = HashMap::new();
+    state.insert(
+        TypeId::of::<AsyncRuntimeHandle>(),
+        Box::new(runtime.clone()),
+    );
+    (tree_with_app_state(ctx, state), runtime)
+}
+
+/// Ticks `runtime` until `done` holds, for at most `timeout`. Returns whether
+/// it held. The futures under test await replies from the facade's worker
+/// threads, so this polls, sleeping a little between ticks.
+pub fn run_until(runtime: &AsyncRuntimeHandle, timeout: Duration, done: impl Fn() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        runtime.tick();
+        if done() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Lays `tree` out at [`VIEWPORT`].
+pub fn layout(tree: &mut WidgetTree) {
+    tree.layout(SizeProposal::exact(VIEWPORT.0, VIEWPORT.1));
+}
+
+/// Activates `id` through the accessibility `Click` action, the path a screen
+/// reader takes and the one that reaches a widget's `on_access_action`.
+pub fn access_click(tree: &mut WidgetTree, id: WidgetId) {
+    tree.dispatch_event(WidgetEvent::AccessAction {
+        action: teksilo::core::accesskit::Action::Click,
+        target: Some(id),
+        target_node: widget_id_to_node_id(id),
+        data: None,
+    });
+    layout(tree);
+}
+
+/// Focuses `id`, then presses `key` with no modifier.
+pub fn key_down(tree: &mut WidgetTree, id: WidgetId, key: Key) {
+    key_down_with(tree, id, key, Modifiers::NONE);
+}
+
+/// Focuses `id`, then presses `key` with `modifiers`.
+pub fn key_down_with(tree: &mut WidgetTree, id: WidgetId, key: Key, modifiers: Modifiers) {
+    tree.focus(id);
+    tree.dispatch_event(WidgetEvent::KeyDown {
+        key,
+        modifiers,
+        text: None,
+    });
+    layout(tree);
+}
+
+/// Runs `f` with a real `EventContext`, as a button press would: a button
+/// wired to it is added to `tree` and clicked, with a layout pass on either
+/// side. For view-model methods that need the context but have no widget of
+/// their own to test through.
+pub fn press(tree: &mut WidgetTree, f: impl Fn(&mut EventContext) + 'static) {
+    let button = tree.add(Button::new(lit!("press")).on_activate_fn(f));
+    layout(tree);
+    access_click(tree, button);
+}
+
+/// The titles of the dialogs presented since the last drain, taking them off
+/// the queue (a headless tree has no window manager to present them).
+pub fn drain_dialog_titles(tree: &mut WidgetTree) -> Vec<String> {
+    tree.drain_pending_modal_requests()
+        .into_iter()
+        .filter_map(|queued| queued.request.title)
+        .collect()
+}
+
+/// The first node at or under `root` whose type name ends with `suffix`
+/// (depth first). Type names come from `std::any::type_name`, so match the
+/// last path segment.
+pub fn first_of_type(tree: &WidgetTree, root: WidgetId, suffix: &str) -> Option<WidgetId> {
+    if tree
+        .widget_type_name(root)
+        .is_some_and(|name| name.ends_with(suffix))
+    {
+        return Some(root);
+    }
+    tree.children(root)
+        .into_iter()
+        .find_map(|child| first_of_type(tree, child, suffix))
+}
+
+/// Every node at or under `root` that the accessibility tree names `name`.
+pub fn find_by_name(tree: &WidgetTree, root: WidgetId, name: &str) -> Vec<WidgetId> {
+    let mut found = Vec::new();
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        if tree.accessibility_node(id).name() == Some(name) {
+            found.push(id);
+        }
+        stack.extend(tree.children(id));
+    }
+    found
+}
+
+/// Runs `f` with the shipped `.ftl` files of `locale` installed as the only
+/// locale, so `tr!(…).resolve_now()` returns what a user running in it reads.
+/// `tr!` checks keys against `en-US` only; resolving in `es-ES` is how a
+/// missing or misspelt Spanish message shows up.
+pub fn with_shipped_messages(locale: &str, f: impl FnOnce()) {
+    use teksilo::i18n::config::I18nConfig;
+    use teksilo::i18n::manager::I18nManager;
+    use teksilo::i18n::thread_local::{clear, install};
+
+    let Some(&(tag, files)) = super::startup::app_locales()
+        .iter()
+        .find(|(tag, _)| *tag == locale)
+    else {
+        panic!("{locale} is not a locale the app ships");
+    };
+    let id: teksilo::i18n::LanguageIdentifier = match tag.parse() {
+        Ok(id) => id,
+        Err(e) => panic!("{tag} is not a locale: {e:?}"),
+    };
+    clear();
+    let config = I18nConfig::new()
+        .source_locale(id.clone())
+        .supported_locales([id.clone()])
+        .compile_in(&[(tag, files)])
+        .auto_detect_os_locale(false)
+        .fallback_locale(id);
+    install(I18nManager::from_config(&config));
+    f();
+    clear();
+}

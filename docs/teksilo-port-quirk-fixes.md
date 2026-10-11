@@ -44,6 +44,8 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 28 | Next or Previous right after a track ends moves once, from the track that plays |
 | 29 | A track change saves position 0 for the new track |
 | 30 | The restore opens the first playlist when the saved one is gone |
+| 31 | Low-resource mode is detected before the audio engine starts |
+| 32 | The window can be moved by its title bar and resized from its edges |
 
 ---
 
@@ -80,7 +82,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   - saves the EQ and DSP settings when the Audio Center is open;
   - stops the background threads and the audio engine.
 - **Why:** the playback position and open settings were lost on every close.
-- **Pinned by:** the persistence part by `frontend::session::tests::quirk_3_persist_now_then_stop_stores_the_position_and_the_session` (the position, play state, shuffle and session saved by `session::persist_now` are written before `session::stop` ends the threads); the close hook itself is to be filled by the integration wave.
+- **Pinned by:** the persistence part by `frontend::session::tests::quirk_3_persist_now_then_stop_stores_the_position_and_the_session` (the position, play state, shuffle and session saved by `session::persist_now` are written before `session::stop` ends the threads); the close path by `teksilo_ui::shell::main_window::tests::closing_runs_the_hooks_and_stops_the_backend` (`AppHandles::before_close` runs the close hooks and queues the save from the window's close guard; `AppHandles::after_close` stops the backend from the window's removal hook) and `teksilo_ui::app::session::tests::persisting_after_the_restore_writes_the_position`. The Audio Center registers its EQ and DSP save as a close hook in its wave.
 
 ## 4. Escape closes overlays and dialogs
 
@@ -116,7 +118,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:** a single restore runs off the UI thread and announces itself with a
   `Session::Restored` event. The UI sends no playback command before that event.
 - **Why:** the double restore reloaded the file and re-seeked it.
-- **Pinned by:** `frontend::session::tests::quirk_6_the_restore_runs_the_settings_then_the_track_once_and_publishes_restored` (one restore, settings before the track, one `Session::Restored`, later calls refused), `frontend::session::tests::a_settings_restore_first_blocks_the_session_restore`, `frontend::commands::engine_settings::tests::the_restore_applies_each_setting_once_and_runs_once_per_context` and `frontend::app_context::tests::the_startup_restore_is_claimed_once_across_clones`.
+- **Pinned by:** `frontend::session::tests::quirk_6_the_restore_runs_the_settings_then_the_track_once_and_publishes_restored` (one restore, settings before the track, one `Session::Restored`, later calls refused), `frontend::session::tests::a_settings_restore_first_blocks_the_session_restore`, `frontend::commands::engine_settings::tests::the_restore_applies_each_setting_once_and_runs_once_per_context` and `frontend::app_context::tests::the_startup_restore_is_claimed_once_across_clones`; on the UI side, `teksilo_ui::app::session::tests::the_restore_runs_once` and `teksilo_ui::app::tests::building_the_root_restores_the_session_once` (the root starts the restore once and `SessionState::status` gates playback until it settles).
 
 ## 7. Popups open at their trigger
 
@@ -435,3 +437,37 @@ Unfinished Iced features (stubs) are not listed here; they are in
   a warning. Without a saved id it opens playlist 1, as Iced does.
 - **Why:** an empty panel bound to a playlist that does not exist leaves the user nowhere to go.
 - **Pinned by:** `frontend::session::tests::quirk_30_the_restore_falls_back_to_the_first_playlist_when_the_saved_one_is_gone` and `frontend::session::tests::without_a_saved_playlist_the_restore_opens_playlist_one`.
+
+## 31. Low-resource mode is detected before the audio engine starts
+
+- **Iced:** `main.rs` creates the `AudioManager` first. `AudoxidyApp::new` then measures RAM and cores
+  and stores `LOW_RESOURCE_MODE` (`src/gui/app.rs:512-521`). So the first stream sizes its ring
+  buffer (`src/audio/engine.rs:409`) from the configuration profile alone, and later streams use
+  the measured value.
+- **Teksilo:** `teksilo_ui::startup::init_process` measures and stores the mode before
+  `AppContext::production` creates the engine. Every stream uses the measured value. The rule is
+  unchanged (less than 8 GiB of RAM or fewer than 4 cores). Only the memory figures and the CPU
+  list are read; Iced refreshes every process as well.
+- **Why:** with Iced, a low-resource machine got a full-size first stream, and a capable machine
+  under a low-resource profile got a reduced first stream, until the first stream rebuild.
+- **Pinned by:** `teksilo_ui::startup::tests::the_low_resource_rule_matches_the_iced_ui` (the rule).
+  The ordering is the structure of `teksilo_ui::run`: `init_process` runs before `build_context`.
+
+## 32. The window can be moved by its title bar and resized from its edges
+
+- **Iced:** the window has no decorations (`decorations: false`, `src/main.rs`). The Audoxidy title
+  strip has no drag region and the window has no resize border, so the window cannot be moved or
+  resized with the mouse, only with the window manager's keyboard commands.
+- **Teksilo:** the strip above the filter column and the library is a Teksilo `TitleBar`. Dragging
+  its free area moves the window, and a double click toggles maximize. On Wayland and X11, where
+  the client draws the frame, a `WindowFrame` adds resize strips along the edges. On Windows and
+  macOS the OS resizes the borderless window itself. The Audoxidy window buttons are kept in place
+  of the framework's. Where custom chrome is unavailable, the window falls back to native
+  decorations and the strip keeps only the logo and the pills.
+- **Why:** a window that cannot be moved or resized with the mouse.
+- **Pinned by:** `teksilo_ui::shell::main_window::tests::with_custom_chrome_the_strip_is_a_title_bar_inside_a_resize_frame`
+  and `teksilo_ui::shell::main_window::tests::without_resize_handles_the_root_is_the_app_itself`.
+  These use a fake platform host: the strip is a `TitleBar`, and it sits in a `WindowFrame` exactly
+  when the platform asks for resize strips. `teksilo_ui::shell::title_bar::tests::maximize_toggles_between_maximized_and_floating`
+  covers the maximize button.
+

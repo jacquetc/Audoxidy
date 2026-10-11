@@ -25,7 +25,7 @@ The **Teksilo site** column is filled in by the wave that ports each stub.
 | Playlist menu "Editor de Etiquetas" | `src/gui/playlist.rs:1524` | `Message::NoOp` | |
 | Playlist menu "Convertidor de audio" | `src/gui/playlist.rs:1529` | `Message::NoOp` | |
 | Playlist bottom bar Lyrics button | `src/gui/app.rs:3027` | `ToggleLyrics` returns `Task::none()` | |
-| Library source tabs Spotify, YouTube, Qobuz, Deezer, Tidal | `src/gui/library.rs:2479-2483`, `src/gui/app.rs:3068` | only changes which tab is highlighted | |
+| Library source tabs Spotify, YouTube, Qobuz, Deezer, Tidal | `src/gui/library.rs:2479-2483`, `src/gui/app.rs:3068` | only changes which tab is highlighted | `src/teksilo_ui/shell/title_bar.rs` (`Source::is_available`) |
 | Player menu "Abrir Archivo" | `src/gui/player.rs:546` | closes the menu | |
 | Player menu "Biblioteca" | `src/gui/player.rs:548` | closes the menu | |
 | Player menu "Lista de Reproducción" | `src/gui/player.rs:549` | closes the menu | |

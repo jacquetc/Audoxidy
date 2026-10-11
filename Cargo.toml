@@ -82,6 +82,11 @@ name = "audoxidy"
 path = "src/main.rs"
 required-features = ["iced-ui"]
 
+[[bin]]
+name = "audoxidy-teksilo"
+path = "src/bin/audoxidy_teksilo.rs"
+required-features = ["teksilo-ui"]
+
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
 
