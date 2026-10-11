@@ -20,6 +20,7 @@
 pub mod app;
 pub mod event_source;
 pub mod icons;
+pub mod library;
 #[cfg(any(test, feature = "teksilo-mocks"))]
 pub mod mock_data;
 pub mod models;
