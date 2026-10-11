@@ -96,8 +96,9 @@ pub fn item_menu(vm: &PlaylistViewModel, linear_idx: usize) -> Vec<MenuEntry> {
 /// The "Enviar a otra lista" submenu of the row `linear_idx`
 /// (`PlaylistRequestSubMenu`, `src/gui/app.rs:3999`): "Nueva lista", a
 /// divider, the system playlists, then the user playlists sorted
-/// case-insensitively. Iced swaps the row menu for this list with an "Atrás"
-/// entry; here it opens beside the menu.
+/// case-insensitively, the active playlist left out (quirk fix 58). Iced
+/// swaps the row menu for this list with an "Atrás" entry; here it opens
+/// beside the menu.
 pub fn send_to_menu(vm: &PlaylistViewModel, linear_idx: usize) -> Vec<MenuEntry> {
     let new_list = vm.clone();
     let mut entries = vec![

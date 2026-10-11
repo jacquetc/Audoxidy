@@ -37,6 +37,11 @@
 //! view-model calls (`play_song`, `end_of_track`, `toggle_repeat`,
 //! `toggle_shuffle`, `switch_playlist`, …) persists the playlist state itself.
 //!
+//! Teksilo-only fixes made here (`docs/teksilo-port-quirk-fixes.md`): the
+//! selection follows its rows through a search (quirk fix 56), renaming the
+//! active playlist leaves the playing track alone (quirk fix 55), and "Enviar
+//! a otra lista" leaves the active playlist out (quirk fix 58).
+//!
 //! Changing a playlist's content (adding, importing, sending songs, removing)
 //! reloads only its rows (quirk fix 12): the content model applies the new
 //! rows, and the view-model rebuilds its own. When the songs of the playlist
@@ -57,7 +62,7 @@ use teksilo::core::window::TeksiloWindowId;
 use teksilo::data::ListModel;
 use teksilo::prelude::*;
 
-use super::rows::{RowItem, ScrollTarget, visible_rows};
+use super::rows::{KeyedSelection, RowItem, ScrollTarget, visible_rows};
 use crate::db::database::PlaylistSongRef;
 use crate::frontend::commands::playback::{self, EndOfTrackOutcome, PlaybackCursor, TrackChange};
 use crate::frontend::commands::playlist::{self, ExportReport, PlaylistSwitch, RenameOutcome};
@@ -412,7 +417,7 @@ impl PlaylistViewModel {
         let snapshot = self.read_cursor(|cursor| {
             let collapsed = inner.collapsed.borrow();
             (
-                visible_rows(cursor.active_groups(), &collapsed),
+                visible_rows(cursor.active_groups(), cursor.groups(), &collapsed),
                 content_key(cursor),
                 cursor.playing_index(),
             )
@@ -469,22 +474,28 @@ impl PlaylistViewModel {
     }
 
     /// Applies the search and scrolls to the top (`PlaylistSearchChanged`,
-    /// `src/gui/app.rs:2746`). The selection is kept, as in Iced.
+    /// `src/gui/app.rs:2746`). The selection follows its rows: the selected
+    /// songs the search still shows stay selected under their new linear
+    /// indices, the others drop out, and the focus and the pivot follow
+    /// likewise (quirk fix 56; Iced keeps the old linear indices, which then
+    /// point at other rows).
     fn apply_search(&self, query: &str) {
-        let applied = self
+        let selection = self.inner.selection.get();
+        let carried = self
             .inner
             .services
             .session
             .with_cursor(|cursor| {
-                if cursor.search() != query {
-                    cursor.set_search(query);
-                    true
-                } else {
-                    false
+                if cursor.search() == query {
+                    return None;
                 }
+                let keyed = KeyedSelection::of(&selection, cursor.active_groups());
+                cursor.set_search(query);
+                Some(keyed.in_groups(cursor.active_groups()))
             })
-            .unwrap_or(false);
-        if applied {
+            .flatten();
+        if let Some(carried) = carried {
+            self.inner.selection.set_if_changed(carried);
             self.refresh_rows();
             self.inner.scroll.send(ScrollTarget::Top);
         }
@@ -808,9 +819,15 @@ impl PlaylistViewModel {
         Some(self.logged(reply, "the songs could not be sent to the playlist"))
     }
 
-    /// The playlists of the "Enviar a otra lista" submenu, in its order.
+    /// The playlists of the "Enviar a otra lista" submenu, in its order: the
+    /// active playlist is left out (quirk fix 58; Iced lists it, and sending
+    /// its own songs to it adds nothing, `src/gui/app.rs:4024-4041`).
     pub fn send_to_lists(&self) -> Vec<PlaylistTab> {
+        let active = self.active_playlist().get();
         menu_order(&self.tab_list(), true)
+            .into_iter()
+            .filter(|tab| Some(tab.id) != active)
+            .collect()
     }
 
     /// The playlists of the tab overflow menu, in its order.
@@ -973,8 +990,11 @@ impl PlaylistViewModel {
     }
 
     /// Renames playlist `id` to `name`, or, for a system playlist, makes a
-    /// renamed copy; then switches to it (`src/gui/app.rs:2248`). A blank name
-    /// does nothing, as in Iced. A failure is toasted in `window`.
+    /// renamed copy; then switches to it (`src/gui/app.rs:2248`). The active
+    /// playlist, renamed, only takes its new name: Iced switches to it again,
+    /// which reloads and seeks the playing track (`src/gui/app.rs:2404-2420`,
+    /// quirk fix 55). A blank name does nothing, as in Iced. A failure is
+    /// toasted in `window`.
     pub fn rename_playlist(&self, id: i64, name: &str, window: ToastWindow) {
         if name.trim().is_empty() {
             return;
@@ -982,6 +1002,14 @@ impl PlaylistViewModel {
         let reply = playlist::rename_playlist(&self.inner.services.ctx, id, name);
         let vm = self.clone();
         self.finish(window, reply.recv(), move |result| match result {
+            Ok(RenameOutcome::Renamed(id))
+                if vm.inner.services.active_playlist.id().get() == Some(id) =>
+            {
+                // Quirk fix 55: the active playlist only takes its new name;
+                // the playing track is not reloaded, seeked or replayed.
+                vm.inner.services.active_playlist.refresh();
+                None
+            }
             Ok(RenameOutcome::Renamed(id) | RenameOutcome::Copied(id)) => {
                 vm.switch_playlist(id, false);
                 None

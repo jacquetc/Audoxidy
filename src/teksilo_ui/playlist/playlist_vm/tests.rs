@@ -128,6 +128,38 @@ fn the_arrows_walk_the_search_result() {
 }
 
 #[test]
+fn the_selection_follows_its_songs_through_a_search() {
+    // Quirk fix 56: Iced keeps the linear indices, which a search moves onto
+    // other rows.
+    let env = restored();
+    let t = Instant::now();
+    let song13 = env.song_id(13);
+    env.vm.click(3, NONE, t);
+    env.vm.click(13, CTRL, t + Duration::from_secs(1));
+    env.vm.click(11, CTRL, t + Duration::from_secs(2));
+    env.vm.click(13, CTRL, t + Duration::from_secs(3));
+    env.vm.click(13, CTRL, t + Duration::from_secs(4));
+    assert_eq!(env.selected(), vec![3, 11, 13]);
+    // "2017" keeps "CD 02" only: its separator is 0, song 13 is 2; song 3 is
+    // hidden and drops out.
+    env.vm.search().set("2017".to_string());
+    assert_eq!(env.selected(), vec![0, 2]);
+    assert_eq!(env.song_id(2), song13);
+    let selection = env.vm.selection().get();
+    assert_eq!(selection.focused, Some(2));
+    assert_eq!(selection.pivot, Some(2));
+    // Back to the whole list: song 3 does not come back.
+    env.vm.search().set(String::new());
+    assert_eq!(env.selected(), vec![11, 13]);
+    assert_eq!(env.vm.selection().get().focused, Some(13));
+    // A focused row the search hides takes the focus with it.
+    env.vm.click(5, NONE, t + Duration::from_secs(5));
+    env.vm.search().set("2017".to_string());
+    assert!(env.selected().is_empty());
+    assert_eq!(env.vm.selection().get().focused, None);
+}
+
+#[test]
 fn select_all_takes_every_row() {
     let env = restored();
     env.vm.select_all();
@@ -492,14 +524,8 @@ fn the_send_to_lists_put_the_system_lists_first_then_sort_the_rest() {
     let send: Vec<String> = env.vm.send_to_lists().into_iter().map(|t| t.name).collect();
     assert_eq!(
         send,
-        vec![
-            "Audoxidy",
-            "Oxidy Drift",
-            "Alpha",
-            "beta",
-            "David Bowie",
-            "zeta"
-        ]
+        vec!["Audoxidy", "Oxidy Drift", "Alpha", "beta", "zeta"],
+        "the active playlist, \"David Bowie\", is left out"
     );
     let overflow: Vec<String> = env
         .vm
@@ -635,6 +661,54 @@ fn renaming_a_system_playlist_switches_to_a_renamed_copy() {
         "Audoxidy"
     );
     env.wait(|| env.services.active_playlist.name().get() == "Mis favoritas");
+}
+
+#[test]
+fn the_send_to_lists_leave_out_the_active_playlist() {
+    // Quirk fix 58.
+    let env = restored();
+    let bowie = env.playlist_id("David Bowie");
+    assert!(env.vm.send_to_lists().iter().all(|tab| tab.id != bowie));
+    let audoxidy = env.playlist_id("Audoxidy");
+    env.vm.switch_playlist(audoxidy, false);
+    env.wait(|| env.vm.active_playlist().get() == Some(audoxidy));
+    let send: Vec<String> = env.vm.send_to_lists().into_iter().map(|t| t.name).collect();
+    assert_eq!(send, vec!["Oxidy Drift", "David Bowie"]);
+}
+
+#[test]
+fn renaming_the_active_playlist_keeps_the_playing_track() {
+    // Quirk fix 55: the name changes; no load, seek or play-state call.
+    let env = restored();
+    env.vm.play_row(4);
+    env.fakes.player.advance(30.0);
+    let calls = env.fakes.player.calls().len();
+    let bowie = env.playlist_id("David Bowie");
+    env.vm.click(4, NONE, Instant::now());
+    env.vm.rename_playlist(bowie, "Bowie", None);
+    env.wait(|| env.services.active_playlist.name().get() == "Bowie");
+    assert_eq!(
+        env.fakes.player.calls().len(),
+        calls,
+        "the player was left alone"
+    );
+    assert_eq!(env.fakes.player.snapshot().current_pos_sec, 30.0);
+    assert!(env.fakes.player.snapshot().is_playing);
+    assert_eq!(env.vm.active_playlist().get(), Some(bowie));
+    assert_eq!(env.vm.playing_index().get(), Some(4));
+    assert_eq!(env.selected(), vec![4], "the selection stays");
+}
+
+#[test]
+fn renaming_another_playlist_opens_it() {
+    let env = restored();
+    let mixtape = playlist::create_playlist(&env.services.ctx, "Mixtape", Vec::new())
+        .recv_blocking()
+        .unwrap();
+    env.reload_tabs();
+    env.vm.rename_playlist(mixtape, "Mezcla", None);
+    env.wait(|| env.vm.active_playlist().get() == Some(mixtape));
+    env.wait(|| env.services.active_playlist.name().get() == "Mezcla");
 }
 
 #[test]
