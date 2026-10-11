@@ -21,6 +21,11 @@
 //! hides. Iced shows the row's linear index, which counts the separators
 //! (`src/gui/playlist.rs:931-935`).
 //!
+//! A search renumbers the linear indices. [`remap_selection`] carries a
+//! selection across it by the identity of its rows ([`RowKey`]: a song by
+//! its playlist item, a separator by its group's anchor), so the selected
+//! songs stay selected and those the search hides drop out (quirk fix 56).
+//!
 //! The pure scroll arithmetic of the Iced autoscroll
 //! (`execute_playlist_autoscroll`, `src/gui/app.rs:1245`) is here too:
 //! [`autoscroll_offset`].
@@ -34,7 +39,7 @@ use teksilo::data::{DataChange, ListDataSource};
 use teksilo::prelude::Signal;
 
 use crate::db::database::{PlaylistFolderGroup, PlaylistSongRef};
-use crate::logic::playlist_nav::{self as nav, PlaylistItemType};
+use crate::logic::playlist_nav::{self as nav, PlaylistItemType, PlaylistSelection};
 
 /// The height of every row: a song row and a folder separator are both 46 px
 /// (`SONG_ROW_HEIGHT`, `FOLDER_SEPARATOR_HEIGHT`, `src/gui/playlist.rs:723`).
@@ -153,6 +158,93 @@ pub fn visible_rows(
             }
         })
         .collect()
+}
+
+/// What a row is, whatever its linear index: a search renumbers the linear
+/// indices, not these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RowKey {
+    /// A folder separator, by its group's anchor (`first_item_id`).
+    Group(i64),
+    /// A song, by its playlist item.
+    Item(i64),
+}
+
+/// The key of the item at `linear_idx` in `groups`.
+pub fn row_key(groups: &[PlaylistFolderGroup], linear_idx: usize) -> Option<RowKey> {
+    match nav::item_at(groups, linear_idx)? {
+        PlaylistItemType::Separator(_, anchor) => Some(RowKey::Group(anchor)),
+        PlaylistItemType::Song(group_idx, song_idx, _) => groups
+            .get(group_idx)?
+            .songs
+            .get(song_idx)
+            .map(|song| RowKey::Item(song.item_id)),
+    }
+}
+
+/// The linear index of the item `key` in `groups`, if it is there.
+pub fn index_of_key(groups: &[PlaylistFolderGroup], key: RowKey) -> Option<usize> {
+    match key {
+        RowKey::Group(anchor) => nav::separator_index_for_anchor(groups, anchor),
+        RowKey::Item(item_id) => {
+            let mut count = 0;
+            for group in groups {
+                count += 1;
+                if let Some(position) = group.songs.iter().position(|s| s.item_id == item_id) {
+                    return Some(count + position);
+                }
+                count += group.songs.len();
+            }
+            None
+        }
+    }
+}
+
+/// A selection held by the identity of its rows rather than by linear
+/// indices, to carry it across a search (quirk fix 56).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyedSelection {
+    selected: Vec<RowKey>,
+    focused: Option<RowKey>,
+    pivot: Option<RowKey>,
+}
+
+impl KeyedSelection {
+    /// `selection`, made over `groups`, by row identity.
+    pub fn of(selection: &PlaylistSelection, groups: &[PlaylistFolderGroup]) -> Self {
+        let key = |linear_idx: usize| row_key(groups, linear_idx);
+        Self {
+            selected: selection
+                .selected
+                .iter()
+                .filter_map(|idx| key(*idx))
+                .collect(),
+            focused: selection.focused.and_then(key),
+            pivot: selection.pivot.and_then(key),
+        }
+    }
+
+    /// The selection in `groups`: what is still there stays selected under
+    /// its linear index there, what is not drops out; the focus and the pivot
+    /// follow, or are lost with their row.
+    pub fn in_groups(&self, groups: &[PlaylistFolderGroup]) -> PlaylistSelection {
+        let index = |key: RowKey| index_of_key(groups, key);
+        PlaylistSelection {
+            selected: self.selected.iter().filter_map(|key| index(*key)).collect(),
+            focused: self.focused.and_then(index),
+            pivot: self.pivot.and_then(index),
+        }
+    }
+}
+
+/// `selection`, made over `from`, carried to `to` (the same playlist under
+/// another search) by the identity of its rows; see [`KeyedSelection`].
+pub fn remap_selection(
+    selection: &PlaylistSelection,
+    from: &[PlaylistFolderGroup],
+    to: &[PlaylistFolderGroup],
+) -> PlaylistSelection {
+    KeyedSelection::of(selection, from).in_groups(to)
 }
 
 /// The `ListDataSource` of the playlist's rows; see the module documentation.
@@ -378,6 +470,41 @@ mod tests {
         shown[1].songs.retain(|song| song.song_id == 5);
         let rows = visible_rows(&shown, &all, &HashSet::new());
         assert_eq!(numbers(&rows), vec![(1, 1), (2, 2), (4, 3)]);
+    }
+
+    #[test]
+    fn a_row_is_found_again_by_its_key() {
+        let groups = groups();
+        assert_eq!(row_key(&groups, 3), Some(RowKey::Group(3)));
+        assert_eq!(row_key(&groups, 5), Some(RowKey::Item(4)));
+        assert_eq!(row_key(&groups, 7), None);
+        assert_eq!(index_of_key(&groups, RowKey::Item(4)), Some(5));
+        assert_eq!(index_of_key(&groups, RowKey::Group(1)), Some(0));
+        assert_eq!(index_of_key(&groups, RowKey::Item(99)), None);
+    }
+
+    #[test]
+    fn a_selection_follows_its_rows_through_a_search() {
+        // Quirk fix 56.
+        let all = groups();
+        let mut shown = groups();
+        shown.remove(0);
+        shown[0].songs.retain(|song| song.song_id != 3);
+        // Before: songs 2 (linear 2) and 4 (linear 5) and separator B (3).
+        let selection = PlaylistSelection {
+            selected: HashSet::from([2, 3, 5]),
+            focused: Some(5),
+            pivot: Some(2),
+        };
+        // After: separator B is 0, song 4 is 1; song 2's group is hidden.
+        let carried = remap_selection(&selection, &all, &shown);
+        assert_eq!(carried.selected, HashSet::from([0, 1]));
+        assert_eq!(carried.focused, Some(1));
+        assert_eq!(carried.pivot, None, "the pivot's row is hidden");
+        // And back.
+        let back = remap_selection(&carried, &shown, &all);
+        assert_eq!(back.selected, HashSet::from([3, 5]));
+        assert_eq!(back.focused, Some(5));
     }
 
     #[test]

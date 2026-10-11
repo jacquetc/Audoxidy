@@ -37,6 +37,9 @@
 //! view-model calls (`play_song`, `end_of_track`, `toggle_repeat`,
 //! `toggle_shuffle`, `switch_playlist`, …) persists the playlist state itself.
 //!
+//! A search keeps the selection on its rows (quirk fix 56,
+//! `docs/teksilo-port-quirk-fixes.md`).
+//!
 //! Changing a playlist's content (adding, importing, sending songs, removing)
 //! reloads only its rows (quirk fix 12): the content model applies the new
 //! rows, and the view-model rebuilds its own. When the songs of the playlist
@@ -57,7 +60,7 @@ use teksilo::core::window::TeksiloWindowId;
 use teksilo::data::ListModel;
 use teksilo::prelude::*;
 
-use super::rows::{RowItem, ScrollTarget, visible_rows};
+use super::rows::{KeyedSelection, RowItem, ScrollTarget, visible_rows};
 use crate::db::database::PlaylistSongRef;
 use crate::frontend::commands::playback::{self, EndOfTrackOutcome, PlaybackCursor, TrackChange};
 use crate::frontend::commands::playlist::{self, ExportReport, PlaylistSwitch, RenameOutcome};
@@ -469,22 +472,28 @@ impl PlaylistViewModel {
     }
 
     /// Applies the search and scrolls to the top (`PlaylistSearchChanged`,
-    /// `src/gui/app.rs:2746`). The selection is kept, as in Iced.
+    /// `src/gui/app.rs:2746`). The selection follows its rows: the selected
+    /// songs the search still shows stay selected under their new linear
+    /// indices, the others drop out, and the focus and the pivot follow
+    /// likewise (quirk fix 56; Iced keeps the old linear indices, which then
+    /// point at other rows).
     fn apply_search(&self, query: &str) {
-        let applied = self
+        let selection = self.inner.selection.get();
+        let carried = self
             .inner
             .services
             .session
             .with_cursor(|cursor| {
-                if cursor.search() != query {
-                    cursor.set_search(query);
-                    true
-                } else {
-                    false
+                if cursor.search() == query {
+                    return None;
                 }
+                let keyed = KeyedSelection::of(&selection, cursor.active_groups());
+                cursor.set_search(query);
+                Some(keyed.in_groups(cursor.active_groups()))
             })
-            .unwrap_or(false);
-        if applied {
+            .flatten();
+        if let Some(carried) = carried {
+            self.inner.selection.set_if_changed(carried);
             self.refresh_rows();
             self.inner.scroll.send(ScrollTarget::Top);
         }

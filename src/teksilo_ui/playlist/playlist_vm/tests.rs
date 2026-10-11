@@ -128,6 +128,38 @@ fn the_arrows_walk_the_search_result() {
 }
 
 #[test]
+fn the_selection_follows_its_songs_through_a_search() {
+    // Quirk fix 56: Iced keeps the linear indices, which a search moves onto
+    // other rows.
+    let env = restored();
+    let t = Instant::now();
+    let song13 = env.song_id(13);
+    env.vm.click(3, NONE, t);
+    env.vm.click(13, CTRL, t + Duration::from_secs(1));
+    env.vm.click(11, CTRL, t + Duration::from_secs(2));
+    env.vm.click(13, CTRL, t + Duration::from_secs(3));
+    env.vm.click(13, CTRL, t + Duration::from_secs(4));
+    assert_eq!(env.selected(), vec![3, 11, 13]);
+    // "2017" keeps "CD 02" only: its separator is 0, song 13 is 2; song 3 is
+    // hidden and drops out.
+    env.vm.search().set("2017".to_string());
+    assert_eq!(env.selected(), vec![0, 2]);
+    assert_eq!(env.song_id(2), song13);
+    let selection = env.vm.selection().get();
+    assert_eq!(selection.focused, Some(2));
+    assert_eq!(selection.pivot, Some(2));
+    // Back to the whole list: song 3 does not come back.
+    env.vm.search().set(String::new());
+    assert_eq!(env.selected(), vec![11, 13]);
+    assert_eq!(env.vm.selection().get().focused, Some(13));
+    // A focused row the search hides takes the focus with it.
+    env.vm.click(5, NONE, t + Duration::from_secs(5));
+    env.vm.search().set("2017".to_string());
+    assert!(env.selected().is_empty());
+    assert_eq!(env.vm.selection().get().focused, None);
+}
+
+#[test]
 fn select_all_takes_every_row() {
     let env = restored();
     env.vm.select_all();
