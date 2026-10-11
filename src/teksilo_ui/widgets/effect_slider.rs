@@ -6,9 +6,8 @@
 //! (`src/gui/widgets.rs:3139-4531`): a horizontal slider 18 px high that fills
 //! the row, with the coloured track on, and a 40 × 18 text field 10 px after
 //! it. Here the slider is the stock Teksilo `Slider` with the shared chrome
-//! ([`CustomSliderStyle`](super::eq_slider::body::CustomSliderStyle),
-//! [`SliderLook::EFFECT`]), and the field a `TextInputField` shown while
-//! editing.
+//! ([`CustomSliderStyle`], [`SliderLook::EFFECT`]), and the field a
+//! `TextInputField` that exists while editing.
 //!
 //! - **Slider**: as the equalizer slider (press-to-jump, drag, secondary
 //!   press resets, Left / Right step by the step, Up / Down inert on this
@@ -56,17 +55,17 @@ use super::eq_slider::{ChangeFn, PressHook, SliderPress, UserWrite, arrow_keys, 
 use crate::logic::stepper::{EDIT_BUFFER_MAX_LEN, accepts_input_char, strip_suffix};
 use crate::teksilo_ui::style;
 
-/// The height of the slider and of the field (`audio_center.rs:3141`, `3146`).
+/// The height of the slider and of the field (`audio_center.rs:3143`, `3147`).
 pub const HEIGHT: f32 = 18.0;
-/// The field's width (`audio_center.rs:3145`).
+/// The field's width (`audio_center.rs:3146`).
 pub const INPUT_WIDTH: f32 = 40.0;
 /// The space between the slider and the field (`widgets.rs:3237`).
 pub const INPUT_GAP: f32 = 10.0;
-/// The field's font size (`audio_center.rs:3153`).
+/// The field's font size (`audio_center.rs:3155`).
 pub const INPUT_FONT_SIZE: f32 = 11.0;
-/// The field's corner radius (`audio_center.rs:3152`).
+/// The field's corner radius (`audio_center.rs:3154`).
 pub const INPUT_RADIUS: f32 = 4.0;
-/// The field's border width (`audio_center.rs:3151`).
+/// The field's border width (`audio_center.rs:3153`).
 pub const INPUT_BORDER: f32 = 1.0;
 
 /// One effect parameter: slider and value field; see the module documentation.
@@ -96,7 +95,7 @@ impl EffectSlider {
     /// A parameter slider bound to `value` over `range`, reset to
     /// `default_value` by a secondary click, announced as `label`. The step
     /// defaults to 0.1 and the field shows one decimal, the Iced defaults
-    /// (`audio_center.rs:3066-3068`).
+    /// (`audio_center.rs:3066-3067`).
     pub fn new(
         value: Signal<f32>,
         range: RangeInclusive<f32>,
@@ -479,7 +478,7 @@ fn field_keys(
 
 /// The field's box: the background colour, and a 1 px border that is the
 /// background colour at rest and the accent while editing
-/// (`widgets.rs:4462-4487`, `audio_center.rs:3147-3150`).
+/// (`widgets.rs:4462-4487`, `audio_center.rs:3149-3153`).
 #[derive(Debug)]
 struct InputFrame {
     editing: bool,

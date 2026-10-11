@@ -190,6 +190,9 @@ impl Widget for VuMeter {
         self.spoken
             .bind_to(self_id, registry, BindingLevel::AccessibilityOnly);
 
+        let current = self.frame.get();
+        self.tall.set_if_changed(current.is_tall());
+        self.spoken.set_if_changed(current.spoken_levels());
         let (tall, spoken) = (self.tall.clone(), self.spoken.clone());
         ctx.effect(&self.frame, move |frame| {
             tall.set_if_changed(frame.is_tall());

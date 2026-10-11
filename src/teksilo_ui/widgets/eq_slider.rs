@@ -95,7 +95,7 @@ impl EqSlider {
     }
 
     /// The value a reset goes back to (default 0 dB, as every Iced band and
-    /// the preamp, `audio_center.rs:2925`, `2974`).
+    /// the preamp, `audio_center.rs:2935`, `2977`).
     pub fn default_value(mut self, value: f32) -> Self {
         self.default_value = value;
         self

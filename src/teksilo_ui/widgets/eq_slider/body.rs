@@ -12,7 +12,7 @@
 //!   inside the bounds, in an idle, a hover and a selected colour, each with
 //!   an optional inset border.
 //!
-//! [`CustomSliderStyle::thumb_diameter`] is 0: Iced maps a position to a value
+//! The style's `thumb_diameter` is 0: Iced maps a position to a value
 //! over the whole length (`widgets.rs:3807-3814`) and lets the handle overhang
 //! the end positions, and the stock slider maps over the length minus the
 //! thumb diameter. With 0 the two mappings agree.

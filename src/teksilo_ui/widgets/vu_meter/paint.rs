@@ -22,7 +22,7 @@
 //! the bar labels and the numeric readout are centred on the top edge of the
 //! box they are clipped to, and each scale label is centred 10 px left of its
 //! tick, in a clip box that starts there. Both are kept as Iced draws them
-//! (see [`super::chrome::IcedText`]).
+//! (see [`IcedText`]).
 
 use teksilo::canvas::{Point, Rect};
 use teksilo::tokens::Color;
