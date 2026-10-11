@@ -35,7 +35,7 @@ use teksilo::widgets::{
 
 use crate::teksilo_ui::icons;
 use crate::teksilo_ui::style::{self, source_colors};
-use crate::teksilo_ui::widgets::Pressable;
+use crate::teksilo_ui::widgets::{BrandLogo, Pressable};
 
 /// The strip's height (`library.rs:1386`).
 pub const HEIGHT: f32 = 40.0;
@@ -181,13 +181,7 @@ fn logo() -> FixedSize {
             VStack::new()
                 .spacing(0.0)
                 .alignment(HAlignment::Center)
-                .child(
-                    TextWidget::new(lit!("AuDoxiDY"))
-                        .style(style::logo(LOGO_SIZE))
-                        .color(TextRole::Primary)
-                        .single_line()
-                        .access_label(tr!(titlebar_logo())),
-                ),
+                .child(BrandLogo::new(LOGO_SIZE)),
         ),
     )
 }

@@ -48,6 +48,7 @@ use std::rc::Rc;
 use teksilo::prelude::{AsyncRuntimeHandle, Signal, spawn_blocking};
 use teksilo::widgets::ImageWidget;
 
+use crate::teksilo_ui::widgets::{CoverImage, SharedCover};
 use crate::utils::covers::{CoverCache, DecodedCover};
 
 /// The most covers kept.
@@ -439,6 +440,31 @@ pub fn gradient_cover(path: &str, edge: u32) -> DecodedCover {
     }
 }
 
+/// A decoded cover is what [`AlbumArt`](crate::teksilo_ui::widgets::AlbumArt)
+/// draws.
+impl CoverImage for DecodedCover {
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+}
+
+impl CoverStore {
+    /// [`CoverStore::request`], as the cover type
+    /// [`AlbumArt`](crate::teksilo_ui::widgets::AlbumArt) takes.
+    pub fn request_shared(&self, path: &str) -> Signal<Option<SharedCover>> {
+        self.request(path)
+            .map(|cover| cover.clone().map(|cover| cover as SharedCover))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -486,6 +512,23 @@ mod tests {
         run_until(runtime, TIMEOUT, || {
             store.in_flight() == 0 && store.inner.queue.borrow().is_empty()
         })
+    }
+
+    #[test]
+    fn a_shared_cover_carries_the_decoded_pixels() {
+        let covers = Covers::new("shared");
+        let runtime = AsyncRuntimeHandle::new();
+        let store = CoverStore::new(runtime.clone());
+        let shared = store.request_shared(&covers.path(0));
+        assert!(shared.get().is_none());
+        assert!(run_until(&runtime, TIMEOUT, || shared.get().is_some()));
+        let decoded = store.peek(&covers.path(0)).unwrap();
+        let shared = shared.get().unwrap();
+        assert_eq!(
+            (shared.width(), shared.height()),
+            (decoded.width, decoded.height)
+        );
+        assert_eq!(shared.rgba(), decoded.rgba.as_slice());
     }
 
     #[test]

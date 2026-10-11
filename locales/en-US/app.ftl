@@ -5,8 +5,6 @@
 app-window-title = Audoxidy
 
 ## Title bar
-# The logo is drawn as the stylised "AuDoxiDY"; this is its accessible name.
-titlebar-logo = Audoxidy
 titlebar-source-library = Library
 # The streaming pills are brand names, shown as is.
 titlebar-sources = Sources

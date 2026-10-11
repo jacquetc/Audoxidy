@@ -131,15 +131,26 @@ pub fn colors() -> ColorTokens {
 
 /// The Audoxidy theme: IntUI dark with the Audoxidy colours, and Inter as the
 /// UI face of every typography role.
+///
+/// The stock widgets the Iced UI restyles take the Audoxidy look theme-wide:
+/// checkbox, radio button, combo box, scroll bar and toggle
+/// ([`stock_styles`](super::widgets::stock_styles)), the menu popover
+/// ([`menu`](super::widgets::menu)), and the dialog, button and text input
+/// ([`dialog_frame`](super::widgets::dialog_frame)), which is also how the
+/// stock `InputDialog` and `MessageBox` get the Iced modal look.
 pub fn audoxidy_dark() -> Theme {
     let base = intui::dark();
     let typography = with_family(&base.typography, UI_FAMILY);
-    Theme {
+    let mut theme = Theme {
         colors: colors(),
         typography,
         ..base
     }
-    .with_id("audoxidy.dark")
+    .with_id("audoxidy.dark");
+    super::widgets::stock_styles::install(&mut theme.style_slots);
+    super::widgets::menu::install(&mut theme.style_slots);
+    super::widgets::dialog_frame::install(&mut theme.style_slots);
+    theme
 }
 
 /// `typography` with every proportional role set in `family` (the monospace
@@ -188,6 +199,25 @@ mod tests {
         assert_eq!(hex(theme.colors.text_secondary), hex(TEXT_SECONDARY));
         assert_eq!(hex(theme.colors.accent), hex(ACCENT));
         assert_eq!(theme.id.as_str(), "audoxidy.dark");
+    }
+
+    #[test]
+    fn the_theme_installs_the_audoxidy_looks_of_the_stock_widgets() {
+        let theme = audoxidy_dark();
+        let installed = theme.style_slots.installed();
+        for slot in [
+            "checkbox",
+            "radio",
+            "combo_box",
+            "scroll_bar",
+            "toggle",
+            "popover",
+            "dialog",
+            "button",
+            "text_input",
+        ] {
+            assert!(installed.contains(&slot), "{slot} in {installed:?}");
+        }
     }
 
     #[test]

@@ -7,8 +7,6 @@
 app-window-title = Audoxidy
 
 ## Title bar
-# Not in the Iced UI: accessible name of the logo.
-titlebar-logo = Audoxidy
 titlebar-source-library = Biblioteca
 # Not in the Iced UI: accessible name of the source pill group.
 titlebar-sources = Fuentes
