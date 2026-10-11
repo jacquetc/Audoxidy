@@ -4,15 +4,21 @@
 //! Port of `src/gui/library.rs` and of the library rows of
 //! `src/gui/widgets.rs`.
 
+pub mod detailed_list;
 pub mod grid;
 pub mod grid_detail;
 pub mod header_rows;
 pub mod hshift;
 pub mod library_vm;
+pub mod list_rows;
+pub mod marquee;
+pub mod simple_list;
 pub mod song_row;
+pub mod sticky_header;
 pub mod structure;
 #[cfg(test)]
 pub mod test_util;
+pub mod thumbnail_list;
 
 pub use library_vm::LibraryViewModel;
 pub use structure::ListStructure;
