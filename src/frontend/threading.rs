@@ -218,7 +218,12 @@ pub(crate) mod test_support {
     use std::time::Duration;
 
     /// The default bound for a thread-based test.
-    pub(crate) const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+    ///
+    /// It catches a deadlock, not a slow machine: a test waits for this long
+    /// only when something is stuck. 60 s rather than 10 s, because the whole
+    /// suite runs many contexts' threads at once and, on a loaded machine
+    /// (parallel builds), a correct 2 s test could take more than 10 s.
+    pub(crate) const TEST_TIMEOUT: Duration = Duration::from_secs(60);
 
     /// Runs `f` on a fresh thread and returns its value, or panics with
     /// "timed out" after `timeout`. A panic inside `f` is re-raised here, so
