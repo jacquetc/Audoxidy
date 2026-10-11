@@ -6,7 +6,7 @@
 //! it (`src/gui/app.rs`):
 //!
 //! - the open state, the tab and the position are the shared
-//!   [`AudioCenterLink`](crate::teksilo_ui::app::services::AudioCenterLink):
+//!   [`AudioCenterLink`]:
 //!   the player menu toggles it with Iced's rule
 //!   (`ToggleAudioCenter`, `app.rs:4388`), and this view-model selects tabs
 //!   (`TabSelected`) and closes (`Close`);

@@ -32,7 +32,7 @@
 //!   it runs.
 //!
 //! The tab polls the sound server every 3 s while it is on screen: a
-//! [`Poller`] inside it holds a throttled frame-tick subscription only while
+//! `Poller` inside it holds a throttled frame-tick subscription only while
 //! the tab is shown, and is rebuilt when that changes.
 
 use std::time::Instant;

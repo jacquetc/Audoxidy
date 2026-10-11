@@ -698,3 +698,65 @@ fn inside_the_panel_polling_stops_when_the_panel_closes_or_changes_tab() {
     assert!(!polling(&mut tree), "closed again");
     assert!(services.ctx.shutdown());
 }
+
+#[test]
+fn a_pick_list_opens_under_its_box() {
+    // Quirk fix 7 (Audio Center part): the list is anchored to the box that
+    // opened it.
+    with_shipped_messages("en-US", || {
+        let mut f = fixture();
+        f.show();
+        let rate = f.named("Sample rate");
+        let box_bounds = f.tree.bounds(rate);
+        key_down(&mut f.tree, rate, teksilo::core::Key::Enter);
+        let overlays = f.tree.active_overlays();
+        assert_eq!(overlays.len(), 1, "the list opens");
+        let list = f
+            .tree
+            .overlay_content_bounds(overlays[0])
+            .expect("the list");
+        assert!(
+            (list.x - box_bounds.x).abs() < 1.0,
+            "{list:?} under {box_bounds:?}"
+        );
+        assert!(list.y >= box_bounds.y + box_bounds.height - 1.0);
+        assert!(f.services.ctx.shutdown());
+    });
+}
+
+#[test]
+fn escape_closes_an_open_pick_list_before_it_closes_the_panel() {
+    // Quirk fix 4 (Audio Center part): the topmost overlay closes first.
+    use crate::teksilo_ui::audio_center::shell::{AudioCenterPanel, AudioCenterViewModel};
+    with_shipped_messages("en-US", || {
+        let (services, _fakes) = services_with_fakes();
+        let shell = AudioCenterViewModel::new(&services);
+        let config = ConfigViewModel::new(&services);
+        let (mut tree, _toasts) = tree_for(&services);
+        let spare = || -> Box<dyn Widget> { Box::new(Spacer::new()) };
+        let panel = AudioCenterPanel::new(
+            shell.clone(),
+            Box::new(ConfigTab::new(config)),
+            spare(),
+            spare(),
+            spare(),
+        );
+        tree.add(ZStack::new().alignment(Alignment::TOP_LEADING).child(panel));
+        layout(&mut tree);
+        services
+            .links
+            .audio_center
+            .toggle(Some(audio_center_tab::CONFIG));
+        layout(&mut tree);
+        let root = tree.find_by_role(Role::Dialog).expect("the panel");
+        let rate = find_by_name(&mut tree, root, "Sample rate")[0];
+        key_down(&mut tree, rate, teksilo::core::Key::Enter);
+        assert_eq!(tree.active_overlays().len(), 1, "the list is open");
+        key_down(&mut tree, rate, teksilo::core::Key::Escape);
+        assert!(tree.active_overlays().is_empty(), "Escape closed the list");
+        assert!(shell.open().get(), "and left the panel open");
+        key_down(&mut tree, rate, teksilo::core::Key::Escape);
+        assert!(!shell.open().get(), "the next Escape closes the panel");
+        assert!(services.ctx.shutdown());
+    });
+}

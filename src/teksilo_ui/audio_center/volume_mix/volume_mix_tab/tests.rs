@@ -581,3 +581,17 @@ fn the_values_are_read_again_when_the_tab_is_shown() {
         assert!(f.services.ctx.shutdown());
     });
 }
+
+#[test]
+fn a_tap_on_the_13_pixel_box_toggles_it() {
+    with_shipped_messages("en-US", || {
+        let mut f = fixture();
+        let master = f.of_role(Role::CheckBox)[0];
+        let bounds = f.tree.bounds(master);
+        tap_at(&mut f.tree, centre(bounds));
+        assert!(f.vm.is_on(MixToggle::Fades));
+        tap_at(&mut f.tree, centre(bounds));
+        assert!(!f.vm.is_on(MixToggle::Fades));
+        assert!(f.services.ctx.shutdown());
+    });
+}
