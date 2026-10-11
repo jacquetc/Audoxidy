@@ -370,7 +370,7 @@ impl LibraryList {
                     scroll_y.set(offset);
                 }
             }
-            ScrollRequest::GridTile(_) | ScrollRequest::DetailRow(_) => {}
+            ScrollRequest::GridTile(_) | ScrollRequest::GridSong { .. } => {}
         }
     }
 }

@@ -9,9 +9,8 @@
 //!   36; any wheel over it scrolls sideways, as over Iced's horizontal-only
 //!   header);
 //! - the body, 5 px in from the leading edge (`library.rs:1945-1954`): the
-//!   grid ([`LibraryGrid`]) over the open album's detail panel
-//!   ([`GridDetail`]) in a vertical `Splitter`, or one of the three lists
-//!   ([`LibraryList`]);
+//!   grid ([`LibraryGrid`], whose open album shows its songs under its row
+//!   of cards), or one of the three lists ([`LibraryList`]);
 //! - the bottom bar ([`BottomBar`]).
 //!
 //! Keys (quirk fix 2): the panel takes Enter (play the selection: append it
@@ -28,14 +27,11 @@ use teksilo::core::binding::BindingLevel;
 use teksilo::core::event::{ScrollDelta, WidgetEvent};
 use teksilo::core::{Key, Modifiers};
 use teksilo::prelude::*;
-use teksilo::tokens::{HAlignment, Orientation};
-use teksilo::widgets::{
-    Expand, FixedSize, Padding, PaneDescriptor, Panel, Splitter, SplitterModel, VStack,
-};
+use teksilo::tokens::HAlignment;
+use teksilo::widgets::{Expand, FixedSize, Padding, Panel, VStack};
 
 use super::bottom_bar::BottomBar;
 use super::grid::LibraryGrid;
-use super::grid_detail::GridDetail;
 use super::hshift::HShift;
 use super::library_vm::{LibraryViewModel, content_width};
 use super::list_rows::LibraryList;
@@ -46,12 +42,9 @@ use crate::teksilo_ui::widgets::ColumnHeader;
 use crate::teksilo_ui::widgets::column_header::{self, SortArrows, columns_for, leading_padding};
 use crate::teksilo_ui::widgets::stock_styles::SCROLL_LINE_HEIGHT;
 
-/// The space before the body (`library.rs:1951`).
+/// The space before the body (`library.rs:1951`; the grid has it as its
+/// leading inset).
 pub const CONTENT_LEADING: f32 = 5.0;
-/// The detail panel's first height.
-pub const DETAIL_HEIGHT: f32 = 300.0;
-/// The smallest pane of the grid splitter.
-pub const MIN_PANE: f32 = 96.0;
 
 /// The direction of an arrow key.
 pub fn nav_dir(key: &Key) -> Option<LibraryNavDir> {
@@ -191,43 +184,13 @@ impl std::fmt::Debug for ModeBody {
     }
 }
 
-/// The grid over the detail panel, in a vertical splitter whose second pane
-/// shows only while an album is open.
-fn grid_body(vm: &LibraryViewModel, ctx: &mut BuildContext) -> WidgetId {
-    let open = vm.expanded_album().get().is_some();
-    let model = SplitterModel::from_panes(
-        vec![
-            PaneDescriptor::new().stretch(1.0).min_size(MIN_PANE),
-            PaneDescriptor::new()
-                .size(DETAIL_HEIGHT)
-                .min_size(MIN_PANE)
-                .stretch(0.0)
-                .visible(open),
-        ],
-        Orientation::Vertical,
-    );
-    {
-        let model = model.clone();
-        ctx.effect(&vm.expanded_album(), move |album| {
-            model.set_pane_visible(1, album.is_some());
-        });
-    }
-    ctx.add(
-        Splitter::new(model)
-            .pane(LibraryGrid::new(vm.clone()))
-            .pane(GridDetail::new(vm.clone()))
-            .pane_label(0, tr!(library_grid()))
-            .pane_label(1, tr!(library_album_songs())),
-    )
-}
-
 impl Widget for ModeBody {
     fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
         let vm = self.vm.clone();
         vm.view_mode()
             .bind_to(ctx.self_id(), ctx.binding_registry(), BindingLevel::Rebuild);
         let root = match vm.view_mode().get() {
-            LibraryViewMode::Grid => grid_body(&vm, ctx),
+            LibraryViewMode::Grid => ctx.add(LibraryGrid::new(vm)),
             mode => ctx.add(
                 Padding::new(0.0, 0.0, 0.0, CONTENT_LEADING).child(LibraryList::new(vm, mode)),
             ),

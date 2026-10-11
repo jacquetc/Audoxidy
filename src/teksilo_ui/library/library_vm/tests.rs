@@ -953,9 +953,8 @@ fn a_reveal_in_the_grid_opens_the_album_and_selects_the_song() {
     assert_eq!(vm.grid_selection().count(), 0);
     assert_eq!(
         vm.scroll_request().get().map(|r| r.1),
-        Some(ScrollRequest::DetailRow(1))
+        Some(ScrollRequest::GridSong { tile, row: 1 })
     );
-    let _ = tile;
     assert!(services.ctx.shutdown());
 }
 

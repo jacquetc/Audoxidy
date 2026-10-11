@@ -19,9 +19,10 @@
 //! - the collapsed artists and albums of the list modes, and the
 //!   [`ListStructure`] they give;
 //! - the selection: [`LibrarySelection`] for the rows of the list modes and the
-//!   songs of the grid's detail panel, and a keyed selection of album ids for
+//!   songs of the grid's open album, and a keyed selection of album ids for
 //!   the grid tiles, which `GridView` writes and this view-model observes;
-//! - the grid's expanded album and its songs;
+//! - the grid's expanded album and its songs, which the grid shows in its
+//!   detail band, under the album's row of cards, as Iced does;
 //! - the figures of the status bar, by priority: the selection, then the
 //!   songs the search and the filters let through, then the library totals
 //!   (before anything is loaded).
@@ -200,16 +201,19 @@ pub fn album_songs_in_memory(
 
 /// The songs of the expanded album that the grid shows under a search:
 /// those `song_matches_search` keeps for the trimmed search text
-/// (`src/gui/library.rs:481-489`, `:547-551`). The Iced UI passes the text as
-/// typed, not lowercased, and so does this.
+/// (`src/gui/library.rs:481-489`, `:547-551`), lowercased (quirk fix 53).
+/// `song_matches_search` compares lowercased tags with a lowercase query;
+/// the Iced UI passes the text as typed, so a capital letter in the search
+/// hides every song of the open album while the rest of the search, which
+/// the database runs, ignores case.
 pub fn visible_album_songs(songs: &[Arc<SongData>], search: &str) -> Vec<Arc<SongData>> {
-    let query = search.trim();
+    let query = search.trim().to_lowercase();
     if query.is_empty() {
         return songs.to_vec();
     }
     songs
         .iter()
-        .filter(|s| song_matches_search(s, query))
+        .filter(|s| song_matches_search(s, &query))
         .cloned()
         .collect()
 }
@@ -234,8 +238,14 @@ pub enum ScrollRequest {
     },
     /// Reveal the grid tile at this index.
     GridTile(usize),
-    /// Reveal the row of the grid's detail panel at this index.
-    DetailRow(usize),
+    /// Put the song row `row` of the band under the tile `tile` at the top
+    /// (the grid knows where the band is).
+    GridSong {
+        /// The open tile.
+        tile: usize,
+        /// The row among the band's songs.
+        row: usize,
+    },
 }
 
 struct Inner {
@@ -423,7 +433,7 @@ impl LibraryViewModel {
         self.inner.structure.clone()
     }
 
-    /// The selection of the list rows and of the grid detail's songs.
+    /// The selection of the list rows and of the grid band's songs.
     pub fn selection(&self) -> Signal<LibrarySelection> {
         self.inner.selection.clone()
     }
@@ -438,7 +448,7 @@ impl LibraryViewModel {
         self.inner.expanded_album.clone()
     }
 
-    /// Every song of the expanded album, sorted (the detail panel shows those
+    /// Every song of the expanded album, sorted (the grid's band shows those
     /// [`visible_album_songs`] keeps).
     pub fn expanded_songs(&self) -> Signal<Rc<Vec<Arc<SongData>>>> {
         self.inner.expanded_songs.clone()
@@ -626,7 +636,7 @@ impl LibraryViewModel {
         self.inner.selection.set_if_changed(selection);
     }
 
-    /// A click on a row of the list modes or of the grid's detail panel
+    /// A click on a row of the list modes or of the grid's band
     /// (`SelectArtistHeader`, `SelectAlbum`, `SelectSong`). A second click on
     /// the same artist or album header within [`DOUBLE_CLICK`] toggles it
     /// instead.
@@ -661,7 +671,7 @@ impl LibraryViewModel {
         let grid = inner.view_mode.get() == LibraryViewMode::Grid;
         let modifiers = select_modifiers(modifiers);
         if grid && !modifiers.toggle && !modifiers.range {
-            // A plain click on a detail song replaces the whole selection.
+            // A plain click on a band song replaces the whole selection.
             self.write_grid_selection(|keyed| keyed.clear());
         }
         self.update_selection(|selection, structure| {
@@ -680,7 +690,7 @@ impl LibraryViewModel {
         });
     }
 
-    /// The detail panel's songs as items (the range order of a Shift click).
+    /// The band's songs as items (the range order of a Shift click).
     fn detail_items(&self) -> Vec<(LibraryListItem, ContentRect)> {
         let songs = visible_album_songs(&self.inner.expanded_songs.get(), &self.inner.search.get());
         songs
@@ -751,19 +761,15 @@ impl LibraryViewModel {
 
     /// The album toggle (`ToggleAlbumExpansion`, `src/gui/app.rs:2891`). In
     /// the list modes it collapses or expands the album, which becomes the
-    /// selection; in Grid mode it opens or closes the album in the detail
-    /// panel and selects its tile.
+    /// selection; in Grid mode it opens or closes the album under its row of
+    /// cards ([`show_album`](Self::show_album)).
     pub fn toggle_album(&self, id: &str) {
         if self.inner.view_mode.get() == LibraryViewMode::Grid {
             if self.inner.expanded_album.get().as_deref() == Some(id) {
-                self.close_detail();
+                self.show_album(None);
             } else {
-                self.open_detail(id);
+                self.show_album(Some(id));
             }
-            self.select_tile(id);
-            self.inner
-                .selection
-                .set_if_changed(LibrarySelection::default());
             return;
         }
         {
@@ -907,7 +913,7 @@ impl LibraryViewModel {
     /// The grid selection changed. `GridView` does not say which modifiers
     /// the gesture had, so it is read from the change: one tile added to a
     /// selection, or one removed from a selection of three or more, is a
-    /// Ctrl-click toggle and keeps the detail panel's songs selected, as Iced
+    /// Ctrl-click toggle and keeps the band's songs selected, as Iced
     /// does; anything else (a plain click, a marquee, a click that leaves one
     /// tile) replaces the selection and drops them.
     fn on_grid_selection(&self, keys: &HashSet<String>) {
@@ -933,15 +939,6 @@ impl LibraryViewModel {
         self.refresh_stats();
     }
 
-    /// A click on the detail panel's album header: the open album's tile
-    /// becomes the selection.
-    pub fn select_open_album(&self, id: &str) {
-        self.select_tile(id);
-        self.inner
-            .selection
-            .set_if_changed(LibrarySelection::default());
-    }
-
     /// The album the last grid gesture was on (Iced's `selected_album`).
     pub fn grid_anchor(&self) -> Option<String> {
         self.inner.grid_anchor.borrow().clone()
@@ -949,8 +946,8 @@ impl LibraryViewModel {
 
     /// The grid's keys on top of `GridView`'s own navigation
     /// (`LibraryKeyNav` in Grid mode, `src/gui/app.rs:3170-3201`): Alt+↑
-    /// closes the selected album's detail and Alt+↓ opens it; ↑ alone on the
-    /// open album closes it. Returns whether the key was used.
+    /// closes the selected album and Alt+↓ opens it; ↑ alone on the open
+    /// album closes it. Returns whether the key was used.
     pub fn grid_key(&self, key: &Key, modifiers: Modifiers) -> bool {
         let up = matches!(key, Key::ArrowUp);
         let down = matches!(key, Key::ArrowDown);
@@ -982,7 +979,32 @@ impl LibraryViewModel {
         false
     }
 
-    /// Opens the detail panel on `id`.
+    /// Opens the album `id` in the grid (`Some`) or closes the open one
+    /// (`None`), the grid arm of `ToggleAlbumExpansion`
+    /// (`src/gui/app.rs:2891-2960`): the album toggled becomes the tile
+    /// selection and the songs picked before are dropped. The chevron, the
+    /// grid keys and the grid's own gestures on its band (a double click on a
+    /// card, Space on the open card, a screen reader's Expand and Collapse)
+    /// all come here. Nothing happens when `id` is already the open album.
+    pub fn show_album(&self, id: Option<&str>) {
+        let current = self.inner.expanded_album.get();
+        if current.as_deref() == id {
+            return;
+        }
+        let toggled = id.map(str::to_string).or(current);
+        match id {
+            Some(id) => self.open_detail(id),
+            None => self.close_detail(),
+        }
+        if let Some(toggled) = toggled {
+            self.select_tile(&toggled);
+        }
+        self.inner
+            .selection
+            .set_if_changed(LibrarySelection::default());
+    }
+
+    /// Opens the grid's band on `id`.
     fn open_detail(&self, id: &str) {
         let inner = &self.inner;
         inner.expanded_album.set(Some(id.to_string()));
@@ -990,7 +1012,7 @@ impl LibraryViewModel {
         self.load_expanded(id);
     }
 
-    /// Closes the detail panel.
+    /// Closes the grid's band.
     fn close_detail(&self) {
         let inner = &self.inner;
         inner.detail_latest.invalidate();
@@ -1287,8 +1309,8 @@ impl LibraryViewModel {
         }
     }
 
-    /// The Grid part of the reveal: opens the song's album in the detail
-    /// panel and selects the song. Iced finds the album by the song's
+    /// The Grid part of the reveal: opens the song's album under its row of
+    /// cards, selects the song and puts its row at the top. Iced finds the album by the song's
     /// `artist` tag (`src/gui/app.rs:6126`), and so does this.
     fn reveal_in_grid(&self, song: &Arc<SongData>) {
         let inner = &self.inner;
@@ -1314,10 +1336,10 @@ impl LibraryViewModel {
         let mut selection = inner.selection.get();
         selection.select_only(item);
         inner.selection.set_if_changed(selection);
-        inner.scroll.send(ScrollRequest::GridTile(tile));
         let visible = visible_album_songs(&inner.expanded_songs.get(), &inner.search.get());
-        if let Some(row) = visible.iter().position(|s| s.id == song.id) {
-            inner.scroll.send(ScrollRequest::DetailRow(row));
+        match visible.iter().position(|s| s.id == song.id) {
+            Some(row) => inner.scroll.send(ScrollRequest::GridSong { tile, row }),
+            None => inner.scroll.send(ScrollRequest::GridTile(tile)),
         }
     }
 

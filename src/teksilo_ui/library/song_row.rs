@@ -1,4 +1,4 @@
-//! [`SongRow`]: a song of the library lists and of the grid's detail panel.
+//! [`SongRow`]: a song of the library lists and of the grid's detail band.
 //!
 //! Port of `universal_song_row_widget` (`src/gui/widgets.rs:2392-2523`) and
 //! of its two presets, `library_song_row_widget` (32 px, no cover) and

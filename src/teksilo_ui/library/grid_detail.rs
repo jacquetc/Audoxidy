@@ -1,215 +1,474 @@
-//! [`GridDetail`]: the songs of the grid's open album, in a panel docked under
-//! the grid (the plan's decision for the Grid mode: a vertical `Splitter`
-//! instead of Iced's inline expansion).
+//! [`GridDetail`]: the songs of the grid's open album, in the grid's detail
+//! band, under the album's row of cards.
 //!
-//! The Iced grid opens an album inline, under its row of cards
-//! (`LibraryGridElement::ExpandedSongs`, `src/gui/library.rs:1653-1719`): the
-//! album's songs as 32 px song rows with the Simple list's columns, 5 px in
-//! from the content's edge and 10 px from its end, on the background colour.
-//! Here they sit in the detail panel, under an album header
-//! ([`HeaderRow::album`]: the album's name, its songs and length, the chevron
-//! that closes it), in a `ListView` of [`SongRow`]s that share the column
-//! header's horizontal offset (quirk fix 36).
+//! Port of the Iced inline expansion (`LibraryGridElement::ExpandedSongs`,
+//! `src/gui/library.rs:1653-1719`), shown by `GridView::detail_row`:
 //!
-//! The rows are the album's songs that the search text keeps
-//! ([`visible_album_songs`], `library.rs:547-551`). A click selects a song
-//! (Ctrl toggles, Shift extends), as `SelectSong` does in Grid mode.
+//! - the block is a container on the background colour, padded 0 px on top,
+//!   10 px after, 5 px under and 5 px before (`library.rs:1708-1716`; with the
+//!   content's own 5 px, the grid's leading inset, the rows start 10 px in
+//!   from the panel's edge), around a column padded 32 px above and below
+//!   (`library.rs:1659`) of 32 px song rows with the Grid columns
+//!   (`library.rs:1673-1700`). Iced draws no header in the block, and neither
+//!   does this; the column header above the grid names the columns;
+//! - the band is therefore `32 + 32 n + 32 + 5` px tall for `n` songs. With
+//!   no song to show (still loading, or none the search keeps) Iced draws no
+//!   block (`library.rs:560-569`), and the band takes no space;
+//! - Iced realizes only the songs near the viewport, half a viewport above
+//!   and below it (a quarter in low-resource mode), at least 100 px
+//!   (`library.rs:507-517`, `:533-571`), with empty space for the others. The
+//!   band does the same: a `Repeater` over the window of rows, between two
+//!   spacers, reconciled by song id as the grid scrolls, so a scroll step
+//!   builds only the rows that enter the window;
+//! - the rows scroll sideways with the column header, by the shared offset
+//!   (quirk fix 36), and a sideways wheel over them moves it;
+//! - a click selects a song (Ctrl toggles, Shift extends), as `SelectSong`
+//!   does in Grid mode.
+//!
+//! The rows are the album's songs the search keeps, matched without regard
+//! to case like the rest of the search (quirk fix 53,
+//! [`visible_album_songs`]).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use teksilo::core::Modifiers;
+use teksilo::core::accesskit::Role;
 use teksilo::core::binding::BindingLevel;
+use teksilo::core::event::{ScrollDelta, WidgetEvent};
+use teksilo::core::widget::WidgetPlacement;
 use teksilo::data::ListModel;
 use teksilo::prelude::*;
 use teksilo::tokens::HAlignment;
-use teksilo::widgets::{ListView, Padding, Panel, ScrollBarMode, VStack};
+use teksilo::widgets::{FixedSize, GridSizing, Padding, Panel, Repeater, VStack};
 
-use super::header_rows::HeaderRow;
+use super::grid;
 use super::hshift::HShift;
-use super::library_vm::{LibraryViewModel, ScrollRequest, visible_album_songs};
+use super::library_vm::{LibraryViewModel, visible_album_songs};
 use super::song_row::{ROW_HEIGHT, SongRow};
 use crate::db::database::SongData;
-use crate::logic::library_geometry::LibraryViewMode;
+use crate::logic::library_geometry::{LibraryViewMode, scroll_offset_to_reveal};
 use crate::logic::library_selection::LibraryListItem;
 use crate::teksilo_ui::widgets::column_header::columns_for;
+use crate::teksilo_ui::widgets::stock_styles::SCROLL_LINE_HEIGHT;
 
-/// The space before the songs (`library.rs:1713`, plus the content's own
-/// 5 px, `library.rs:1951`).
-pub const LEADING: f32 = 10.0;
+/// The space before the songs, inside the band (`library.rs:1713`).
+pub const LEADING: f32 = 5.0;
 /// The space after the songs (`library.rs:1711`).
 pub const TRAILING: f32 = 10.0;
-/// The space under the songs (`library.rs:1712`).
-pub const BOTTOM: f32 = 5.0;
+/// The space above the songs (`library.rs:1659`).
+pub const PADDING_TOP: f32 = 32.0;
+/// The space under the songs: the column's 32 px (`library.rs:1659`) and the
+/// container's 5 px (`library.rs:1712`).
+pub const PADDING_BOTTOM: f32 = 32.0 + 5.0;
+/// The fewest pixels realized above and below the viewport
+/// (`library.rs:513`).
+pub const MIN_MARGIN: f32 = 100.0;
 
-/// The detail panel; see the module documentation.
-pub struct GridDetail {
+/// The height of a band showing `count` songs: none for no song.
+pub fn band_height(count: usize) -> f32 {
+    if count == 0 {
+        0.0
+    } else {
+        PADDING_TOP + count as f32 * ROW_HEIGHT + PADDING_BOTTOM
+    }
+}
+
+/// The rows `start..end` of `count` rows starting at `first` (content space)
+/// that Iced renders for the content span `low..high`: those with
+/// `y + 32 >= low` and `y <= high` (`library.rs:544-551`).
+pub fn rows_in_span(first: f32, count: usize, low: f32, high: f32) -> (usize, usize) {
+    let clamp = |value: f32| {
+        if value.is_finite() && value > 0.0 {
+            // Saturating float-to-int cast; clamped to the rows.
+            (value as usize).min(count)
+        } else {
+            0
+        }
+    };
+    let start = clamp(((low - first) / ROW_HEIGHT - 1.0).ceil());
+    let end = clamp(((high - first) / ROW_HEIGHT).floor() + 1.0);
+    (start, end.max(start))
+}
+
+/// A realized row's song. Two are equal when they are the same song value,
+/// so a window that moves keeps the rows it still holds.
+#[derive(Debug, Clone)]
+pub struct BandSong(pub Arc<SongData>);
+
+impl PartialEq for BandSong {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// Where the band sits in the grid, for the window of rows it realizes.
+#[derive(Clone)]
+pub struct BandPlacement {
+    /// The grid's vertical scroll offset.
+    pub scroll_y: Signal<f32>,
+    /// The height of the grid's viewport.
+    pub viewport: Signal<f32>,
+    /// The grid's sizing (its column count).
+    pub sizing: Signal<GridSizing>,
+    /// The tile whose band is open.
+    pub expanded: Signal<Option<usize>>,
+    /// Whether the margin is a quarter of the viewport instead of a half
+    /// (low-resource mode, `library.rs:508-512`).
+    pub low_resource: bool,
+    /// The tile whose band has been laid out with its songs, if any.
+    pub ready: Rc<Cell<Option<usize>>>,
+    /// A song row to put at the top once the band of its tile is laid out:
+    /// `(tile, row)`.
+    pub pending_reveal: Rc<Cell<Option<(usize, usize)>>>,
+}
+
+impl std::fmt::Debug for BandPlacement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BandPlacement")
+            .field("scroll_y", &self.scroll_y.get())
+            .field("expanded", &self.expanded.get())
+            .finish_non_exhaustive()
+    }
+}
+
+impl BandPlacement {
+    /// The content-space y of the band's first song row: under the open
+    /// tile's row of 252 px cards (rows above it have no band), and the
+    /// band's 32 px of padding.
+    pub fn first_row_y(&self) -> Option<f32> {
+        let tile = self.expanded.get()?;
+        let columns = match self.sizing.get() {
+            GridSizing::FixedColumnCount { count, .. } => count.max(1),
+            _ => 1,
+        };
+        Some((tile / columns + 1) as f32 * grid::ROW_HEIGHT + PADDING_TOP)
+    }
+
+    /// Puts the song row `row` of the open band at the top, as Iced's reveal
+    /// does (`get_scroll_task(true)`, `src/gui/app.rs:3319`; songs in Grid
+    /// mode take no sticky-header margin).
+    pub fn reveal_row(&self, row: usize) {
+        let Some(first) = self.first_row_y() else {
+            return;
+        };
+        if let Some(offset) = scroll_offset_to_reveal(
+            first + row as f32 * ROW_HEIGHT,
+            ROW_HEIGHT,
+            None,
+            LibraryViewMode::Grid,
+            true,
+            None,
+        ) {
+            self.scroll_y.set(offset);
+        }
+    }
+
+    /// Reveals the song row `row` of the band under `tile`: now when that
+    /// band is laid out, else once it is. Revealing it before would let the
+    /// grid's scroll anchoring move the view by the height of a band that
+    /// opens above it.
+    pub fn request_reveal(&self, tile: usize, row: usize) {
+        if self.ready.get() == Some(tile) && self.expanded.get() == Some(tile) {
+            self.reveal_row(row);
+        } else {
+            self.pending_reveal.set(Some((tile, row)));
+        }
+    }
+
+    /// The band of the open tile was laid out showing `count` songs.
+    fn laid_out(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let tile = self.expanded.get();
+        self.ready.set(tile);
+        if let Some((wanted, row)) = self.pending_reveal.get()
+            && Some(wanted) == tile
+        {
+            self.pending_reveal.set(None);
+            self.reveal_row(row);
+        }
+    }
+
+    /// The rows of `count` to realize now.
+    fn window(&self, count: usize) -> (usize, usize) {
+        let Some(first) = self.first_row_y() else {
+            return (0, count);
+        };
+        let viewport = self.viewport.get();
+        let ratio = if self.low_resource { 0.25 } else { 0.5 };
+        let margin = (viewport * ratio).max(MIN_MARGIN);
+        let scroll = self.scroll_y.get();
+        rows_in_span(first, count, scroll - margin, scroll + viewport + margin)
+    }
+}
+
+/// The band's state, shared with its effects.
+struct BandState {
     vm: LibraryViewModel,
-    rows: ListModel<Arc<SongData>>,
+    placement: Option<BandPlacement>,
+    /// The songs the band shows (the search's), all of them.
+    songs: RefCell<Vec<Arc<SongData>>>,
+    count: Signal<usize>,
+    /// The realized rows: `songs[range]`.
+    window: ListModel<BandSong>,
+    range: Cell<(usize, usize)>,
+    top_space: Signal<f32>,
+    bottom_space: Signal<f32>,
+}
+
+impl BandState {
+    /// Re-reads the songs to show; the window follows.
+    fn refresh_songs(&self) {
+        let visible = visible_album_songs(&self.vm.expanded_songs().get(), &self.vm.search().get());
+        let changed = {
+            let songs = self.songs.borrow();
+            songs.len() != visible.len()
+                || songs.iter().zip(&visible).any(|(a, b)| !Arc::ptr_eq(a, b))
+        };
+        if !changed {
+            return;
+        }
+        *self.songs.borrow_mut() = visible;
+        self.update_window(true);
+    }
+
+    /// Moves the window of realized rows; `songs_changed` rebuilds it.
+    fn update_window(&self, songs_changed: bool) {
+        let songs = self.songs.borrow();
+        let count = songs.len();
+        let (start, end) = match &self.placement {
+            Some(placement) => placement.window(count),
+            None => (0, count),
+        };
+        if !songs_changed && self.range.get() == (start, end) {
+            return;
+        }
+        self.range.set((start, end));
+        let rows: Vec<BandSong> = songs[start..end].iter().cloned().map(BandSong).collect();
+        drop(songs);
+        if songs_changed {
+            self.window.replace_all(rows);
+        } else {
+            self.window.reconcile_by_key(rows, |song| song.0.id);
+        }
+        self.top_space.set_if_changed(start as f32 * ROW_HEIGHT);
+        self.bottom_space
+            .set_if_changed((count - end) as f32 * ROW_HEIGHT);
+        self.count.set_if_changed(count);
+    }
+}
+
+/// An effect that moves `state`'s window of rows.
+fn follow_window<T>(state: &Rc<BandState>) -> impl Fn(&T) + 'static {
+    let state = state.clone();
+    move |_| state.update_window(false)
+}
+
+/// The detail band; see the module documentation.
+pub struct GridDetail {
+    state: Rc<BandState>,
+    focus: Rc<Cell<Option<WidgetId>>>,
+    width: Rc<Cell<f32>>,
     root: Option<WidgetId>,
 }
 
 impl std::fmt::Debug for GridDetail {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GridDetail")
-            .field("rows", &self.rows.len())
+            .field("songs", &self.state.songs.borrow().len())
+            .field("window", &self.state.range.get())
             .finish_non_exhaustive()
     }
 }
 
 impl GridDetail {
-    /// The detail panel of `vm`'s open album.
+    /// The band of `vm`'s open album, every row realized.
     pub fn new(vm: LibraryViewModel) -> Self {
-        Self {
+        let state = Rc::new(BandState {
             vm,
-            rows: ListModel::new(),
+            placement: None,
+            songs: RefCell::new(Vec::new()),
+            count: Signal::new(0),
+            window: ListModel::new(),
+            range: Cell::new((0, 0)),
+            top_space: Signal::new(0.0),
+            bottom_space: Signal::new(0.0),
+        });
+        Self {
+            state,
+            focus: Rc::new(Cell::new(None)),
+            width: Rc::new(Cell::new(0.0)),
             root: None,
         }
     }
 
-    /// The rows the panel lists (its songs under the search).
-    pub fn rows(&self) -> ListModel<Arc<SongData>> {
-        self.rows.clone()
+    /// The band inside a grid placed as `placement` says: only the rows near
+    /// the viewport are realized.
+    pub fn placed(self, placement: BandPlacement) -> Self {
+        let state = Rc::new(BandState {
+            vm: self.state.vm.clone(),
+            placement: Some(placement),
+            songs: RefCell::new(Vec::new()),
+            count: Signal::new(0),
+            window: ListModel::new(),
+            range: Cell::new((0, 0)),
+            top_space: Signal::new(0.0),
+            bottom_space: Signal::new(0.0),
+        });
+        Self { state, ..self }
     }
 
-    fn refresh_rows(vm: &LibraryViewModel, rows: &ListModel<Arc<SongData>>) {
-        let visible = visible_album_songs(&vm.expanded_songs().get(), &vm.search().get());
-        let unchanged = rows.len() == visible.len()
-            && visible
-                .iter()
-                .enumerate()
-                .all(|(i, song)| rows.with_item(i, |row| row.id == song.id) == Some(true));
-        if !unchanged {
-            rows.replace_all(visible);
-        }
+    /// Gives the keyboard to the widget in `focus` when a row is pressed (the
+    /// grid, so the panel's keys keep working).
+    pub fn focus_on_press(mut self, focus: Rc<Cell<Option<WidgetId>>>) -> Self {
+        self.focus = focus;
+        self
     }
 
-    /// The header of the open album: its name, its songs and length, the
-    /// chevron that closes it.
-    fn header(vm: &LibraryViewModel) -> Option<HeaderRow> {
-        let id = vm.expanded_album().get()?;
-        let card = vm.services().albums.card(&id)?;
-        let songs = vm.expanded_songs().get();
-        let duration: f64 = songs.iter().map(|s| s.duration_secs.unwrap_or(0.0)).sum();
-        let paths: Vec<Arc<str>> = songs.iter().map(|s| s.full_file_path.clone()).collect();
+    /// The rows realized now.
+    pub fn rows(&self) -> ListModel<BandSong> {
+        self.state.window.clone()
+    }
+
+    /// How many songs the band shows (realized or not).
+    pub fn count(&self) -> Signal<usize> {
+        self.state.count.clone()
+    }
+
+    /// One song row.
+    fn row(
+        vm: &LibraryViewModel,
+        song: &Arc<SongData>,
+        focus: &Rc<Cell<Option<WidgetId>>>,
+    ) -> Box<dyn Widget> {
+        let item = LibraryListItem::Song(song.id);
+        let selected = {
+            let item = item.clone();
+            vm.selection().map(move |s| s.selected.contains(&item))
+        };
+        let path = song.full_file_path.clone();
         let playing = vm
             .playing_path()
-            .map(move |path| paths.iter().any(|p| p.as_ref() == path.as_str()));
-        let selected = {
-            let id = id.clone();
-            vm.grid_selection()
-                .selection_signal()
-                .map(move |keys| keys.contains(&id))
-        };
-        let select_vm = vm.clone();
-        let select_id = id.clone();
-        let toggle_vm = vm.clone();
-        Some(HeaderRow::album(
-            &card.title,
-            true,
-            songs.len(),
-            duration,
-            ROW_HEIGHT,
-            selected,
-            playing,
-            Rc::new(move |_modifiers: Modifiers, _ctx: &mut EventContext| {
-                select_vm.select_open_album(&select_id)
-            }),
-            Rc::new(move |_ctx: &mut EventContext| toggle_vm.toggle_album(&id)),
-        ))
+            .map(move |playing| playing.as_str() == path.as_ref());
+        let press_vm = vm.clone();
+        let focus = focus.clone();
+        let row = SongRow::new(
+            song.clone(),
+            columns_for(LibraryViewMode::Grid),
+            vm.column_widths(),
+        )
+        .selected(selected)
+        .playing(playing)
+        .on_press(move |modifiers, ctx| {
+            press_vm.click(item.clone(), modifiers, Instant::now());
+            if let Some(target) = focus.get() {
+                ctx.request_focus(target);
+            }
+        });
+        Box::new(HShift::new(vm.h_offset(), row))
     }
 }
 
 impl Widget for GridDetail {
     fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
-        let vm = self.vm.clone();
-        let self_id = ctx.self_id();
-        vm.expanded_album()
-            .bind_to(self_id, ctx.binding_registry(), BindingLevel::Rebuild);
-        Self::refresh_rows(&vm, &self.rows);
+        let state = self.state.clone();
+        let vm = state.vm.clone();
+        state.count.bind_to(
+            ctx.self_id(),
+            ctx.binding_registry(),
+            BindingLevel::Relayout,
+        );
+        state.refresh_songs();
         {
-            let rows = self.rows.clone();
-            let refresh_vm = vm.clone();
-            ctx.effect(&vm.expanded_songs(), move |_| {
-                Self::refresh_rows(&refresh_vm, &rows);
-            });
+            let state = state.clone();
+            ctx.effect(&vm.search(), move |_| state.refresh_songs());
         }
         {
-            let rows = self.rows.clone();
-            let refresh_vm = vm.clone();
-            ctx.effect(&vm.search(), move |_| {
-                Self::refresh_rows(&refresh_vm, &rows)
-            });
+            let state = state.clone();
+            ctx.effect(&vm.expanded_songs(), move |_| state.refresh_songs());
+        }
+        if let Some(placement) = state.placement.clone() {
+            // The window follows the scroll, the viewport, the column count
+            // and the band's tile.
+            ctx.effect(&placement.scroll_y, follow_window(&state));
+            ctx.effect(&placement.viewport, follow_window(&state));
+            ctx.effect(&placement.sizing, follow_window(&state));
+            ctx.effect(&placement.expanded, follow_window(&state));
         }
 
-        let columns = columns_for(LibraryViewMode::Grid);
-        let list_id: Rc<Cell<Option<WidgetId>>> = Rc::new(Cell::new(None));
         let row_vm = vm.clone();
-        let row_list = list_id.clone();
-        let list = ListView::new(self.rows.clone(), move |_index, song, _selected| {
-            let item = LibraryListItem::Song(song.id);
-            let selected = {
-                let item = item.clone();
-                row_vm.selection().map(move |s| s.selected.contains(&item))
-            };
-            let path = song.full_file_path.clone();
-            let playing = row_vm
-                .playing_path()
-                .map(move |playing| playing.as_str() == path.as_ref());
-            let press_vm = row_vm.clone();
-            let press_list = row_list.clone();
-            let row = SongRow::new(song.clone(), columns.clone(), row_vm.column_widths())
-                .selected(selected)
-                .playing(playing)
-                .on_press(move |modifiers, ctx| {
-                    press_vm.click(item.clone(), modifiers, Instant::now());
-                    if let Some(list) = press_list.get() {
-                        ctx.request_focus(list);
-                    }
-                });
-            Box::new(HShift::new(row_vm.h_offset(), row)) as Box<dyn Widget>
+        let focus = self.focus.clone();
+        let rows = Repeater::new(state.window.clone(), move |song: &BandSong| {
+            Self::row(&row_vm, &song.0, &focus)
         })
-        .item_height(ROW_HEIGHT)
-        .scroll_bar_style(ScrollBarMode::Overlay)
-        .smooth_scrolling(false);
-        let scroll_y = list.scroll_y_signal().clone();
-        let list = ctx.add(list.access_label(tr!(library_album_songs())));
-        list_id.set(Some(list));
-
-        // Reveal a row the view-model asks for (a reveal by path).
-        ctx.effect(&vm.scroll_request(), move |request| {
-            if let Some((_, ScrollRequest::DetailRow(row))) = request {
-                scroll_y.set(*row as f32 * ROW_HEIGHT);
-            }
-        });
-
-        let mut column = VStack::new().spacing(0.0).alignment(HAlignment::Leading);
-        if let Some(header) = Self::header(&vm) {
-            column = column.child(header);
-        }
+        .spacing(0.0)
+        .access_role(Role::List)
+        .access_label(tr!(library_album_songs()));
+        let content = VStack::new()
+            .spacing(0.0)
+            .alignment(HAlignment::Leading)
+            .child(FixedSize::new().height(state.top_space.clone()))
+            .child(rows)
+            .child(FixedSize::new().height(state.bottom_space.clone()));
+        let wheel_vm = vm.clone();
+        let width = self.width.clone();
         let root = ctx.add(
             Panel::new()
                 .padding(0.0)
                 .border_width(0.0)
                 .background(SurfaceRole::Main)
-                .child(
-                    column.child(
-                        teksilo::widgets::Expand::new()
-                            .child(Padding::new(0.0, TRAILING, BOTTOM, LEADING).child(list)),
-                    ),
-                ),
+                .child(Padding::new(PADDING_TOP, TRAILING, PADDING_BOTTOM, LEADING).child(content))
+                .on_scroll(move |event, _ctx| match event {
+                    WidgetEvent::Scroll { delta, .. } => {
+                        let dx = match delta {
+                            ScrollDelta::Lines { x, .. } => x * SCROLL_LINE_HEIGHT,
+                            ScrollDelta::Pixels { x, .. } => *x,
+                        };
+                        if dx == 0.0 {
+                            return EventResponse::Ignored;
+                        }
+                        wheel_vm.scroll_horizontally(-dx, width.get());
+                        EventResponse::Handled
+                    }
+                    _ => EventResponse::Ignored,
+                }),
         );
         self.root = Some(root);
         vec![root]
     }
 
     fn layout_response(&self, proposal: SizeProposal, ctx: &LayoutContext) -> LayoutResponse {
+        let count = self.state.count.get();
+        if count == 0 {
+            // No block at all, as Iced draws none.
+            return Size::new(proposal.width.unwrap_or(0.0), 0.0).into();
+        }
         self.root
             .and_then(|id| ctx.child_size(id, proposal))
-            .unwrap_or_else(|| proposal.resolve(0.0, 0.0))
+            .unwrap_or_else(|| proposal.resolve(0.0, band_height(count)))
             .into()
+    }
+
+    fn place_children(
+        &self,
+        bounds: Rect,
+        _proposal: SizeProposal,
+        children: &mut [WidgetPlacement],
+        _ctx: &LayoutContext,
+    ) {
+        for child in children.iter_mut() {
+            child.origin = bounds.origin();
+            child.size = bounds.size();
+        }
+        // The viewport the sideways offset is clamped against: the grid's
+        // width, which the band spans.
+        self.width.set(bounds.width + grid::LEADING_INSET);
+        if let Some(placement) = &self.state.placement {
+            placement.laid_out(self.state.count.get());
+        }
     }
 
     fn children(&self) -> Vec<WidgetId> {
