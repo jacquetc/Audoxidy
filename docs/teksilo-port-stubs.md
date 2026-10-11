@@ -21,10 +21,10 @@ The **Teksilo site** column is filled in by the wave that ports each stub.
 
 | Feature | Iced location | Iced behaviour | Teksilo site |
 | --- | --- | --- | --- |
-| Playlist menu "Información" | `src/gui/playlist.rs:1499` | `Message::NoOp` | |
-| Playlist menu "Editor de Etiquetas" | `src/gui/playlist.rs:1524` | `Message::NoOp` | |
-| Playlist menu "Convertidor de audio" | `src/gui/playlist.rs:1529` | `Message::NoOp` | |
-| Playlist bottom bar Lyrics button | `src/gui/app.rs:3027` | `ToggleLyrics` returns `Task::none()` | |
+| Playlist menu "Información" | `src/gui/playlist.rs:1066` | `Message::NoOp` | `src/teksilo_ui/playlist/menus.rs` (`item_menu`) |
+| Playlist menu "Editor de Etiquetas" | `src/gui/playlist.rs:1091` | `Message::NoOp` | `src/teksilo_ui/playlist/menus.rs` (`item_menu`) |
+| Playlist menu "Convertidor de audio" | `src/gui/playlist.rs:1096` | `Message::NoOp` | `src/teksilo_ui/playlist/menus.rs` (`item_menu`) |
+| Playlist bottom bar Lyrics button | `src/gui/playlist.rs` (the bar), `src/gui/app.rs:2772` (`ToggleLyrics`) | `ToggleLyrics` returns `Task::none()` | `src/teksilo_ui/playlist/bottom_bar.rs` (`BottomBar`) |
 | Library source tabs Spotify, YouTube, Qobuz, Deezer, Tidal | `src/gui/library.rs:2479-2483`, `src/gui/app.rs:3068` | only changes which tab is highlighted | `src/teksilo_ui/shell/title_bar.rs` (`Source::is_available`) |
 | Player menu "Abrir Archivo" | `src/gui/player.rs:546` | closes the menu |  `src/teksilo_ui/player/menu.rs` |
 | Player menu "Biblioteca" | `src/gui/player.rs:548` | closes the menu |  `src/teksilo_ui/player/menu.rs` |

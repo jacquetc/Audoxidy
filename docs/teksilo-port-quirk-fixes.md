@@ -82,7 +82,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   - The library's Play button plays the library selection.
   - Text fields, menus and dialogs keep these keys.
 - **Why:** a key that acts on a panel the user is not in is surprising.
-- **Pinned by:** the library by `teksilo_ui::library::library_vm::tests::quirk_2_play_appends_the_library_selection_to_the_active_playlist` and `teksilo_ui::library::panel::tests::{quirk_2_enter_on_the_list_appends_the_selection_to_the_active_playlist, quirk_2_the_arrows_move_the_library_selection, quirk_2_the_search_field_keeps_enter_delete_and_the_arrows}`; the filter column by `teksilo_ui::filters::panel::tests::{the_keyboard_walks_the_tree_and_enter_selects_a_node, the_arrows_move_the_focus_between_the_cells_and_enter_chooses_one}`; the playlist part by the playlist wave, Ctrl+A by the integration wave, plus the "space and Enter in every text field" probe.
+- **Pinned by:** the library by `teksilo_ui::library::library_vm::tests::quirk_2_play_appends_the_library_selection_to_the_active_playlist` and `teksilo_ui::library::panel::tests::{quirk_2_enter_on_the_list_appends_the_selection_to_the_active_playlist, quirk_2_the_arrows_move_the_library_selection, quirk_2_the_search_field_keeps_enter_delete_and_the_arrows}`; the filter column by `teksilo_ui::filters::panel::tests::{the_keyboard_walks_the_tree_and_enter_selects_a_node, the_arrows_move_the_focus_between_the_cells_and_enter_chooses_one}`; the playlist by `teksilo_ui::playlist::list::tests::{the_keys_act_on_the_focused_list, the_keys_are_left_to_an_open_menu}` and `teksilo_ui::playlist::playlist_vm::tests::select_all_takes_every_row`, Ctrl+A by the integration wave, plus the "space and Enter in every text field" probe.
 
 ## 3. Closing the window saves state and stops cleanly
 
@@ -104,7 +104,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   - dialog. In the EQ preset Load dialog, Escape restores the previewed state, as Cancel does;
   - the Audio Center panel.
 - **Why:** standard desktop behaviour, and needed for keyboard users.
-- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{escape_closes_the_menu_without_acting, a_click_outside_closes_the_menu}`, the filter menu by `teksilo_ui::filters::panel::tests::escape_closes_the_menu_without_choosing`, the search fields by fix 35's tests; the playlist, Audio Center and meter overlays by their waves.
+- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{escape_closes_the_menu_without_acting, a_click_outside_closes_the_menu}`, the filter menu by `teksilo_ui::filters::panel::tests::escape_closes_the_menu_without_choosing`, the search fields by fix 35's tests; the playlist menus by `teksilo_ui::playlist::list::tests::escape_closes_the_row_menu` and `teksilo_ui::playlist::tabs::tests::{the_chevron_opens_every_playlist_under_itself, a_right_click_on_a_tab_opens_its_menu_and_on_the_strip_the_bar_menu}`; the Audio Center and the meter popup by their waves.
 
 ## 5. No blocking work on the UI thread
 
@@ -142,7 +142,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   opened them. Modal dialogs are centred, the framework default. The EQ preset dialogs stay
   positioned relative to the Audio Center.
 - **Why:** hard-coded and origin positions put popups away from what opened them.
-- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{the_menu_button_opens_the_menu_below_it, the_menu_follows_the_button_when_the_panel_moves_or_has_an_inset}` (Iced opens it at a fixed position; the popover API has no offset, so it opens at the button's leading edge, about 7 px left of Iced's x = 15); the filter menu by `teksilo_ui::filters::panel::tests::the_selector_opens_a_172_pixel_menu_of_five_types_anchored_at_it` (Iced: a fixed 70 px from the window top, `library_filters.rs:345`); the playlist and meter popups by their waves.
+- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{the_menu_button_opens_the_menu_below_it, the_menu_follows_the_button_when_the_panel_moves_or_has_an_inset}` (Iced opens it at a fixed position; the popover API has no offset, so it opens at the button's leading edge, about 7 px left of Iced's x = 15); the filter menu by `teksilo_ui::filters::panel::tests::the_selector_opens_a_172_pixel_menu_of_five_types_anchored_at_it` (Iced: a fixed 70 px from the window top, `library_filters.rs:345`); the playlist row menu by `teksilo_ui::playlist::list::tests::the_row_menu_opens_at_the_pointer` and the tab overflow list by `teksilo_ui::playlist::tabs::tests::the_chevron_opens_every_playlist_under_itself` (Iced: a fixed (220, 440)); the meter popup by its wave.
 
 ## 8. Failed user actions show an error toast
 
@@ -150,7 +150,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   external file import, applying audio settings, EQ preset import and export.
 - **Teksilo:** the same failures are logged and also shown as an error toast.
 - **Why:** the user saw nothing happen and had no hint why.
-- **Pinned by:** the command side (the failure comes back as an error and a `LongOperation::Failed` event, not only a log line) by `frontend::commands::playlist::tests::quirk_8_an_export_that_cannot_write_its_list_fails`, `frontend::commands::playlist::tests::quirk_25_an_entry_outside_latin_1_fails_the_m3u_export_without_writing` and `frontend::commands::playlist::tests::quirk_8_an_import_that_finds_nothing_or_no_file_fails` (export and import), and `frontend::commands::audio_settings::tests::a_stream_error_comes_back_as_err_and_the_keys_are_still_persisted` (Apply); the toasts are to be filled by the playlist and Audio Center waves; the UI side by `teksilo_ui::library::library_vm::tests::{quirk_8_a_failed_delete_shows_an_error_toast_and_a_cancelled_one_does_not, quirk_8_a_folder_that_cannot_be_scanned_shows_an_error_toast}` and `teksilo_ui::player::panel::tests::{a_scan_that_cannot_start_shows_an_error_toast, a_folder_dialog_that_cannot_open_shows_an_error_toast, a_track_that_cannot_be_played_shows_an_error_toast}`; the playlist and Audio Center by their waves.
+- **Pinned by:** the command side (the failure comes back as an error and a `LongOperation::Failed` event, not only a log line) by `frontend::commands::playlist::tests::quirk_8_an_export_that_cannot_write_its_list_fails`, `frontend::commands::playlist::tests::quirk_25_an_entry_outside_latin_1_fails_the_m3u_export_without_writing` and `frontend::commands::playlist::tests::quirk_8_an_import_that_finds_nothing_or_no_file_fails` (export and import), and `frontend::commands::audio_settings::tests::a_stream_error_comes_back_as_err_and_the_keys_are_still_persisted` (Apply); the toasts are to be filled by the playlist and Audio Center waves; the UI side by `teksilo_ui::library::library_vm::tests::{quirk_8_a_failed_delete_shows_an_error_toast_and_a_cancelled_one_does_not, quirk_8_a_folder_that_cannot_be_scanned_shows_an_error_toast}` and `teksilo_ui::player::panel::tests::{a_scan_that_cannot_start_shows_an_error_toast, a_folder_dialog_that_cannot_open_shows_an_error_toast, a_track_that_cannot_be_played_shows_an_error_toast}`; the playlist by `teksilo_ui::playlist::playlist_vm::tests::{a_failed_export_is_an_error_notice, a_failed_import_is_an_error_notice, a_cancelled_operation_and_someone_elses_say_nothing}` and `teksilo_ui::playlist::notice::tests::every_notice_is_shown_as_a_toast_in_the_window` (the playlist also toasts a failed create, rename, delete or file location, and a successful export); the Audio Center by its wave.
 
 ## 9. Downmix settings apply at startup
 
@@ -181,7 +181,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   the playing marker can land on the wrong row.
 - **Teksilo:** the playing song is tracked by its song id, and rows are matched by id.
 - **Why:** with an index, the marker drifted to the wrong row whenever a search filtered the list.
-- **Pinned by:** the cursor side by `frontend::commands::playback::tests::quirk_11_the_playing_song_is_tracked_by_id_under_a_search` (`PlaybackCursor` keeps the playing song by id and finds its row in the search result); the playing marker is to be filled by the playlist wave.
+- **Pinned by:** the cursor side by `frontend::commands::playback::tests::quirk_11_the_playing_song_is_tracked_by_id_under_a_search` (`PlaybackCursor` keeps the playing song by id and finds its row in the search result); the playing marker is to be filled by the playlist wave; the view side by `teksilo_ui::playlist::playlist_vm::tests::the_playing_row_is_found_by_song_id_under_a_search`.
 
 ## 12. Changing a playlist's content does not reload the playing track
 
@@ -191,7 +191,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:** a content change reloads only the playlist's rows. The current track keeps playing
   untouched.
 - **Why:** adding songs caused an audible reload and seek of the playing track.
-- **Pinned by:** the command side by `frontend::commands::playlist::tests::quirk_12_reloading_the_content_refreshes_the_rows_without_touching_the_player` (`playlist::reload_content` refreshes the rows with no load, seek or play-state call); the view-model wiring is to be filled by the playlist wave.
+- **Pinned by:** the command side by `frontend::commands::playlist::tests::quirk_12_reloading_the_content_refreshes_the_rows_without_touching_the_player` (`playlist::reload_content` refreshes the rows with no load, seek or play-state call); the view-model wiring is to be filled by the playlist wave; the view side by `teksilo_ui::playlist::playlist_vm::tests::added_songs_appear_without_reloading_the_playing_track`.
 
 ## 13. The playlist position is saved on a real 20 s interval
 
@@ -201,7 +201,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:** while playing, the position is saved every `behavior.auto_save_interval_secs`
   (20 s by default, from `config.ron`), plus on every event where Iced saves.
 - **Why:** after a crash, the restored position could be far behind.
-- **Pinned by:** `frontend::monitor::tests::autosave_is_due_every_interval_while_playing` and `frontend::monitor::tests::no_autosave_is_due_while_paused_and_resuming_restarts_the_interval` (the monitor side); the command side by `frontend::commands::playlist::tests::quirk_13_persisting_stores_the_player_position_state_and_modes` and `frontend::session::tests::quirk_13_persist_now_on_autosave_resolves_once_the_state_is_stored`; the playlist view-model's persist-on-`AutosaveDue` test is added by the playlist wave.
+- **Pinned by:** `frontend::monitor::tests::autosave_is_due_every_interval_while_playing` and `frontend::monitor::tests::no_autosave_is_due_while_paused_and_resuming_restarts_the_interval` (the monitor side); the command side by `frontend::commands::playlist::tests::quirk_13_persisting_stores_the_player_position_state_and_modes` and `frontend::session::tests::quirk_13_persist_now_on_autosave_resolves_once_the_state_is_stored`; the playlist view-model's persist-on-`AutosaveDue` test is added by the playlist wave; the view side by `teksilo_ui::playlist::playlist_vm::tests::the_autosave_persists_the_position`.
 
 ## 14. Hidden built-in EQ presets stay hidden across restarts
 
@@ -243,7 +243,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   nothing happens.
 - **Teksilo:** the entry is disabled on system playlists.
 - **Why:** the user confirmed a deletion that never happened.
-- **Pinned by:** the command side by `frontend::commands::playlist::tests::quirk_16_deleting_a_system_playlist_is_refused` (`playlist::delete_playlist` refuses a system playlist with an error instead of doing nothing); the disabled entry is to be filled by the playlist wave.
+- **Pinned by:** the command side by `frontend::commands::playlist::tests::quirk_16_deleting_a_system_playlist_is_refused` (`playlist::delete_playlist` refuses a system playlist with an error instead of doing nothing); the disabled entry is to be filled by the playlist wave; the view side by `teksilo_ui::playlist::menus::tests::the_tab_menu_disables_eliminar_lista_on_a_system_playlist` and `teksilo_ui::playlist::playlist_vm::tests::a_system_playlist_cannot_be_deleted`.
 
 ## 17. Apply and startup resolve "Automatic" sound-server rate and quantum the same way
 

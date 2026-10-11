@@ -1,0 +1,34 @@
+//! The playlist panel: the left column under the player, 400 px wide.
+//!
+//! Port of the Iced playlist (`src/gui/playlist.rs`) and of its handlers in
+//! `src/gui/app.rs`. From top to bottom:
+//!
+//! - the tab strip (40 px): one tab per playlist, scrolling sideways, with an
+//!   overflow chevron when the tabs do not fit;
+//! - the list: a folder separator per group and its songs, 46 px rows;
+//! - the bottom bar (40 px): the search field and the lyrics, repeat,
+//!   shuffle and equalizer icons.
+//!
+//! [`PlaylistViewModel`] holds the state and the behaviour; the views are thin.
+//! The app builds it from the services (`PlaylistViewModel::new(&services)`)
+//! and mounts [`PlaylistPanel::new(vm)`](PlaylistPanel::new) in the region;
+//! building the panel subscribes the view-model to the facade's events. Ctrl+A,
+//! routed by the app to the focused panel, is
+//! [`PlaylistViewModel::select_all`]; [`PlaylistPanel::list_id`] names the list
+//! that takes the keyboard.
+
+pub mod bottom_bar;
+pub mod dialogs;
+pub mod list;
+pub mod menus;
+pub mod notice;
+pub mod panel;
+pub mod playlist_vm;
+pub mod rows;
+pub mod tabs;
+#[cfg(test)]
+pub(crate) mod testing;
+
+pub use panel::PlaylistPanel;
+pub use playlist_vm::{Notice, PlaylistViewModel};
+pub use rows::{PlaylistRowsSource, RowItem, ScrollTarget};

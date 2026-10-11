@@ -36,6 +36,7 @@ pub use self::session::{RestoreStatus, SessionState};
 use crate::teksilo_ui::filters::{FiltersPanel, FiltersViewModel};
 use crate::teksilo_ui::library::{LibraryPanel, LibraryViewModel};
 use crate::teksilo_ui::player::{PlayerPanel, PlayerViewModel};
+use crate::teksilo_ui::playlist::{PlaylistPanel, PlaylistViewModel};
 use crate::teksilo_ui::shell::main_window::AppHandles;
 use crate::teksilo_ui::shell::title_bar;
 
@@ -173,7 +174,10 @@ impl Widget for App {
                 .height(PLAYER_HEIGHT)
                 .child(player_panel),
         );
-        let playlist = ctx.add(Expand::new().child(Spacer::new()));
+        let playlist_panel = self.panel(ctx, |services| {
+            Box::new(PlaylistPanel::new(PlaylistViewModel::new(services)))
+        });
+        let playlist = ctx.add(Expand::new().child(playlist_panel));
         // `Expand::vertical` in a row claims the row's full height without
         // competing for its width: the column is as tall as the window.
         let left = ctx.add(
@@ -289,6 +293,7 @@ mod tests {
         assert!(first_of_type(&tree, r.filters, "FiltersPanel").is_some());
         assert!(first_of_type(&tree, r.player, "PlayerPanel").is_some());
         assert!(first_of_type(&tree, r.library, "LibraryPanel").is_some());
+        assert!(first_of_type(&tree, r.playlist, "PlaylistPanel").is_some());
         assert!(handles.ctx.shutdown());
     }
 
