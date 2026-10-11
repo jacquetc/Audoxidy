@@ -130,6 +130,7 @@ impl Widget for Pressable {
         self.enabled_now.set(enabled.get());
         let enabled_now = self.enabled_now.clone();
         ctx.effect(&enabled, move |on| enabled_now.set(*on));
+        // Disabling also takes it out of the Tab order (pinned by a test).
         ctx.enabled_when(self_id, Prop::Bound(enabled.clone()));
         enabled.bind_to(self_id, ctx.binding_registry(), BindingLevel::RepaintOnly);
         if let Some(selected) = &self.selected {
@@ -306,6 +307,26 @@ mod tests {
         tree.layout(SizeProposal::exact(100.0, 100.0));
         access_click(&mut tree, id);
         assert_eq!(count.get(), 1);
+    }
+
+    #[test]
+    fn tab_skips_a_disabled_pressable() {
+        let mut tree = WidgetTree::new();
+        let disabled = tree.add(Pressable::new(square(), lit!("Spotify")).enabled(false));
+        let enabled = tree.add(Pressable::new(square(), lit!("Library")));
+        tree.add(
+            HStack::new()
+                .child(disabled)
+                .child(enabled)
+                .child(Spacer::new()),
+        );
+        tree.layout(SizeProposal::exact(200.0, 100.0));
+        tree.dispatch_event(WidgetEvent::KeyDown {
+            key: Key::Tab,
+            modifiers: teksilo::core::Modifiers::NONE,
+            text: None,
+        });
+        assert_eq!(tree.focused(), Some(enabled));
     }
 
     #[test]

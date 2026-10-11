@@ -144,6 +144,7 @@ pub fn native() -> FixedSize {
     FixedSize::new().height(HEIGHT).child(
         Panel::new()
             .padding(0.0)
+            .border_width(0.0)
             .background(SurfaceRole::Raised)
             .child(
                 HStack::new()
@@ -206,6 +207,7 @@ fn pill(source: Source) -> Pressable {
     };
     let body = Panel::new()
         .padding(0.0)
+        .border_width(0.0)
         .background(background)
         .corner_radius(PILL_RADIUS)
         .child(

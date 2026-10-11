@@ -158,6 +158,7 @@ impl Widget for App {
         let root = ctx.add(
             Panel::new()
                 .padding(0.0)
+                .border_width(0.0)
                 .background(SurfaceRole::Main)
                 .child(row().child(left).child(right)),
         );
