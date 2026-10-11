@@ -9,7 +9,7 @@
 //! strip's free area opens [`menus::bar_menu`].
 //!
 //! When the tabs' estimated widths pass 380 px
-//! ([`tabs_overflow`](super::playlist_vm::tabs_overflow)), a chevron (28 px,
+//! ([`tabs_overflow`]), a chevron (28 px,
 //! secondary, 4 px of padding) closes the strip: it opens the list of every
 //! playlist ([`menus::overflow_menu`]) under itself, where Iced opens it at
 //! a fixed window position (quirk fix 7), and shows the up chevron while the
