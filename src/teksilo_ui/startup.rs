@@ -199,8 +199,7 @@ pub fn build_context(config: &AppConfig) -> Result<AppContext, FrontendError> {
     }
     #[cfg(feature = "teksilo-mocks")]
     {
-        let _ = config;
-        let ctx = AppContext::in_memory()?;
+        let (ctx, _fakes) = AppContext::in_memory_with_config(config.clone())?;
         crate::teksilo_ui::mock_data::screenshot_library()
             .seed_on(&ctx.db)
             .recv_blocking()?;

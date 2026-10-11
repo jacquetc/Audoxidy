@@ -37,7 +37,7 @@ use crate::audio::preset::EqPreset;
 use crate::db::Database;
 use crate::db::scanner::Scanner;
 use crate::integrations::control::{ExternalControlSender, external_control_channel};
-use crate::utils::config::AppConfig;
+use crate::utils::config::{AppConfig, ConfigProfile};
 
 /// The duration a [`FakePlayer`] gives a track it has no duration for.
 pub const DEFAULT_FAKE_DURATION_SECS: f64 = 180.0;
@@ -718,18 +718,38 @@ pub struct InMemoryFakes {
     pub external_control: ExternalControlSender,
 }
 
+/// The configuration of the in-memory contexts: the `Default` profile, fixed.
+///
+/// `AppConfig::default()` detects the profile from the hardware, which makes
+/// a test depend on the machine it runs on, and scans every process of the
+/// system to do it (about 300 ms per context, enough to push thread-based tests
+/// past their timeout when the whole suite runs in parallel).
+pub fn fixed_config() -> AppConfig {
+    AppConfig::for_profile(ConfigProfile::Default)
+}
+
 impl AppContext {
     /// A context over one in-memory database and the fakes: no file, no audio
     /// device, no sound server, no real memory probe.
     ///
     /// The database worker and the scanner share one connection, because two
     /// `:memory:` connections would be two separate databases.
+    ///
+    /// Its configuration is [`fixed_config`]: the same on every machine.
     pub fn in_memory() -> Result<Self, FrontendError> {
         Ok(Self::in_memory_with_fakes()?.0)
     }
 
     /// [`AppContext::in_memory`], also returning the fakes it uses.
     pub fn in_memory_with_fakes() -> Result<(Self, InMemoryFakes), FrontendError> {
+        Self::in_memory_with_config(fixed_config())
+    }
+
+    /// [`AppContext::in_memory_with_fakes`] with `config` (the mocks build
+    /// passes the configuration it loaded).
+    pub fn in_memory_with_config(
+        config: AppConfig,
+    ) -> Result<(Self, InMemoryFakes), FrontendError> {
         let database: SharedDatabase = Arc::new(std::sync::Mutex::new(Database::new_memory()?));
         let scanner = Arc::new(Scanner::new(Arc::clone(&database)));
         let player = Arc::new(FakePlayer::new());
@@ -745,7 +765,7 @@ impl AppContext {
             system_audio: system_audio.clone(),
             external: external_rx,
             probe: memory.clone(),
-            config: AppConfig::default(),
+            config,
         })?;
         Ok((
             context,

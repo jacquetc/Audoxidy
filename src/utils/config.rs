@@ -84,7 +84,17 @@ pub struct AppConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        let profile = ConfigProfile::default();
+        Self::for_profile(ConfigProfile::default())
+    }
+}
+
+impl AppConfig {
+    /// La configuración de `profile`, con las demás secciones por defecto.
+    ///
+    /// `AppConfig::default()` detecta el perfil leyendo el hardware
+    /// (`ConfigProfile::default`); esta variante lo fija, para quien necesita
+    /// una configuración que no dependa de la máquina (pruebas, datos simulados).
+    pub fn for_profile(profile: ConfigProfile) -> Self {
         Self {
             config_version: 1,
             profile,
