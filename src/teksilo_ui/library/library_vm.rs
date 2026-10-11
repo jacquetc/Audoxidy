@@ -67,7 +67,7 @@
 //! column does not listen to the library, so the App resets its highlight
 //! (its sub-filter letter and its selected node) when
 //! [`LibraryViewModel::reveal_cleared`] fires, as Iced clears
-//! `selected_subfilter` and `selected_tree_node` (`src/gui/app.rs:6106-6108`).
+//! `selected_subfilter` and `selected_tree_node` (`src/gui/app.rs:6108-6110`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -1322,7 +1322,7 @@ impl LibraryViewModel {
             inner.collapsed_artists.borrow_mut().remove(&artist);
         }
         // The song's album opens in every list mode (quirk fix 51); Iced
-        // opens it in the Detailed mode only (`src/gui/app.rs:6272-6300`), so
+        // opens it in the Detailed mode only (`src/gui/app.rs:6266-6300`), so
         // in the Simple and Thumbnail modes a song in a collapsed album was
         // selected but not shown. The album is the run that holds the song,
         // the composite id its header toggles.

@@ -5,18 +5,18 @@
 //! `src/gui/library.rs:1653-1719`), shown by `GridView::detail_row`:
 //!
 //! - the block is a container on the background colour, padded 0 px on top,
-//!   10 px after, 5 px under and 5 px before (`library.rs:1708-1716`; with the
+//!   10 px after, 5 px under and 5 px before (`library.rs:1706-1717`; with the
 //!   content's own 5 px, the grid's leading inset, the rows start 10 px in
 //!   from the panel's edge), around a column padded 32 px above and below
 //!   (`library.rs:1659`) of 32 px song rows with the Grid columns
-//!   (`library.rs:1673-1700`). Iced draws no header in the block, and neither
+//!   (`library.rs:1666-1699`). Iced draws no header in the block, and neither
 //!   does this; the column header above the grid names the columns;
 //! - the band is therefore `32 + 32 n + 32 + 5` px tall for `n` songs. With
 //!   no song to show (still loading, or none the search keeps) Iced draws no
-//!   block (`library.rs:560-569`), and the band takes no space;
+//!   block (`library.rs:563-571`), and the band takes no space;
 //! - Iced realizes only the songs near the viewport, half a viewport above
 //!   and below it (a quarter in low-resource mode), at least 100 px
-//!   (`library.rs:507-517`, `:533-571`), with empty space for the others. The
+//!   (`library.rs:507-515`, `:536-571`), with empty space for the others. The
 //!   band does the same: a `Repeater` over the window of rows, between two
 //!   spacers, reconciled by song id as the grid scrolls, so a scroll step
 //!   builds only the rows that enter the window;
@@ -77,7 +77,7 @@ pub fn band_height(count: usize) -> f32 {
 
 /// The rows `start..end` of `count` rows starting at `first` (content space)
 /// that Iced renders for the content span `low..high`: those with
-/// `y + 32 >= low` and `y <= high` (`library.rs:544-551`).
+/// `y + 32 >= low` and `y <= high` (`library.rs:553-559`).
 pub fn rows_in_span(first: f32, count: usize, low: f32, high: f32) -> (usize, usize) {
     let clamp = |value: f32| {
         if value.is_finite() && value > 0.0 {
