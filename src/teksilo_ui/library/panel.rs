@@ -237,9 +237,11 @@ impl LibraryPanel {
         }
     }
 
-    /// Puts `meter` in the bottom bar's 400 px meter slot. It fills the slot
-    /// (400 × 40 px) and handles its own right-click (quirk fix 10). Without
-    /// one the slot stays, empty.
+    /// Puts `meter` in the bottom bar's meter slot: the free space between the
+    /// figures and the actions, never narrower than `meter`'s natural width
+    /// (400 px for a shown meter, as in Iced; it can be 0 for a hidden one),
+    /// 40 px high. `meter` fills the slot and handles its own right-click
+    /// (quirk fix 10). Without one the slot stays, empty.
     pub fn meter_slot(mut self, meter: impl Widget + 'static) -> Self {
         self.meter = Some(Box::new(meter));
         self

@@ -10,19 +10,29 @@
 //!   from the songs the search and the filters let through, else from the
 //!   library totals (`format_duration`, `format_size`), with correct plurals
 //!   (quirk fix 15: Iced writes "1 Canciones");
-//! - 10 px, **the meter slot**: 400 px wide whether or not a meter is shown
-//!   (quirk fix 10: Iced drops the meter and its right-click when the meter is
-//!   disabled, `library.rs:1913-1943`); it holds the widget given to
-//!   [`LibraryPanel::meter_slot`](super::panel::LibraryPanel::meter_slot),
-//!   which fills it (400 × 40 px) and handles its own right-click;
+//! - 10 px, **the meter slot**: the free space between the figures and the
+//!   actions, at least as wide as the widget given to
+//!   [`LibraryPanel::meter_slot`](super::panel::LibraryPanel::meter_slot)
+//!   wants (400 px for a shown meter). Iced lays the bar out as
+//!   `[search, 15, figures, 10, meter 400, 10, actions]` with the meter on, and
+//!   `[search, 15, figures, fill, actions]` with it off, dropping the meter's
+//!   right-click (`library.rs:1913-1943`). Here the slot is always there and
+//!   always takes the right-click (quirk fix 10), but only as wide as the meter
+//!   needs and the bar allows;
 //! - 10 px, the actions, 5 px apart: play the selection (36 px), add a folder
 //!   (31 px), show what plays (30 px) and the view mode (30 px, its icon the
 //!   current mode's), each an Iced `mouse_area` icon in the icon colour.
+//!
+//! When the bar is too narrow, the figures give way first (they end in an
+//! ellipsis, down to 40 px), then the meter slot (the meter is clipped), so
+//! the actions never leave the bar. Iced lets them fall off its end.
 
 use teksilo::core::binding::BindingLevel;
 use teksilo::prelude::*;
 use teksilo::tokens::{FontWeight, VAlignment};
-use teksilo::widgets::{FixedSize, HStack, IconWidget, Padding, Panel, Spacer, TextWidget};
+use teksilo::widgets::{
+    Expand, FixedSize, HStack, IconWidget, Padding, Panel, Shrinkable, Spacer, TextWidget,
+};
 
 use super::library_vm::LibraryViewModel;
 use crate::logic::library_geometry::LibraryViewMode;
@@ -42,8 +52,16 @@ pub const SEARCH_WIDTH: f32 = 180.0;
 pub const SEARCH_GAP: f32 = 15.0;
 /// The space around the meter slot (`library.rs:1921`, `:1923`).
 pub const METER_GAP: f32 = 10.0;
-/// The meter slot's width (`VuMeterWidget`, `widgets.rs:4772`).
+/// The width of a shown meter (`VuMeterWidget`, `widgets.rs:4772`); the slot
+/// is at least as wide as its widget wants.
 pub const METER_SLOT_WIDTH: f32 = 400.0;
+/// The narrowest the figures shrink to before the meter slot gives way.
+pub const STATS_MIN_WIDTH: f32 = 40.0;
+/// How much more readily the figures give way than the meter slot. A stack
+/// splits a deficit in proportion to the shrink weights; at a million to one
+/// the slot's share is a negligible fraction of a pixel, so in effect the
+/// figures give way first, down to [`STATS_MIN_WIDTH`], then the slot.
+const STATS_SHRINK: f32 = 1_000_000.0;
 /// The figures' text size (`library.rs:1918`).
 pub const STATS_SIZE: f32 = 13.0;
 /// The space between two actions (`library.rs:1877`).
@@ -117,10 +135,17 @@ impl Widget for Stats {
     }
 
     fn layout_response(&self, proposal: SizeProposal, ctx: &LayoutContext) -> LayoutResponse {
-        self.root
+        let size = self
+            .root
             .and_then(|id| ctx.child_size(id, proposal))
-            .unwrap_or_else(|| proposal.resolve(0.0, 0.0))
-            .into()
+            .unwrap_or_else(|| proposal.resolve(0.0, 0.0));
+        // The figures give way first when the bar is too narrow: the text
+        // is single-line and ends in an ellipsis at the width it is given.
+        LayoutResponse::shrinkable(
+            size,
+            Size::new(STATS_MIN_WIDTH.min(size.width), size.height),
+            STATS_SHRINK,
+        )
     }
 
     fn children(&self) -> Vec<WidgetId> {
@@ -253,15 +278,21 @@ impl Widget for BottomBar {
                 root: None,
             })
             .child(gap(METER_GAP))
+            // The slot takes the free space, at least what its widget wants
+            // (quirk fix 10); in a bar too narrow even then, it gives way
+            // after the figures, clipping the meter, so the actions stay.
             .child(
-                FixedSize::new()
-                    .width(METER_SLOT_WIDTH)
-                    .height(HEIGHT)
-                    .child(slot),
+                Shrinkable::new().shrink(1.0).child(
+                    Expand::horizontal().respect_intrinsic().child(
+                        FixedSize::new()
+                            .height(HEIGHT)
+                            .child(slot)
+                            .clips_children_on(true),
+                    ),
+                ),
             )
             .child(gap(METER_GAP))
-            .child(actions)
-            .child(Spacer::new());
+            .child(actions);
         let root = ctx.add(
             FixedSize::new().height(HEIGHT).child(
                 Panel::new()

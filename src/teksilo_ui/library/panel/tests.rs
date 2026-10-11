@@ -50,6 +50,20 @@ fn mounted() -> Mounted {
     mounted_with(LibraryPanel::new)
 }
 
+/// [`mounted_with`], in a region `width` px wide.
+fn mounted_at(width: f32, panel: impl FnOnce(LibraryViewModel) -> LibraryPanel) -> Mounted {
+    let (services, vm) = loaded();
+    let mut tree = tree_for(&services);
+    let id = mount_at(&mut tree, panel(vm.clone()), width, REGION.1);
+    settle_layout(&mut tree);
+    Mounted {
+        services,
+        vm,
+        tree,
+        id,
+    }
+}
+
 impl Mounted {
     fn node(&self, suffix: &str) -> WidgetId {
         all_of_type(&self.tree, self.id, suffix)[0]
@@ -96,33 +110,64 @@ fn the_panel_stacks_the_column_header_the_body_and_the_bottom_bar() {
     assert!(m.services.ctx.shutdown());
 }
 
+/// A meter that is shown: it wants Iced's 400 px.
+#[derive(Debug)]
+struct WideMeter;
+
+impl Widget for WideMeter {
+    fn layout_response(&self, proposal: SizeProposal, _ctx: &LayoutContext) -> LayoutResponse {
+        proposal.resolve(METER_SLOT_WIDTH, 24.0).into()
+    }
+}
+
+/// The trailing edge of the bar's content (15 px inside the panel).
+fn content_end(m: &Mounted) -> f32 {
+    let panel = m.tree.bounds(m.id);
+    panel.x + panel.width - 15.0
+}
+
 #[test]
-fn quirk_10_the_meter_slot_keeps_400_px_without_a_meter() {
+fn quirk_10_without_a_meter_the_actions_end_the_bar_after_a_free_slot() {
     let m = mounted();
     let search = m.tree.bounds(m.node("SearchField"));
     assert_eq!(search.width, bottom_bar::SEARCH_WIDTH);
-    let play = m.tree.bounds(m.named("Play the selection"));
     let stats = m.tree.bounds(m.node("Stats"));
-    // search, 15, the figures, 10, the 400 px slot, 10, the actions.
     assert_eq!(stats.x - (search.x + search.width), 15.0);
-    assert_eq!(
-        play.x - (stats.x + stats.width),
-        10.0 + METER_SLOT_WIDTH + 10.0
-    );
+    let view = m.tree.bounds(m.named("Change the view"));
+    assert!((view.x + view.width - content_end(&m)).abs() < 0.5);
     assert!(m.services.ctx.shutdown());
 }
 
 #[test]
-fn quirk_10_the_meter_fills_its_slot() {
-    let m = mounted_with(|vm| LibraryPanel::new(vm).meter_slot(FakeMeter));
+fn quirk_10_a_meter_fills_its_slot_and_a_shown_one_gets_its_400_px() {
+    // The library of a 1600 px window (998 px): room for Iced's 400 px meter.
+    let m = mounted_at(998.0, |vm| LibraryPanel::new(vm).meter_slot(FakeMeter));
     let meter = m.tree.bounds(m.node("FakeMeter"));
-    assert_eq!(
-        (meter.width, meter.height),
-        (METER_SLOT_WIDTH, bottom_bar::HEIGHT)
-    );
     let stats = m.tree.bounds(m.node("Stats"));
     assert_eq!(meter.x - (stats.x + stats.width), 10.0);
+    assert!(meter.width > METER_SLOT_WIDTH - 0.1, "{}", meter.width);
+    assert_eq!(meter.height, bottom_bar::HEIGHT);
+    let play = m.tree.bounds(m.named("Play the selection"));
+    assert_eq!(play.x - (meter.x + meter.width), 10.0);
     let _ = Spacer::new();
+    assert!(m.services.ctx.shutdown());
+}
+
+#[test]
+fn quirk_10_in_a_narrow_bar_the_figures_give_way_and_the_actions_stay() {
+    // The library of the default 1360 px window is 758 px wide: search,
+    // figures, a shown meter and the actions do not fit. Iced lets the actions
+    // fall off the bar; here the figures shrink.
+    let m = mounted_with(|vm| LibraryPanel::new(vm).meter_slot(WideMeter));
+    let view = m.tree.bounds(m.named("Change the view"));
+    assert!(view.x + view.width <= content_end(&m) + 0.5);
+    let stats = m.tree.bounds(m.node("Stats"));
+    assert!(
+        (stats.width - bottom_bar::STATS_MIN_WIDTH).abs() < 0.5,
+        "the figures gave way first"
+    );
+    let meter = m.tree.bounds(m.node("WideMeter"));
+    assert!(meter.width < METER_SLOT_WIDTH, "then the meter slot");
     assert!(m.services.ctx.shutdown());
 }
 

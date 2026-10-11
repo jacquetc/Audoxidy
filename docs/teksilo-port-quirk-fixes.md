@@ -184,11 +184,16 @@ Unfinished Iced features (stubs) are not listed here; they are in
   (`src/gui/library.rs:3059-3072`), so a fresh install can never enable it. The popup also closes
   after each stepper change (`src/gui/app.rs:5346`, `5365`).
 - **Teksilo:**
-  - When the meter is disabled, its 400 px slot in the library bar stays, empty, and a
-    right-click on it still opens the popup.
+  - The meter's slot in the library bar is always there and always takes the right-click
+    that opens the popup. It is the free space between the figures and the actions, never
+    narrower than the meter wants (400 px when shown, as in Iced). With the meter disabled it
+    is the gap Iced leaves there, so the bar keeps Iced's layout.
+  - When the bar is too narrow for a shown meter (the library of the default 1360 px window),
+    the figures give way first (ellipsis), then the meter is clipped, so the actions stay in
+    the bar; Iced lets them fall off its end.
   - The popup stays open while values change.
 - **Why:** the setting was unreachable, and the popup closed under the user's hand.
-- **Pinned by:** the slot by `teksilo_ui::library::panel::tests::{quirk_10_the_meter_slot_keeps_400_px_without_a_meter, quirk_10_the_meter_fills_its_slot}`; the meter and its popup by the meter wave.
+- **Pinned by:** the slot by `teksilo_ui::library::panel::tests::{quirk_10_without_a_meter_the_actions_end_the_bar_after_a_free_slot, quirk_10_a_meter_fills_its_slot_and_a_shown_one_gets_its_400_px, quirk_10_in_a_narrow_bar_the_figures_give_way_and_the_actions_stay}`; the meter and its popup by the meter wave.
 
 ## 11. The playing row is tracked by song id
 
