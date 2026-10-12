@@ -101,6 +101,7 @@ class App:
         self.log = None
         self._shots = 0
         self.hazards = {}
+        self.scale = 1.0
         self.start()
 
     def start(self):
@@ -268,6 +269,8 @@ class App:
     def shot(self, name=None, node=None):
         """Save a screenshot; returns (path, sha1 of the pixels)."""
         r = self.session.call_result("screenshot", settle=SETTLE, **({"node": node["id"]} if node else {}))
+        if isinstance(r.payload, dict) and r.payload.get("scale"):
+            self.scale = float(r.payload["scale"])
         for c in r.content:
             if c.get("type") == "image":
                 png = base64.b64decode(c["data"])
@@ -289,16 +292,19 @@ class App:
         if ia.size != ib.size:
             return ia.size[0] * ia.size[1]
         d = ImageChops.difference(ia, ib)
+        k = self.scale
         for b in (self.text_boxes() if ignore is None else ignore):
-            x0, y0 = max(0, int(b["x"]) - 2), max(0, int(b["y"]) - 2)
-            x1, y1 = int(b["x"] + b["width"]) + 2, int(b["y"] + b["height"]) + 2
+            x0, y0 = max(0, int((b["x"] - 2) * k)), max(0, int((b["y"] - 2) * k))
+            x1, y1 = int((b["x"] + b["width"] + 2) * k), int((b["y"] + b["height"] + 2) * k)
             d.paste((0, 0, 0), (x0, y0, x1, y1))
         mask = d.convert("L").point(lambda v: 255 if v > 8 else 0)
         return sum(1 for v in mask.getdata() if v)
 
     def crop_diff(self, path_a, path_b, box):
-        """Differing pixels between two screenshots inside `box` = (x0, y0, x1, y1)."""
+        """Differing pixels between two screenshots inside `box` = (x0, y0, x1, y1), in logical pixels."""
         from PIL import Image, ImageChops
+        k = self.scale
+        box = tuple(int(v * k) for v in box)
         d = ImageChops.difference(Image.open(path_a).convert("RGB").crop(box), Image.open(path_b).convert("RGB").crop(box))
         return sum(1 for v in d.convert("L").point(lambda v: 255 if v > 8 else 0).getdata() if v)
 
@@ -311,6 +317,11 @@ class App:
             if n.get("role") == "Label" and b and x0 <= b["x"] < x1 and y0 <= b["y"] < y1:
                 out.append(((n.get("text") or {}).get("document_text")) or n.get("value") or "")
         return out
+
+    def pixel(self, path, x, y):
+        """The RGB of the screenshot at the logical point (x, y)."""
+        from PIL import Image
+        return Image.open(path).convert("RGB").getpixel((int(x * self.scale), int(y * self.scale)))
 
     def sha(self, node=None):
         return self.shot(f"_tmp", node)[1]
@@ -377,3 +388,25 @@ def dialogs(app):
 
 def field_text(node):
     return (node.get("text") or {}).get("document_text", "")
+
+
+def open_ac(a, entry):
+    """Open the Audio Center from the player menu through `entry` (the menu entry's name)."""
+    for attempt in range(3):
+        a.click(a.find(role="Button", label="Menú"))
+        a.settle(0.6)
+        item = a.find(role="MenuItem", label=entry)
+        if item:
+            break
+        a.settle(0.5)
+    a.click(item)
+    a.settle(1.0)
+    return ac_dialog(a)
+
+
+def ac_dialog(a):
+    return a.find(role="Dialog", label="Centro de Audio Avanzado")
+
+
+def ac_close_button(a):
+    return a.find(role="Button", label="Cerrar", pred=lambda n: n["bounds"]["x"] < 1400)
