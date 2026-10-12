@@ -381,3 +381,118 @@ fn the_keyboard_walks_and_activates_the_player_menu() {
     access_click(&mut tree, stub);
     assert_eq!(count.get(), 10);
 }
+
+/// The row menu's "Enviar a otra lista" submenu entry after "Reproducir",
+/// opened by a right-click at (50, 50); `count` gets 7 from "Oxidy Drift".
+fn with_send_to_menu(count: &Rc<Cell<u32>>) -> WidgetTree {
+    let lists = count.clone();
+    let mut tree = tree();
+    let target = tree.add(
+        FixedSize::new()
+            .width(100.0)
+            .height(100.0)
+            .child(Spacer::new())
+            .context_menu(move |_, _| {
+                let lists = lists.clone();
+                Some(Box::new(context_menu(vec![
+                    MenuEntry::item(lit!("Reproducir")),
+                    MenuEntry::submenu(lit!("Enviar a otra lista"), move || {
+                        vec![
+                            MenuEntry::item(lit!("Nueva lista")),
+                            MenuEntry::divider(),
+                            MenuEntry::item(lit!("Oxidy Drift")).on_activate(adds(&lists, 7)),
+                        ]
+                    })
+                    .icon(icons::window::close),
+                ])))
+            }),
+    );
+    tree.add(
+        VStack::new()
+            .spacing(0.0)
+            .alignment(HAlignment::Leading)
+            .child(target)
+            .child(Spacer::new()),
+    );
+    layout(&mut tree);
+    right_click(&mut tree, Point::new(50.0, 50.0));
+    tree
+}
+
+fn centre_of(tree: &WidgetTree, label: &str) -> Point {
+    let b = tree.bounds(tree.find_by_label(label).unwrap());
+    Point::new(b.x + b.width / 2.0, b.y + b.height / 2.0)
+}
+
+#[test]
+fn a_pointer_click_on_a_submenu_entry_sends_after_the_hover_delay() {
+    // Probe F1: the pointer rests on "Enviar a otra lista", clicks it, the
+    // hover delay passes, then the pointer goes to a playlist and clicks it.
+    // A submenu that also opened on the hover delay left two copies, both
+    // closed as the pointer left the trigger, and the click sent nothing.
+    use crate::teksilo_ui::test_support::pointer_event;
+    use teksilo::core::PointerPhase;
+    let count = counter();
+    let mut tree = with_send_to_menu(&count);
+    let frames = |tree: &mut WidgetTree, from: f32| {
+        for i in 0..6 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            tree.frame_tick().set(from + 0.1 * i as f32);
+            layout(tree);
+        }
+    };
+    let parent = centre_of(&tree, "Enviar a otra lista");
+    pointer_event(
+        &mut tree,
+        PointerPhase::Move,
+        parent,
+        PointerButton::Primary,
+        1_000,
+    );
+    pointer_event(
+        &mut tree,
+        PointerPhase::Down,
+        parent,
+        PointerButton::Primary,
+        1_010,
+    );
+    pointer_event(
+        &mut tree,
+        PointerPhase::Up,
+        parent,
+        PointerButton::Primary,
+        1_020,
+    );
+    assert_eq!(
+        tree.active_overlays().len(),
+        2,
+        "the click opens the submenu"
+    );
+    frames(&mut tree, 0.0);
+    assert_eq!(tree.active_overlays().len(), 2, "once");
+    let entry = centre_of(&tree, "Oxidy Drift");
+    pointer_event(
+        &mut tree,
+        PointerPhase::Move,
+        entry,
+        PointerButton::Primary,
+        2_000,
+    );
+    frames(&mut tree, 1.0);
+    pointer_event(
+        &mut tree,
+        PointerPhase::Down,
+        entry,
+        PointerButton::Primary,
+        3_000,
+    );
+    pointer_event(
+        &mut tree,
+        PointerPhase::Up,
+        entry,
+        PointerButton::Primary,
+        3_010,
+    );
+    assert_eq!(count.get(), 7, "the playlist received the songs");
+    assert!(tree.active_overlays().is_empty(), "both menus closed");
+}
