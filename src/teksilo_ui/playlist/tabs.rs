@@ -16,7 +16,11 @@
 //! list is open. After a switch, the active tab scrolls into view as Iced
 //! scrolls it ([`tab_scroll_offset`]).
 //!
-//! The strip is rebuilt when the playlists change.
+//! The strip is rebuilt when the playlists change. A rebuild keeps the
+//! strip's horizontal offset (Iced's scrollable keeps its state by id), and a
+//! request to bring a tab into view that arrives before the tab exists (a
+//! new playlist is switched to before the tabs reload) waits for the
+//! rebuild that adds it.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -57,6 +61,10 @@ pub const CHEVRON_PADDING: f32 = 4.0;
 pub struct TabsStrip {
     vm: PlaylistViewModel,
     viewport: Rc<Cell<f32>>,
+    offset: Rc<Cell<f32>>,
+    pending: Rc<Cell<Option<i64>>>,
+    reassert: Rc<Cell<bool>>,
+    bring_into_view: Option<Rc<dyn Fn()>>,
     root: Option<WidgetId>,
 }
 
@@ -72,6 +80,10 @@ impl TabsStrip {
         Self {
             vm,
             viewport: Rc::new(Cell::new(0.0)),
+            offset: Rc::new(Cell::new(0.0)),
+            pending: Rc::new(Cell::new(None)),
+            reassert: Rc::new(Cell::new(false)),
+            bring_into_view: None,
             root: None,
         }
     }
@@ -145,12 +157,23 @@ impl Widget for TabsStrip {
             BindingLevel::Rebuild,
         );
         let tabs = self.vm.tab_list();
-        let row = tabs.iter().fold(
-            HStack::new()
-                .spacing(TAB_SPACING)
-                .alignment(VAlignment::Center),
-            |row, tab| row.child(self.tab(tab)),
-        );
+        let mut row = HStack::new()
+            .spacing(TAB_SPACING)
+            .alignment(VAlignment::Center);
+        let mut tab_ids = Vec::with_capacity(tabs.len());
+        for tab in &tabs {
+            let id = ctx.add(self.tab(tab));
+            tab_ids.push((tab.id, id));
+            // A tab reports whether it is selected: a switch from elsewhere
+            // (the overflow list, a new playlist, an import) is no event on
+            // the tab, and must still reach the accessibility tree.
+            let playlist = tab.id;
+            self.vm
+                .active_playlist()
+                .map(move |active| *active == Some(playlist))
+                .bind_to(id, ctx.binding_registry(), BindingLevel::AccessibilityOnly);
+            row = row.child(id);
+        }
         let scroll = ScrollArea::new()
             .vertical_scroll_bar_policy(ScrollBarPolicy::AlwaysOff)
             .horizontal_scroll_bar_policy(ScrollBarPolicy::AlwaysOff)
@@ -163,23 +186,74 @@ impl Widget for TabsStrip {
                 ),
             );
         let scroll_x = scroll.scroll_x_signal().clone();
+        let scroll_to = {
+            let scroll_x = scroll_x.clone();
+            move |x: f32| scroll_x.set(x)
+        };
+        // A rebuild starts where the previous strip was.
+        scroll_to(self.offset.get());
+        let offset = self.offset.clone();
+        ctx.effect(&scroll_x, move |x| offset.set(*x));
 
-        // After a switch, the active tab comes into view.
-        let (vm, viewport) = (self.vm.clone(), self.viewport.clone());
-        ctx.effect(&self.vm.tab_scroll_request(), move |request| {
-            let Some((_, id)) = *request else {
-                return;
-            };
-            let tabs = vm.tab_list();
-            let names: Vec<&str> = tabs.iter().map(|tab| tab.name.as_str()).collect();
-            let Some(position) = tabs.iter().position(|tab| tab.id == id) else {
-                return;
-            };
-            if let Some(offset) =
-                tab_scroll_offset(&names, position, scroll_x.get(), viewport.get())
-            {
-                scroll_x.set(offset);
+        // After a switch, the active tab comes into view: the tab of the
+        // request, among the tabs this build shows. A tab not built yet
+        // stays pending until the rebuild that adds it.
+        let names: Rc<Vec<(i64, String)>> =
+            Rc::new(tabs.iter().map(|tab| (tab.id, tab.name.clone())).collect());
+        let bring_into_view: Rc<dyn Fn()> = Rc::new({
+            let (pending, viewport, scroll_x, scroll_to) = (
+                self.pending.clone(),
+                self.viewport.clone(),
+                scroll_x.clone(),
+                scroll_to.clone(),
+            );
+            move || {
+                let Some(id) = pending.get() else {
+                    return;
+                };
+                let Some(position) = names.iter().position(|(tab, _)| *tab == id) else {
+                    return;
+                };
+                pending.set(None);
+                let names: Vec<&str> = names.iter().map(|(_, name)| name.as_str()).collect();
+                if let Some(offset) =
+                    tab_scroll_offset(&names, position, scroll_x.get(), viewport.get())
+                {
+                    scroll_to(offset);
+                }
             }
+        });
+        bring_into_view();
+        self.bring_into_view = Some(bring_into_view.clone());
+        let pending = self.pending.clone();
+        ctx.effect(&self.vm.tab_scroll_request(), move |request| {
+            if let Some((_, id)) = *request {
+                pending.set(Some(id));
+                bring_into_view();
+            }
+        });
+
+        // A rebuild while a tab has the keyboard focus hands the focus to
+        // the strip's first tab, and the scroll area brings it into view at
+        // its next layout, undoing the scroll above: the focus goes to the
+        // active tab instead, and the next layout brings that tab back into
+        // view after the scroll area's own move.
+        let vm = self.vm.clone();
+        let reassert = self.reassert.clone();
+        ctx.run_after_mount(move |ctx| {
+            let Some(focused) = ctx.focused() else {
+                return;
+            };
+            if !tab_ids.iter().any(|(_, id)| *id == focused) {
+                return;
+            }
+            let active = vm.active_playlist().get();
+            if let Some((_, id)) = tab_ids.iter().find(|(tab, _)| Some(*tab) == active)
+                && *id != focused
+            {
+                ctx.request_focus(*id);
+            }
+            reassert.set(true);
         });
 
         let mut bar = HStack::new()
@@ -209,6 +283,12 @@ impl Widget for TabsStrip {
             .root
             .and_then(|id| ctx.child_size(id, proposal))
             .unwrap_or_else(|| proposal.resolve(0.0, HEIGHT));
+        if self.reassert.take()
+            && let Some(bring_into_view) = &self.bring_into_view
+        {
+            self.pending.set(self.vm.active_playlist().get());
+            bring_into_view();
+        }
         // The tabs' viewport: the strip less the leading space and the
         // chevron, if any.
         let chevron = if tabs_overflow(self.vm.tab_list().iter().map(|tab| tab.name.as_str())) {

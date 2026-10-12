@@ -66,6 +66,8 @@ playlist-all-lists = Todas las listas
 
 ## Bottom bar
 playlist-search = Buscar...
+# Not in the Iced UI: the search field's accessible name; its placeholder "Buscar..." is also the filter column's.
+playlist-search-label = Buscar en la lista
 # Not in the Iced UI: the lyrics icon's accessible name (the player menu's "Lyrics", quirk fix 15).
 playlist-lyrics = Lyrics
 # Not in the Iced UI: the shuffle icon's accessible name.

@@ -37,7 +37,8 @@
 //!   them.
 //! - The "Enviar a otra lista" entry is a real submenu: it opens beside the
 //!   menu, with a chevron, where Iced replaced the menu with the playlist list
-//!   and an "Atrás" entry.
+//!   and an "Atrás" entry. It opens on a click (or → / Enter), as Iced's
+//!   does, never by resting the pointer on it ([`SUBMENU_HOVER_DELAY`]).
 //!
 //! The player menu is a small custom list ([`PlayerMenu`]): a `MenuList`'s
 //! frame is the theme's menu surface, shared by every menu, so it cannot also
@@ -427,6 +428,15 @@ fn build_list(entries: Vec<MenuEntry>, metrics: RowMetrics, look: Look) -> MenuL
         })
 }
 
+/// How long the pointer rests on a submenu entry before the submenu opens by
+/// itself: never, in practice. A click (or → / Enter) opens it, as the Iced
+/// "Enviar a otra lista" opens on a click only. Teksilo 0.16.0's
+/// `MenuItem::submenu` opens a second copy of a submenu a click already
+/// opened once its hover delay elapses; leaving the trigger then closes
+/// both, and the click meant for an entry falls through to nothing (probe
+/// F1). With no hover opening there is no second copy.
+pub const SUBMENU_HOVER_DELAY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
 /// One `MenuItem` in the Iced look.
 fn menu_item(entry: MenuEntry, metrics: RowMetrics, look: Look) -> MenuItem {
     let row_style = MenuRowStyle {
@@ -440,7 +450,8 @@ fn menu_item(entry: MenuEntry, metrics: RowMetrics, look: Look) -> MenuItem {
                 Look::Filter => Box::new(filter_menu(entries())),
             };
             list
-        }),
+        })
+        .submenu_delay(SUBMENU_HOVER_DELAY),
         EntryKind::Item(action) => {
             let item = MenuItem::new(entry.label.clone());
             match action {

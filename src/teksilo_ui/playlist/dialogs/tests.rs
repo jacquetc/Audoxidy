@@ -8,6 +8,7 @@ use teksilo::tokens::HAlignment;
 use teksilo::widgets::{Spacer, VStack};
 
 use super::*;
+use crate::frontend::commands::playlist;
 use crate::teksilo_ui::playlist::testing::{Env, all_of_type, restored, tree};
 use crate::teksilo_ui::test_support::{
     access_click, drain_dialog_titles, find_by_name, layout, press, with_shipped_messages,
@@ -237,4 +238,131 @@ fn a_picked_path_is_taken_and_a_cancel_or_an_error_is_nothing() {
     );
     assert_eq!(picked(FileDialogResult::Folder(None)), None);
     assert_eq!(picked(FileDialogResult::Error("no portal".into())), None);
+}
+
+/// Presents the dialog `open` opens, builds it as the window manager would,
+/// then closes it with Escape: the key to the dialog, then the dismissal the
+/// framework runs for a modal that Escape may close. Returns the file dialog
+/// requests left pending.
+fn escaped(env: &Env, open: impl Fn(&mut EventContext, &PlaylistViewModel) + 'static) -> usize {
+    use teksilo::core::modal::{ModalCloseBehavior, ModalContent};
+    use teksilo::core::overlay::DismissReason;
+    use teksilo::core::{Key, Modifiers};
+
+    let (mut tree, _, dialogs) = tree(env);
+    let vm = env.vm.clone();
+    press(&mut tree, move |ctx| open(ctx, &vm));
+    let queued = tree
+        .drain_pending_modal_requests()
+        .pop()
+        .expect("a dialog was presented");
+    assert!(
+        matches!(
+            queued.request.close_behavior,
+            ModalCloseBehavior::EscapeKey | ModalCloseBehavior::EscapeOrClickOutside
+        ),
+        "Escape closes it: {:?}",
+        queued.request.close_behavior
+    );
+    let on_dismiss = queued.request.on_dismiss.clone();
+    let content = match queued.request.content {
+        ModalContent::Deferred(build) => build(&mut tree),
+        ModalContent::ExistingWidget(id) => id,
+    };
+    layout(&mut tree);
+    if let Some(field) =
+        crate::teksilo_ui::test_support::first_of_type(&tree, content, "TextInputField")
+    {
+        tree.focus(field);
+    }
+    tree.press_key(Key::Escape, Modifiers::NONE);
+    layout(&mut tree);
+    if let Some(on_dismiss) = on_dismiss {
+        press(&mut tree, move |ctx| on_dismiss(DismissReason::Escape, ctx));
+    }
+    env.services.runtime.tick();
+    dialogs.pending_count()
+}
+
+#[test]
+fn quirk_4_escape_closes_the_create_dialog_without_creating() {
+    let env = restored();
+    let before = playlist::list_playlists(&env.services.ctx)
+        .recv_blocking()
+        .unwrap()
+        .len();
+    escaped(&env, |ctx, vm| open_create(ctx, vm, Vec::new()));
+    env.services
+        .ctx
+        .db
+        .read(|_| Ok(()))
+        .recv_blocking()
+        .unwrap();
+    let after = playlist::list_playlists(&env.services.ctx)
+        .recv_blocking()
+        .unwrap()
+        .len();
+    assert_eq!(after, before);
+}
+
+#[test]
+fn quirk_4_escape_closes_the_rename_dialog_without_renaming() {
+    let env = restored();
+    let bowie = env.playlist_id("David Bowie");
+    escaped(&env, move |ctx, vm| {
+        open_rename(ctx, vm, bowie, "David Bowie")
+    });
+    env.services
+        .ctx
+        .db
+        .read(|_| Ok(()))
+        .recv_blocking()
+        .unwrap();
+    let names: Vec<String> = playlist::list_playlists(&env.services.ctx)
+        .recv_blocking()
+        .unwrap()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert!(names.contains(&"David Bowie".to_string()), "{names:?}");
+}
+
+#[test]
+fn quirk_4_escape_closes_the_delete_confirmation_without_deleting() {
+    let env = restored();
+    let bowie = env.playlist_id("David Bowie");
+    escaped(&env, move |ctx, vm| {
+        open_delete(ctx, vm, bowie, "David Bowie")
+    });
+    env.services
+        .ctx
+        .db
+        .read(|_| Ok(()))
+        .recv_blocking()
+        .unwrap();
+    assert!(
+        playlist::list_playlists(&env.services.ctx)
+            .recv_blocking()
+            .unwrap()
+            .iter()
+            .any(|p| p.id == bowie)
+    );
+}
+
+#[test]
+fn quirk_4_escape_closes_the_export_dialog_without_asking_where() {
+    let env = restored();
+    let bowie = env.playlist_id("David Bowie");
+    let pending = escaped(&env, move |ctx, vm| {
+        open_export(
+            ctx,
+            vm,
+            bowie,
+            "David Bowie",
+            ExportFormat::M3U8,
+            ExportMode::SingleFile,
+        );
+    });
+    assert_eq!(pending, 0, "no file dialog");
+    assert!(env.vm.pending_ops().is_empty(), "no export");
 }

@@ -168,11 +168,12 @@ impl Widget for BottomBar {
         let row = HStack::new()
             .spacing(SPACING)
             .alignment(VAlignment::Center)
-            .child(SearchField::new(
-                vm.search(),
-                tr!(playlist_search()),
-                SEARCH_WIDTH,
-            ))
+            .child(
+                // Named on its own: the placeholder alone would name it like
+                // the filter column's field.
+                SearchField::new(vm.search(), tr!(playlist_search()), SEARCH_WIDTH)
+                    .label(tr!(playlist_search_label())),
+            )
             .child(Spacer::new())
             .child(icons_group);
         let root = ctx.add(

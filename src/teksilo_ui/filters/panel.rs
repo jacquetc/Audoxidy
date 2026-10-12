@@ -7,8 +7,9 @@
 //!   current type in Inter Medium 14 px, secondary, 15 px from the leading
 //!   edge, and a 28 px up / down chevron 7 px from the trailing one, with a
 //!   2 px `COLOR_CONTRAST` line under it. It is a popover trigger: the menu
-//!   ([`filter_menu`]) opens under it, 172 px wide, the five types with their
-//!   icons, the current one in the accent (`:219-345`); Escape and a click
+//!   ([`filter_menu`]) opens under it, 172 px wide and centred in the column
+//!   (`:566-578`), the five types with their icons, the current one in the
+//!   accent (`:219-345`); Escape and a click
 //!   outside close it (quirk fix 4), and it is anchored at the selector
 //!   (quirk fix 7; Iced puts it at a fixed 70 px from the window top);
 //! - the **letter grid** (`:348-468`), shown once the index holds the type:
@@ -21,10 +22,17 @@
 //!   its cells (Left / Right by one, Up / Down by a line) and Enter or Space
 //!   chooses the focused one;
 //! - the **tree** (`:470-553`), shown once the index holds the type, in the
-//!   remaining height: 32 px rows, a 22 px chevron (or 16 px of space for a
-//!   leaf) after 12 px of indent per level, the label in Inter Medium 13 px,
-//!   secondary, 15 px from the trailing edge; the selected and the hovered
-//!   row are filled with `COLOR_CONTRAST`. The chevron toggles the node; a
+//!   remaining height. A row is an iced `button` with its default padding
+//!   (5 px above and below, 10 px on the sides) around a container whose
+//!   `center_y(Length::Fill)` replaces its `height(32)`: in the scrollable the
+//!   fill shrinks to the content, so a node's row is its 22 px chevron plus
+//!   10 (32 px) and a leaf's row its 15 px label line plus 10 (25 px). The
+//!   chevron (or 16 px of space for a leaf) comes after 10 px and 12 px of
+//!   indent per level, the label in Inter Medium 13 px, secondary, 25 px
+//!   (10 + 15) from the trailing edge; the row of the active filter
+//!   (`selected_tree_node`) and the hovered row are filled with
+//!   `COLOR_CONTRAST`, not the row the keyboard cursor is on. Each row is
+//!   named by its label for assistive technologies. The chevron toggles the node; a
 //!   click or Enter on the row selects it (the library is then filtered);
 //!   the arrows, Home, End, `*`, `+` and `-` are the tree view's own. Long
 //!   labels end in an ellipsis where Iced cuts them with "..." by an
@@ -88,8 +96,17 @@ pub const CELLS_PER_LINE: usize = 10;
 /// The corner radius of a selected letter's fill (`:454`), which is larger
 /// than the cell, so a disc.
 pub const LETTER_RADIUS: f32 = 18.0;
-/// A tree row's height (`:538`).
+/// A node's row height: the 22 px chevron and the button's 5 px above and
+/// below (`:496-505`; the 32 px of `TREE_ROW_HEIGHT`).
 pub const ROW_HEIGHT: f32 = TREE_ROW_HEIGHT;
+/// A leaf's row height: the label's 15 px line (13 + 2,
+/// `smart_truncate_text`, `widgets.rs:961-968`) and the button's 5 px above
+/// and below; the container's `center_y(Length::Fill)` (`:505`) overrides its
+/// `height(32)`, and the scrollable shrinks the fill to the content.
+pub const LEAF_ROW_HEIGHT: f32 = 25.0;
+/// The iced button's default horizontal padding around a row's content
+/// (`button::DEFAULT_PADDING`, 10 px; the row `button` at `:496` keeps it).
+pub const ROW_INSET: f32 = 10.0;
 /// The indent per level (`:490`).
 pub const INDENT: f32 = 12.0;
 /// The chevron button and icon (`:508`).
@@ -174,8 +191,9 @@ impl Widget for TypeMenu {
         );
         let root = ctx.add(
             // The popover stretches its content to the trigger's 202 px; the
-            // menu keeps its 172 px at the leading edge.
-            ZStack::new().alignment(Alignment::TOP_LEADING).child(
+            // menu keeps its 172 px, centred as Iced centres it in the
+            // 202 px column (`library_filters.rs:566-578`).
+            ZStack::new().alignment(Alignment::TOP_CENTER).child(
                 FixedSize::new()
                     .width(MENU_WIDTH)
                     .child(filter_menu(type_entries(&self.vm))),
@@ -465,15 +483,26 @@ impl Widget for LetterGrid {
 // The tree
 // ---------------------------------------------------------------------------
 
-/// One tree row (`:470-545`).
+/// The height of the row of `item`: [`ROW_HEIGHT`] for a node,
+/// [`LEAF_ROW_HEIGHT`] for a leaf (see the module documentation).
+pub fn row_height(item: &VisibleTreeItem) -> f32 {
+    if item.has_children {
+        ROW_HEIGHT
+    } else {
+        LEAF_ROW_HEIGHT
+    }
+}
+
+/// One tree row (`:470-545`). It is filled while it is the active filter
+/// (`active`, Iced's `selected_tree_node`, `:494`) or hovered.
 fn tree_row(
     item: &VisibleTreeItem,
     toggle: Rc<dyn Fn(&mut EventContext)>,
-    selected: bool,
+    active: Signal<bool>,
 ) -> Box<dyn Widget> {
     let hovered = Signal::new(false);
-    let fill = hovered.map(move |hovered| {
-        if selected || *hovered {
+    let fill = active.or(&hovered).map(|filled| {
+        if *filled {
             SurfaceRole::Raised
         } else {
             SurfaceRole::Transparent
@@ -503,13 +532,19 @@ fn tree_row(
     };
     Box::new(
         FixedSize::new()
-            .height(ROW_HEIGHT)
+            .height(row_height(item))
             .child(
                 ZStack::new()
                     .alignment(Alignment::CENTER_LEADING)
                     .child(RectWidget::new().background(fill))
                     .child(
-                        Padding::new(0.0, ROW_TRAILING, 0.0, item.depth as f32 * INDENT).child(
+                        Padding::new(
+                            0.0,
+                            ROW_INSET + ROW_TRAILING,
+                            0.0,
+                            ROW_INSET + item.depth as f32 * INDENT,
+                        )
+                        .child(
                             HStack::new()
                                 .spacing(0.0)
                                 .alignment(VAlignment::Center)
@@ -525,21 +560,28 @@ fn tree_row(
                         ),
                     ),
             )
-            .on_hover(move |entered, _| hovered.set(entered)),
+            .on_hover(move |entered, _| hovered.set(entered))
+            .access_label(lit!(&item.label)),
     )
 }
 
 /// The tree view over the view-model's source.
 fn tree(vm: &FiltersViewModel) -> impl Widget + use<> {
     let source = vm.tree_source();
+    let heights = vm.tree_source();
     let activate = vm.clone();
+    let active_node = vm.selected_node();
     let shown = vm.subfilters().map(|letters| !letters.is_empty());
     TreeView::from_source_keyed(
         source,
         vm.selection(),
-        |item: &VisibleTreeItem, row, selected| tree_row(item, row.toggle_callback(), selected),
+        move |item: &VisibleTreeItem, row, _cursor| {
+            let id = item.id.clone();
+            let active = active_node.map(move |node| node.as_deref() == Some(id.as_str()));
+            tree_row(item, row.toggle_callback(), active)
+        },
     )
-    .item_height(ROW_HEIGHT)
+    .item_height_fn(move |index| heights.row_height_at(index))
     // Iced's bars are 8 px overlays that take no width from the rows, and the
     // wheel does not glide (`standard_scrollable`, `widgets.rs:1648`); with no
     // glide a plain signal carries the offset, which the column's actions

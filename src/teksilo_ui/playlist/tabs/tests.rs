@@ -207,3 +207,134 @@ fn the_strip_reads_in_spanish() {
         );
     });
 }
+
+#[test]
+fn a_new_playlist_switched_to_before_its_tab_exists_scrolls_into_view() {
+    // The switch asks for the tab before the tabs reload adds it: the request
+    // waits for the rebuild instead of being dropped.
+    let env = restored();
+    overflowing(&env);
+    let (mut tree, root) = mounted(&env);
+    let id = playlist::create_playlist(&env.services.ctx, "Una lista nueva al final", Vec::new())
+        .recv_blocking()
+        .unwrap();
+    env.vm.switch_playlist(id, false);
+    env.wait(|| env.vm.active_playlist().get() == Some(id));
+    layout(&mut tree);
+    assert!(find_by_name(&tree, root, "Una lista nueva al final").is_empty());
+    env.reload_tabs();
+    layout(&mut tree);
+    let _ = tree.render();
+    layout(&mut tree);
+    let tab = tab_bounds(&tree, root, "Una lista nueva al final");
+    let chevron = tree.bounds(tree.find_by_label("All playlists").unwrap());
+    assert!(
+        tab.x >= 0.0 && tab.x + tab.width <= chevron.x,
+        "the new tab is in view: {tab:?}"
+    );
+}
+
+#[test]
+fn a_rebuild_keeps_the_strips_offset() {
+    let env = restored();
+    overflowing(&env);
+    let (mut tree, root) = mounted(&env);
+    let id = env.vm.tab_list().last().unwrap().id;
+    env.vm.switch_playlist(id, false);
+    env.wait(|| env.vm.active_playlist().get() == Some(id));
+    layout(&mut tree);
+    let _ = tree.render();
+    layout(&mut tree);
+    let before = tab_bounds(&tree, root, "Audoxidy").x;
+    assert!(before < 0.0, "scrolled: {before}");
+    // A playlist is created elsewhere: the tabs reload and the strip
+    // rebuilds, where Iced's scrollable keeps its offset by id.
+    playlist::create_playlist(&env.services.ctx, "X", Vec::new())
+        .recv_blocking()
+        .unwrap();
+    env.reload_tabs();
+    layout(&mut tree);
+    let _ = tree.render();
+    layout(&mut tree);
+    assert_eq!(tab_bounds(&tree, root, "Audoxidy").x, before);
+}
+
+#[test]
+fn a_switch_from_the_overflow_list_reaches_the_tabs_accessibility() {
+    // Probe F5b: picked in the overflow list, the new tab stayed unselected
+    // for assistive technology (and the old one selected) until a click on
+    // a tab.
+    let env = restored();
+    overflowing(&env);
+    let (mut tree, root) = mounted(&env);
+    let _ = tree.sync_accessibility();
+    let chevron = tree.find_by_label("All playlists").unwrap();
+    access_click(&mut tree, chevron);
+    let menu = *menus(&tree).last().unwrap();
+    let entry = find_by_name(&tree, menu, "Audoxidy")[0];
+    tree.click(entry);
+    layout(&mut tree);
+    // The list closes and the tree is sent before the switch is applied.
+    let _ = tree.sync_accessibility();
+    let id = env.playlist_id("Audoxidy");
+    env.wait(|| env.vm.active_playlist().get() == Some(id));
+    layout(&mut tree);
+    let update = tree.sync_accessibility();
+    let selected = |name: &str| {
+        let node = teksilo::core::accessibility::widget_id_to_node_id(tab(&tree, root, name));
+        update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == node)
+            .map(|(_, node)| node.is_selected())
+    };
+    assert_eq!(selected("Audoxidy"), Some(Some(true)), "re-sent, selected");
+    assert_eq!(
+        selected("David Bowie"),
+        Some(Some(false)),
+        "re-sent, not selected"
+    );
+}
+
+#[test]
+fn a_new_playlist_comes_into_view_after_a_tab_was_clicked() {
+    // Probe F5a: a clicked tab keeps the focus; the rebuild for a new
+    // playlist moved it to the first tab, which the strip brought back
+    // into view, undoing the switch's scroll.
+    let env = restored();
+    let (mut tree, root) = mounted(&env);
+    let bowie = tab_bounds(&tree, root, "David Bowie");
+    crate::teksilo_ui::test_support::tap_at(&mut tree, bowie.center());
+    layout(&mut tree);
+    for name in [
+        "Mi lista",
+        "Con boton",
+        "Lista de relleno 0",
+        "Lista de relleno 1",
+        "Lista de relleno 2",
+    ] {
+        let id = playlist::create_playlist(&env.services.ctx, name, Vec::new())
+            .recv_blocking()
+            .unwrap();
+        // The tabs reload and the switch arrives; the app loop runs the
+        // strip's post-mount actions before it lays the new strip out.
+        env.reload_tabs();
+        env.vm.switch_playlist(id, false);
+        env.wait(|| env.vm.active_playlist().get() == Some(id));
+        tree.run_mount_actions(&mut teksilo::core::window::NoopWindowOps);
+        layout(&mut tree);
+        tree.run_mount_actions(&mut teksilo::core::window::NoopWindowOps);
+        layout(&mut tree);
+        let _ = tree.render();
+        layout(&mut tree);
+        let tab = tab_bounds(&tree, root, name);
+        let right = match tree.find_by_label("All playlists") {
+            Some(chevron) => tree.bounds(chevron).x,
+            None => tree.bounds(root).width,
+        };
+        assert!(
+            tab.x >= 0.0 && tab.x + tab.width <= right,
+            "{name} is in view: {tab:?}"
+        );
+    }
+}

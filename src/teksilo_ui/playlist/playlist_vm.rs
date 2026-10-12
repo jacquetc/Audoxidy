@@ -277,12 +277,19 @@ impl PlaylistViewModel {
             {
                 vm.refresh_rows();
                 vm.sync_playing();
+                // A search typed before the restore had no cursor to filter.
+                vm.apply_search(&vm.inner.search.get());
+                // An end of track published before the restore settled was
+                // ignored (quirk fix 6); its flag is still set, so it is
+                // handled now (a no-op when none is pending).
+                vm.end_of_track();
             }
         }));
         let weak = self.weak();
         handles.push(services.session.cursor_version().observe(move |_| {
             if let Some(vm) = upgrade(&weak) {
                 vm.sync_playing();
+                vm.drop_stale_preload();
             }
         }));
         let weak = self.weak();
@@ -471,6 +478,14 @@ impl PlaylistViewModel {
         {
             inner.scroll.send(ScrollTarget::Item(playing));
         }
+    }
+
+    /// Drops a pending preload that is no longer the song Next would play,
+    /// whatever changed the cursor (a removal, a search, a disabled song, a
+    /// switch): Iced defect D28, `playback::drop_stale_preload`.
+    fn drop_stale_preload(&self) {
+        let ctx = &self.inner.services.ctx;
+        self.read_cursor(|cursor| playback::drop_stale_preload(ctx, cursor));
     }
 
     /// Applies the search and scrolls to the top (`PlaylistSearchChanged`,
@@ -904,6 +919,7 @@ impl PlaylistViewModel {
         };
         let seq = self.inner.switch_seq.get().wrapping_add(1);
         self.inner.switch_seq.set(seq);
+        self.inner.services.playlist_content.switch_started(id);
         let vm = self.clone();
         self.inner
             .services
@@ -939,6 +955,11 @@ impl PlaylistViewModel {
             .set(id, &name, is_system, shuffle, repeat);
         services.active_playlist.refresh();
         services.playlist_content.notify_changed();
+        if services.playlist_content.switch_finished(id) {
+            // The playlist's content changed while it loaded: its rows may
+            // predate the change.
+            services.playlist_content.reload();
+        }
         self.select_playing_row();
         let target = self
             .inner

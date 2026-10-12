@@ -17,7 +17,15 @@
 //! Whoever else changes the cursor's rows (a switch of playlist, a search)
 //! calls [`notify_changed`](PlaylistContentModel::notify_changed) so the view
 //! rebuilds through the same signal.
+//!
+//! A switch of playlist is announced with
+//! [`switch_started`](PlaylistContentModel::switch_started): a content change
+//! of the playlist being loaded arrives while the cursor still shows the old
+//! one, so it is remembered, and
+//! [`switch_finished`](PlaylistContentModel::switch_finished) tells the
+//! view-model to reload the rows it just applied, which may predate it.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use teksilo::prelude::{AsyncRuntimeHandle, BuildContext, Signal};
@@ -37,6 +45,8 @@ struct Inner {
     session: SessionState,
     latest: Latest,
     version: Signal<u64>,
+    switching: Cell<Option<i64>>,
+    missed: Cell<bool>,
 }
 
 /// The active playlist's rows, kept current. UI thread only; clones share one
@@ -65,16 +75,43 @@ impl PlaylistContentModel {
                 session,
                 latest: Latest::new(),
                 version: Signal::new(0),
+                switching: Cell::new(None),
+                missed: Cell::new(false),
             }),
         }
     }
 
-    /// Whether `event` is a change to the rows of the active playlist.
+    /// Whether `event` is a change to the rows of the active playlist. A
+    /// change to the playlist a switch is loading is remembered for
+    /// [`switch_finished`](Self::switch_finished).
     pub fn is_content_event(&self, event: &Event) -> bool {
         let Event::Playlists(PlaylistsEvent::ContentChanged { playlist_id }) = event else {
             return false;
         };
+        if self.inner.switching.get() == Some(*playlist_id) {
+            self.inner.missed.set(true);
+        }
         self.playlist_id() == Some(*playlist_id)
+    }
+
+    /// A switch to `playlist_id` started: its content changes are remembered
+    /// until [`switch_finished`](Self::switch_finished). A newer switch
+    /// replaces an older one.
+    pub fn switch_started(&self, playlist_id: i64) {
+        self.inner.switching.set(Some(playlist_id));
+        self.inner.missed.set(false);
+    }
+
+    /// The switch to `playlist_id` was applied. Returns whether the
+    /// playlist's content changed while it loaded, so the rows applied may be
+    /// older than the change and must be reloaded (the change's event was not
+    /// for the cursor's playlist when it arrived).
+    pub fn switch_finished(&self, playlist_id: i64) -> bool {
+        if self.inner.switching.get() != Some(playlist_id) {
+            return false;
+        }
+        self.inner.switching.set(None);
+        self.inner.missed.replace(false)
     }
 
     /// Subscribes the model to the content changes of the active playlist; the
@@ -100,9 +137,7 @@ impl PlaylistContentModel {
 
     /// The active playlist's id; `None` until the restore succeeded.
     pub fn playlist_id(&self) -> Option<i64> {
-        self.inner
-            .session
-            .with_cursor(|cursor| cursor.playlist_id())
+        self.inner.session.read_cursor(PlaybackCursor::playlist_id)
     }
 
     /// Runs `f` on the rows on screen (the search result when a search is
@@ -110,7 +145,7 @@ impl PlaylistContentModel {
     pub fn with_groups<R>(&self, f: impl FnOnce(&[PlaylistFolderGroup]) -> R) -> Option<R> {
         self.inner
             .session
-            .with_cursor(|cursor| f(cursor.active_groups()))
+            .read_cursor(|cursor| f(cursor.active_groups()))
     }
 
     /// Runs `f` on the cursor; `None` until the restore succeeded.
@@ -248,6 +283,29 @@ mod tests {
         assert!(model.is_content_event(&content(active)));
         assert!(!model.is_content_event(&content(active + 100)));
         assert!(!model.is_content_event(&Event::Playlists(PlaylistsEvent::ListChanged)));
+    }
+
+    #[test]
+    fn a_content_change_of_the_playlist_a_switch_loads_is_remembered() {
+        let (_ctx, seeded, _runtime, _session, model) = restored();
+        let active = seeded.playlist("David Bowie").unwrap().id;
+        let other = seeded.playlist("Audoxidy").unwrap().id;
+        let content =
+            |playlist_id| Event::Playlists(PlaylistsEvent::ContentChanged { playlist_id });
+        assert!(!model.switch_finished(other), "no switch");
+        model.switch_started(other);
+        assert!(!model.is_content_event(&content(other)), "not shown yet");
+        assert!(model.is_content_event(&content(active)));
+        assert!(model.switch_finished(other), "its rows may be stale");
+        assert!(!model.switch_finished(other), "once");
+        // A switch with no change meanwhile, and one overtaken by another.
+        model.switch_started(other);
+        assert!(!model.switch_finished(other));
+        model.switch_started(other);
+        model.switch_started(active);
+        assert!(!model.is_content_event(&content(other)));
+        assert!(!model.switch_finished(other));
+        assert!(!model.switch_finished(active));
     }
 
     #[test]
