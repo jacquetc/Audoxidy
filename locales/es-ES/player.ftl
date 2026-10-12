@@ -38,6 +38,8 @@ player-play-pause = Reproducir o pausar
 player-next = Pista siguiente
 # Not in the Iced UI: accessible name of the seek slider.
 player-seek = Posición de reproducción
+# Not in the Iced UI: the seek slider's position as assistive technology reads it.
+player-seek-value = { $elapsed } de { $total }
 
 ## Errors
 # Not in the Iced UI: the Iced UI only logs a failed scan.

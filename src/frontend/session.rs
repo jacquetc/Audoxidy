@@ -84,8 +84,12 @@ pub fn restore(ctx: &AppContext) -> Reply<SessionRestore> {
         let mut cursor = PlaybackCursor::new(loaded);
         let player = &engine.player;
 
+        // A window closed while the restore waited in the queue: the
+        // shutdown drains the queue, and this job must not start playback
+        // behind the stop (the cursor still comes back with nothing playing).
         let song = saved
             .last_song_id
+            .filter(|_| !engine.is_closing())
             .and_then(|id| cursor.song(id).map(|song| (id, track_request(song))));
         let (song_id, position_secs, is_playing) = match song {
             Some((song_id, track)) => {
@@ -170,9 +174,16 @@ pub fn persist_now(ctx: &AppContext, cursor: &PlaybackCursor) -> Reply<()> {
 /// database worker writes every queued job, including the saves of
 /// [`persist_now`], before it stops. Returns `true` when every thread was
 /// joined in time.
+///
+/// A [`restore`] still queued on the engine worker (a window closed during
+/// the startup) runs during the shutdown; it sees the worker closing and
+/// loads nothing, and playback is stopped once more after the workers have
+/// stopped, so nothing plays after the close.
 pub fn stop(ctx: &AppContext) -> bool {
     ctx.player.stop();
-    ctx.shutdown()
+    let joined = ctx.shutdown();
+    ctx.player.stop();
+    joined
 }
 
 #[cfg(test)]

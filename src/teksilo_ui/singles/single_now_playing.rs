@@ -123,6 +123,14 @@ impl SingleNowPlaying {
         self.inner.notice.clone()
     }
 
+    /// Sets the play state at once, after a transport command changed it on
+    /// the engine: the monitor's `StateChanged` would only follow on its next
+    /// poll (up to 500 ms later), while Iced reads the engine on the very next
+    /// render (`app.rs:1695`).
+    pub fn set_playing(&self, playing: bool) {
+        self.inner.is_playing.set_if_changed(playing);
+    }
+
     /// Applies a playback event; the events of other kinds are ignored.
     pub fn on_event(&self, event: &Event) {
         let Event::Playback(event) = event else {

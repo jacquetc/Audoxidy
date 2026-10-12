@@ -70,6 +70,7 @@ struct Inner {
     title_tooltip: Signal<Option<String>>,
     artist_tooltip: Signal<Option<String>>,
     elapsed: Signal<String>,
+    total_time: Signal<String>,
     seek_value: Signal<f32>,
     duration_known: Signal<bool>,
     info_visible: Signal<bool>,
@@ -120,6 +121,7 @@ impl PlayerViewModel {
                 title_tooltip: Signal::new(None),
                 artist_tooltip: Signal::new(None),
                 elapsed: Signal::new(String::new()),
+                total_time: Signal::new(String::new()),
                 seek_value: Signal::new(0.0),
                 duration_known: Signal::new(false),
                 info_visible: Signal::new(false),
@@ -202,6 +204,12 @@ impl PlayerViewModel {
     /// The elapsed time, `mm:ss`.
     pub fn elapsed(&self) -> Signal<String> {
         self.inner.elapsed.clone()
+    }
+
+    /// The track's duration, `mm:ss` as [`elapsed`](Self::elapsed): with it,
+    /// the seek slider tells assistive technologies the position as a time.
+    pub fn total_time(&self) -> Signal<String> {
+        self.inner.total_time.clone()
     }
 
     /// The seek slider's value, 0..=1. The slider writes it as the user drags;
@@ -292,6 +300,7 @@ impl PlayerViewModel {
             return false;
         }
         playback::stop(&self.inner.services.ctx);
+        self.refresh_play_state();
         true
     }
 
@@ -395,9 +404,21 @@ impl PlayerViewModel {
             .read_cursor(|cursor| act(&services.ctx, cursor))
             .is_some();
         if acted {
+            self.refresh_play_state();
             self.wake_controls_at(Instant::now(), false);
         }
         acted
+    }
+
+    /// Shows the engine's play state at once after a transport command, as
+    /// Iced's synchronous `set_playing` and re-render do (`app.rs:1695`,
+    /// `audio/engine.rs:1303`), instead of waiting for the monitor's next
+    /// poll.
+    fn refresh_play_state(&self) {
+        let services = &self.inner.services;
+        services
+            .now_playing
+            .set_playing(services.ctx.player.is_playing());
     }
 
     fn change_track(
@@ -414,6 +435,7 @@ impl PlayerViewModel {
         let outcome = services
             .session
             .with_cursor(|cursor| command(&services.ctx, cursor))?;
+        self.refresh_play_state();
         self.wake_controls_at(Instant::now(), false);
         Some(outcome.map(|_| ()))
     }
@@ -453,12 +475,6 @@ impl PlayerViewModel {
         }
         self.publish_timers();
         self.arm_wake();
-    }
-
-    /// A click anywhere in the panel's control band or seek bar hides the
-    /// volume bubble at once (Iced: the press that triggers an action).
-    pub fn clicked(&self) {
-        self.wake_controls_at(Instant::now(), false);
     }
 
     /// Runs what is due at `now`: hides the volume bubble and quiets the
@@ -621,6 +637,7 @@ impl PlayerViewModel {
         };
         inner.seek_value.set_if_changed(progress);
         inner.elapsed.set_if_changed(format_duration(position));
+        inner.total_time.set_if_changed(format_duration(duration));
         inner
             .duration_known
             .set_if_changed(fine_seek_enabled(duration));

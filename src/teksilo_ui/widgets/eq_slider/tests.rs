@@ -281,3 +281,20 @@ fn the_spanish_slider_offers_the_iced_reset_wording() {
         );
     });
 }
+
+#[test]
+fn a_slider_smaller_than_its_handle_lays_the_handle_at_the_start_without_panicking() {
+    use teksilo::canvas::Rect;
+    use teksilo::core::styles::SliderOrientation;
+    // `f32::clamp` panics when its minimum exceeds its maximum, which a
+    // slider shorter (or narrower) than the 16 px handle produced.
+    let short = Rect::new(4.0, 10.0, 24.0, 10.0);
+    let vertical = body::geometry(short, SliderOrientation::Vertical, 0.5, false);
+    assert_eq!(vertical.handle.y, 10.0);
+    let narrow = Rect::new(4.0, 10.0, 10.0, 24.0);
+    let horizontal = body::geometry(narrow, SliderOrientation::Horizontal, 0.5, false);
+    assert_eq!(horizontal.handle.x, 4.0);
+    let collapsed = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let none = body::geometry(collapsed, SliderOrientation::Vertical, 1.0, false);
+    assert_eq!(none.handle.y, 0.0);
+}

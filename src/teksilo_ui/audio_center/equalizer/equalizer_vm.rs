@@ -20,6 +20,19 @@
 //! - the preset name the tab shows as "Preset: X" ([`preset_name`](EqualizerViewModel::preset_name)):
 //!   none while the preset is "Default" or there is none (`audio_center.rs:2813`).
 //!
+//! # Loading after the startup restore
+//!
+//! Iced restores the equalizer synchronously before its window exists
+//! (`src/gui/app.rs:839-875`) and reads the engine when the tab opens
+//! (`audio_center.rs:1143-1152`). Here the restore runs on the workers while
+//! the window is up, so a view-model built while it is in flight waits for
+//! it to settle and only then reads the engine
+//! ([`reload`](EqualizerViewModel::reload)). Until that first read has
+//! answered ([`is_loaded`](EqualizerViewModel::is_loaded)), the controls and
+//! the preset dialogs do nothing: the state they would change and persist is
+//! not the restored one yet (persisting it would overwrite the saved
+//! equalizer).
+//!
 //! # The preset dialogs
 //!
 //! [`begin_load`](EqualizerViewModel::begin_load) opens the Load dialog's
@@ -45,10 +58,12 @@ use std::rc::Rc;
 use teksilo::data::ListModel;
 use teksilo::prelude::*;
 
+use teksilo::core::signal::ObserverHandle;
+
 use crate::frontend::commands::eq::{self, EqSnapshot, EqState, PresetEntry, PresetKind};
 use crate::frontend::{AppContext, FrontendError, Reply};
 use crate::logic::eq::{DEFAULT_PRESET_NAME, band_frequency_label};
-use crate::teksilo_ui::app::AppServices;
+use crate::teksilo_ui::app::{AppServices, RestoreStatus};
 
 /// The most bands the engine has (31-band mode); the view-model keeps a gain
 /// signal for each.
@@ -103,6 +118,12 @@ struct Inner {
     /// Bumped by every local change, so a `reload` that was asked earlier and
     /// answers later does not overwrite it.
     epoch: Cell<u64>,
+    /// Whether a read of the engine made after the startup restore has
+    /// answered: the controls do nothing before.
+    loaded: Cell<bool>,
+    /// Waits for the startup restore to settle, when it was in flight at
+    /// construction.
+    settle_observer: RefCell<Option<ObserverHandle>>,
     enabled: Signal<bool>,
     bands_31: Signal<bool>,
     mode: Signal<usize>,
@@ -137,15 +158,18 @@ fn put<T: Clone + PartialEq + 'static>(signal: &Signal<T>, value: T) {
 
 impl EqualizerViewModel {
     /// The view-model over `services`, showing the equalizer as the engine has
-    /// it now (read on the database worker: the signals hold the defaults
-    /// until that answers, which [`reload`](Self::reload) also does). It also
-    /// asks the preset list for its rows.
+    /// it once the startup restore has settled (at once when it is not in
+    /// flight): read on the database worker, the signals hold the defaults
+    /// until that answers, as [`reload`](Self::reload) does. It also asks the
+    /// preset list for its rows.
     pub fn new(services: &AppServices) -> Self {
         let state = EqState::default();
         let vm = Self {
             inner: Rc::new(Inner {
                 services: services.clone(),
                 epoch: Cell::new(0),
+                loaded: Cell::new(false),
+                settle_observer: RefCell::new(None),
                 enabled: Signal::new(state.enabled),
                 bands_31: Signal::new(state.bands_31),
                 mode: Signal::new(MODE_20),
@@ -156,7 +180,23 @@ impl EqualizerViewModel {
                 state: RefCell::new(state),
             }),
         };
-        vm.reload();
+        let status = services.session.status();
+        if status.get() == RestoreStatus::Pending {
+            // Reading the engine now would show (and let the controls
+            // persist) the defaults the restore is about to replace.
+            let weak = Rc::downgrade(&vm.inner);
+            let handle = status.observe(move |status| {
+                if status.is_settled()
+                    && let Some(inner) = weak.upgrade()
+                {
+                    inner.settle_observer.borrow_mut().take();
+                    Self { inner }.reload();
+                }
+            });
+            *vm.inner.settle_observer.borrow_mut() = Some(handle);
+        } else {
+            vm.reload();
+        }
         services.eq_presets.reload();
         vm
     }
@@ -235,10 +275,18 @@ impl EqualizerViewModel {
         self.inner.state.borrow().clone()
     }
 
+    /// Whether the equalizer was read from the engine after the startup
+    /// restore: until then the controls and the preset dialogs do nothing
+    /// (see the module documentation).
+    pub fn is_loaded(&self) -> bool {
+        self.inner.loaded.get()
+    }
+
     // --- Loading -----------------------------------------------------------------------------
 
     /// Reads the equalizer again from the engine and the database, and shows
-    /// it. A change made meanwhile wins over the (older) answer.
+    /// it. A change made meanwhile wins over the (older) answer. The first
+    /// answer makes the view-model [loaded](Self::is_loaded).
     pub fn reload(&self) {
         let asked = self.inner.epoch.get();
         let reply = eq::load_state(&self.inner.services.ctx);
@@ -253,6 +301,7 @@ impl EqualizerViewModel {
                             *vm.inner.state.borrow_mut() = state;
                             vm.sync();
                         }
+                        vm.inner.loaded.set(true);
                     }
                     Err(error) => {
                         tracing::warn!("the equalizer state could not be read: {error}");
@@ -270,8 +319,11 @@ impl EqualizerViewModel {
         put(&inner.bands_31, state.bands_31);
         put(&inner.mode, if state.bands_31 { MODE_31 } else { MODE_20 });
         put(&inner.preamp, state.preamp_gain);
-        for (signal, gain) in inner.gains.iter().zip(&state.gains) {
-            put(signal, *gain);
+        // A band the state has no gain for shows 0, as Iced's
+        // `gains.get(i).unwrap_or(0.0)` (`audio_center.rs:2952`): an imported
+        // preset may carry fewer bands than the active set.
+        for (index, signal) in inner.gains.iter().enumerate() {
+            put(signal, state.gains.get(index).copied().unwrap_or(0.0));
         }
         let name = state
             .selected_preset
@@ -283,8 +335,14 @@ impl EqualizerViewModel {
     }
 
     /// Runs a command on the state, shows the result, and follows the
-    /// persistence write it returns.
+    /// persistence write it returns. Before the view-model is
+    /// [loaded](Self::is_loaded) nothing runs, and the signals a control may
+    /// have written are put back to the state.
     fn apply(&self, command: impl FnOnce(&AppContext, &mut EqState) -> Reply<()>) {
+        if !self.is_loaded() {
+            self.sync();
+            return;
+        }
         let reply = {
             let mut state = self.inner.state.borrow_mut();
             command(&self.inner.services.ctx, &mut state)
@@ -343,7 +401,9 @@ impl EqualizerViewModel {
     // --- The presets -------------------------------------------------------------------------
 
     /// Opens the Load dialog's session: refreshes the preset list and
-    /// captures the state Cancel restores (`app.rs:4488`).
+    /// captures the state Cancel restores (`app.rs:4488`). The dialog opens
+    /// only once the view-model is [loaded](Self::is_loaded), so that the
+    /// backup is the restored equalizer.
     pub fn begin_load(&self) -> PresetLoad {
         let services = &self.inner.services;
         services.eq_presets.reload();
@@ -361,9 +421,10 @@ impl EqualizerViewModel {
 
     /// The Save dialog's "Guardar": saves the state as the custom preset
     /// `name` (`EqPresetSaveConfirm`, `audio_center.rs:1471`). An empty name
-    /// does nothing, as in Iced; a failure is reported (quirk fix 8).
+    /// does nothing, as in Iced; a failure is reported (quirk fix 8). Nothing
+    /// is saved before the view-model is [loaded](Self::is_loaded).
     pub fn save_preset(&self, name: &str, ctx: &mut EventContext) {
-        if name.is_empty() {
+        if name.is_empty() || !self.is_loaded() {
             return;
         }
         let reply = eq::save_preset(&self.inner.services.ctx, &self.inner.state.borrow(), name);
@@ -565,13 +626,15 @@ impl PresetLoad {
         });
     }
 
-    /// "Importar", once the file is picked: saves the file's preset, applies
-    /// it at once and persists (`EqPresetFileImported`,
-    /// `audio_center.rs:1542`). Cancelling the dialog afterwards still puts
-    /// the captured state back, as in Iced.
+    /// "Importar", once the file is picked: saves the file's preset, then,
+    /// when the reply lands, applies it and persists (`EqPresetFileImported`,
+    /// `audio_center.rs:1542`). It is applied on the UI thread at that moment,
+    /// so a row previewed while the file was read is overridden in the engine
+    /// and in the tab alike, never in one only. A Cancelar that came first
+    /// wins (quirk fix 60): the preset joins the list, the backup stays.
     pub fn import(&self, path: PathBuf, ctx: &mut EventContext) {
         let vm = &self.inner.vm;
-        let reply = eq::import_preset(&vm.inner.services.ctx, &vm.inner.state.borrow(), path);
+        let reply = eq::import_preset(&vm.inner.services.ctx, path);
         let owner = vm.clone();
         let session = self.clone();
         vm.spawn_reported(ctx, EqFailure::Import, async move {
@@ -582,15 +645,8 @@ impl PresetLoad {
                 .services
                 .eq_presets
                 .replace_from(&imported.presets);
-            if session.inner.cancelled.get() {
-                // Cancelar came before the import finished: the facade has
-                // applied and saved the import since, so restore the backup
-                // again rather than show the imported state (quirk fix 60).
-                session.restore_backup();
-            } else {
-                *owner.inner.state.borrow_mut() = imported.state;
-                owner.inner.epoch.set(owner.inner.epoch.get() + 1);
-                owner.sync();
+            if !session.inner.cancelled.get() {
+                owner.apply(|ctx, state| eq::apply_preset(ctx, state, &imported.preset));
             }
             Ok(())
         });

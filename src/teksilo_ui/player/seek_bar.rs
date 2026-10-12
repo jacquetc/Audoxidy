@@ -8,6 +8,11 @@
 //! the rail set to 5 px, white to the position and `COLOR_CONTRAST` after it.
 //! A press or drag anywhere on it seeks to that fraction of the track.
 //!
+//! The slider keeps Iced's step of 0.001 (`player.rs:242`): it is the grid a
+//! drag snaps to and what an arrow key over the hovered Iced slider moves
+//! (`iced_widget` `slider.rs:289-320`, `393-405`). Its accessible value is the
+//! position as a time, not the fraction (Iced has no accessibility).
+//!
 //! When the duration is unknown ([`fine_seek_enabled`]) there is nothing to
 //! seek to, so the strip shows a flat, inert rail instead of the slider:
 //! `COLOR_CONTRAST` at 50 %, with no handle, no jump and nothing to drag.
@@ -119,9 +124,23 @@ impl SeekBar {
     }
 
     /// The slider, or the flat rail when the duration is unknown.
-    fn control(&self) -> Box<dyn Widget> {
+    fn control(&self, ctx: &mut BuildContext) -> Box<dyn Widget> {
         if self.vm.duration_known().get() {
             let vm = self.vm.clone();
+            // The slider's value is a fraction of the track; assistive
+            // technologies are told the position as a time ("1:23 of 4:05"),
+            // in the current locale.
+            let times = self.vm.elapsed().zip(&self.vm.total_time());
+            let value_text = ctx
+                .locale_signal()
+                .zip(&times)
+                .map(|(_, (elapsed, total))| {
+                    tr!(player_seek_value(
+                        elapsed = elapsed.clone(),
+                        total = total.clone()
+                    ))
+                    .resolve_now()
+                });
             Box::new(
                 FixedSize::new()
                     .width(SLIDER_WIDTH)
@@ -134,7 +153,8 @@ impl SeekBar {
                             .label(tr!(player_seek()))
                             .on_change(move |fraction, _ctx| {
                                 vm.seek_fraction(fraction);
-                            }),
+                            })
+                            .access_value(value_text),
                     ),
             )
         } else {
@@ -162,7 +182,7 @@ impl Widget for SeekBar {
         let strip = FixedSize::new().width(SIZE).height(SEEK_HEIGHT).child(
             ZStack::new()
                 .child(RectWidget::new().background(Color::new(0.0, 0.0, 0.0, SEEK_BAR_ALPHA)))
-                .child(self.control()),
+                .child(self.control(ctx)),
         );
         let root = ctx.add(strip);
         self.root = Some(root);

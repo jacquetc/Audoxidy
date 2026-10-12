@@ -153,7 +153,11 @@ pub fn geometry(
             let track_x = bounds.x + (bounds.width - TRACK_WIDTH) / 2.0;
             let filled = bounds.height * percent;
             let handle_y = bounds.y + bounds.height - percent * bounds.height - HANDLE_SIZE / 2.0;
-            let handle_y = handle_y.clamp(bounds.y, bounds.y + bounds.height - HANDLE_SIZE);
+            // Not `f32::clamp`: it panics when the slider is shorter than the
+            // handle (the range is then empty). The handle sits at the start.
+            let handle_y = handle_y
+                .min(bounds.y + bounds.height - HANDLE_SIZE)
+                .max(bounds.y);
             SliderGeometry {
                 track: Rect::new(track_x, bounds.y, TRACK_WIDTH, bounds.height),
                 fill: Rect::new(
@@ -174,7 +178,11 @@ pub fn geometry(
             let track_y = bounds.y + (bounds.height - TRACK_WIDTH) / 2.0;
             let filled = bounds.width * percent;
             let handle_x = bounds.x + percent * bounds.width - HANDLE_SIZE / 2.0;
-            let handle_x = handle_x.clamp(bounds.x, bounds.x + bounds.width - HANDLE_SIZE);
+            // Not `f32::clamp`, which panics on a slider narrower than the
+            // handle; the handle then sits at the start.
+            let handle_x = handle_x
+                .min(bounds.x + bounds.width - HANDLE_SIZE)
+                .max(bounds.x);
             let (fill_x, handle_x) = if rtl {
                 (
                     bounds.x + bounds.width - filled,
