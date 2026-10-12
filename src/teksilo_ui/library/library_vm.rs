@@ -1215,8 +1215,10 @@ impl LibraryViewModel {
     /// A primary press in the grid at `at`, in content space, with
     /// `modifiers`; `rect_of` gives each card's and band song's rectangle in
     /// the grid as laid out (as for [`select_grid_marquee`](Self::select_grid_marquee)).
-    /// On a card, the grid's coming selection change is taken as Iced's click
-    /// on it ([`on_grid_selection`](Self::on_grid_selection)); on a song of
+    /// On a card, the grid's coming change of
+    /// [`grid_selection`](Self::grid_selection) is replaced by Iced's
+    /// `handle_click` on that card, over the cards and the open album's songs
+    /// (`src/gui/library.rs:913-922`); on a song of
     /// the band, the row handles it; on the background, nothing is selected
     /// any more, before the rubber band starts (Iced's `LibraryDeselect` on
     /// the grid's background, `src/gui/library.rs:1956`,
@@ -1250,8 +1252,10 @@ impl LibraryViewModel {
         }
     }
 
-    /// A key reached the grid: its next selection change is the keyboard's
-    /// ([`on_grid_selection`](Self::on_grid_selection)).
+    /// A key reached the grid: its next selection change is its own
+    /// navigation's, read from the change's size (one card added, or one
+    /// removed from three or more, is a toggle that keeps the open album's
+    /// songs; anything else replaces the selection).
     pub fn grid_key_pressed(&self) {
         *self.inner.grid_press.borrow_mut() = None;
         self.inner.grid_key.set(true);
