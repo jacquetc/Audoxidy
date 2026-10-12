@@ -36,6 +36,7 @@ struct Fixture {
     tree: WidgetTree,
     vm: MeterViewModel,
     slot: WidgetId,
+    layer: std::rc::Rc<std::cell::Cell<Option<WidgetId>>>,
 }
 
 impl Fixture {
@@ -50,7 +51,9 @@ impl Fixture {
         let (mut tree, runtime) = tree_with_async(&ctx);
         let services = AppServices::new(&AppHandles::new(ctx), runtime);
         let vm = MeterViewModel::new(&services);
-        let slot = tree.add(MeterSlot::new(vm.clone()));
+        let slot = MeterSlot::new(vm.clone());
+        let layer = slot.layer_handle();
+        let slot = tree.add(slot);
         let sized = tree.add(
             FixedSize::new()
                 .width(width)
@@ -84,6 +87,7 @@ impl Fixture {
             tree,
             vm,
             slot,
+            layer,
         }
     }
 
@@ -126,9 +130,11 @@ impl Fixture {
         !self.tree.active_overlays().is_empty()
     }
 
+    /// The settings panel's bounds (the overlay covers the window).
     fn popup_bounds(&self) -> teksilo::canvas::Rect {
-        let overlay = self.tree.active_overlays()[0];
-        self.tree.overlay_content_bounds(overlay).unwrap()
+        let layer = self.layer.get().expect("the popup's layer");
+        let panel = first_of_type(&self.tree, layer, "MeterPopup").expect("the panel");
+        self.tree.bounds(panel)
     }
 
     /// The control named `name` in the open popup.
@@ -649,4 +655,79 @@ fn the_spanish_labels_are_iceds_literals() {
         assert_eq!(tr!(meter_ms_mode()).resolve_now(), "Modo M/S");
         assert_eq!(tr!(meter_infinite_hold()).resolve_now(), "Hold infinito");
     });
+}
+
+#[test]
+fn a_click_on_a_steppers_value_opens_it_for_typing_and_keeps_the_popup() {
+    // Probe F6: the click closed the popup instead.
+    let mut f = Fixture::new(true);
+    f.open_popup();
+    let stepper = f.tree.bounds(f.control("RMS window"));
+    let at = Point::new(
+        stepper.x + stepper.width / 2.0,
+        stepper.y + stepper.height / 2.0,
+    );
+    tap_at(&mut f.tree, at);
+    let _ = f.tree.render();
+    layout(&mut f.tree);
+    assert!(f.popup_open(), "the popup stays open");
+    let field = f.tree.focused().and_then(|id| f.tree.widget_type_name(id));
+    assert!(
+        field.is_some_and(|name| name.contains("TextInputField")),
+        "the value is open for typing: {field:?}"
+    );
+}
+
+#[test]
+fn enter_on_a_stepper_opens_its_value_and_keeps_the_popup() {
+    let mut f = Fixture::new(true);
+    f.open_popup();
+    f.key("RMS window", Key::Enter);
+    let _ = f.tree.render();
+    layout(&mut f.tree);
+    assert!(f.popup_open());
+    let field = f.tree.focused().and_then(|id| f.tree.widget_type_name(id));
+    assert!(field.is_some_and(|name| name.contains("TextInputField")));
+}
+
+#[test]
+fn a_click_outside_the_popup_closes_it_and_reaches_nothing_under_it() {
+    // Iced's popup sits over a blocker that takes the press
+    // (`MeterPopupClose`, `app.rs:5850-5857`): the card under it is not
+    // selected.
+    let (services, vm) = library_util::loaded();
+    let meter_vm = MeterViewModel::new(&services);
+    meter_vm.enabled().set(true);
+    let mut tree = library_util::tree_for(&services);
+    let id = library_util::mount_at(
+        &mut tree,
+        crate::teksilo_ui::library::LibraryPanel::new(vm.clone())
+            .meter_slot(MeterSlot::new(meter_vm)),
+        998.0,
+        library_util::REGION.1,
+    );
+    library_util::settle_layout(&mut tree);
+    let slot = tree.bounds(library_util::all_of_type(&tree, id, "MeterSlot")[0]);
+    let at = Point::new(slot.x + 20.0, slot.y + 20.0);
+    tree.dispatch_event(WidgetEvent::pointer_down(
+        at,
+        PointerButton::Secondary,
+        Modifiers::NONE,
+    ));
+    tree.dispatch_event(WidgetEvent::pointer_up(
+        at,
+        PointerButton::Secondary,
+        Modifiers::NONE,
+    ));
+    layout(&mut tree);
+    assert_eq!(tree.active_overlays().len(), 1, "the popup opened");
+    let card = tree.bounds(library_util::all_of_type(&tree, id, "AlbumTile")[0]);
+    tap_at(&mut tree, Point::new(card.x + 60.0, card.y + 60.0));
+    let _ = tree.render();
+    assert!(tree.active_overlays().is_empty(), "the popup closed");
+    assert_eq!(vm.grid_selection().count(), 0, "the card was not clicked");
+    // The next click reaches the card.
+    tap_at(&mut tree, Point::new(card.x + 60.0, card.y + 60.0));
+    assert_eq!(vm.grid_selection().count(), 1);
+    services.ctx.shutdown();
 }
