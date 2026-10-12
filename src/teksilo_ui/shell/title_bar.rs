@@ -11,7 +11,9 @@
 //!   white; the others are in the secondary text colour;
 //! - the drag region;
 //! - the window controls, `minimize.svg` (30 px, lifted 4 px), `maximize.svg`
-//!   (30 px) and `close.svg` (34 px), 5 px apart, 5 px from the edge.
+//!   (30 px) and `close.svg` (34 px), 5 px apart, 5 px from the edge. Not in
+//!   Iced, they have accessible names, and the maximize control is named
+//!   "Restore" while the window is maximized ([`MaximizeControl`]).
 //!
 //! The streaming pills are disabled: in the Iced UI they only move the
 //! highlight (no streaming source exists).
@@ -230,17 +232,7 @@ fn window_controls() -> Padding {
             }
         },
     ));
-    let maximize = control(
-        icons::window::maximize(),
-        CONTROL_SIZE,
-        tr!(titlebar_maximize()),
-        |ctx| {
-            if let Some(window) = ctx.window() {
-                let placement = window.placement();
-                placement.set(toggled_maximize(placement.get()));
-            }
-        },
-    );
+    let maximize = MaximizeControl { root: None };
     let close = control(
         icons::window::close(),
         CLOSE_SIZE,
@@ -255,6 +247,62 @@ fn window_controls() -> Padding {
             .child(maximize)
             .child(close),
     )
+}
+
+/// The maximize control, named for what it does: "Maximize", or "Restore"
+/// while the window is maximized. The name follows the placement (and the
+/// locale) without rebuilding, so the control keeps the keyboard focus.
+#[derive(Debug)]
+pub struct MaximizeControl {
+    root: Option<WidgetId>,
+}
+
+/// The maximize control's name for `placement`.
+fn maximize_name(placement: WindowPlacement) -> String {
+    if placement.is_maximized() {
+        tr!(titlebar_restore()).resolve_now()
+    } else {
+        tr!(titlebar_maximize()).resolve_now()
+    }
+}
+
+impl Widget for MaximizeControl {
+    fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
+        let control = control(
+            icons::window::maximize(),
+            CONTROL_SIZE,
+            tr!(titlebar_maximize()),
+            |ctx| {
+                if let Some(window) = ctx.window() {
+                    let placement = window.placement();
+                    placement.set(toggled_maximize(placement.get()));
+                }
+            },
+        );
+        let root = match ctx.window() {
+            Some(window) => {
+                let name = ctx
+                    .locale_signal()
+                    .zip(window.placement())
+                    .map(|(_, placement)| maximize_name(*placement));
+                ctx.add(control.access_label(name))
+            }
+            None => ctx.add(control),
+        };
+        self.root = Some(root);
+        vec![root]
+    }
+
+    fn layout_response(&self, proposal: SizeProposal, ctx: &LayoutContext) -> LayoutResponse {
+        self.root
+            .and_then(|id| ctx.child_size(id, proposal))
+            .unwrap_or_else(|| Size::new(CONTROL_SIZE, CONTROL_SIZE))
+            .into()
+    }
+
+    fn children(&self) -> Vec<WidgetId> {
+        self.root.into_iter().collect()
+    }
 }
 
 /// The placement a click on maximize moves to: maximized, or back to a
@@ -311,6 +359,42 @@ mod tests {
             .into_iter()
             .find(|id| tree.accessibility_node(*id).role() == Role::Tab)
             .unwrap()
+    }
+
+    #[test]
+    fn the_maximize_control_is_named_restore_while_the_window_is_maximized() {
+        use teksilo::core::{TeksiloWindowId, WindowState, WindowStateInit};
+        with_shipped_messages("en-US", || {
+            let window = WindowState::new(WindowStateInit {
+                id: TeksiloWindowId::new(1),
+                string_id: None,
+                placement: WindowPlacement::Floating,
+                title: "Audoxidy".to_string(),
+                size: (1360, 880),
+                position: (0, 0),
+                focused: true,
+                resizable: true,
+                always_on_top: false,
+            });
+            let mut tree = WidgetTree::new();
+            tree.set_theme(style::audoxidy_dark());
+            tree.set_window_state(window.clone());
+            let id = tree.add(MaximizeControl { root: None });
+            layout(&mut tree);
+            let control = find_by_name(&tree, id, "Maximize");
+            assert_eq!(control.len(), 1);
+            window.placement().set(WindowPlacement::Maximized);
+            layout(&mut tree);
+            assert!(find_by_name(&tree, id, "Maximize").is_empty());
+            assert_eq!(
+                find_by_name(&tree, id, "Restore"),
+                control,
+                "the same control, renamed"
+            );
+            window.placement().set(WindowPlacement::Floating);
+            layout(&mut tree);
+            assert_eq!(find_by_name(&tree, id, "Maximize"), control);
+        });
     }
 
     #[test]

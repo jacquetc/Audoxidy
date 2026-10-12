@@ -321,6 +321,28 @@ fn a_letter_drops_the_selected_node_but_keeps_the_librarys_filters() {
 }
 
 #[test]
+fn clearing_the_highlight_drops_the_letter_and_the_node_and_leaves_the_library() {
+    // What a reveal does to the column after clearing the library itself
+    // (`app.rs:6108-6110`).
+    let (services, vm) = loaded(FilterType::Genre);
+    let all = vm.visible_items().len();
+    vm.select_subfilter(Some("R"));
+    vm.select_node(&id_of(&vm, "Rock"));
+    assert!(vm.visible_items().len() < all);
+    vm.clear_highlight();
+    assert_eq!(vm.subfilter().get(), None);
+    assert_eq!(vm.selected_node().get(), None);
+    assert!(vm.selection().selected_keys().is_empty());
+    assert_eq!(vm.visible_items().len(), all, "the whole tree is back");
+    assert_eq!(
+        params(&services).genre.as_deref(),
+        Some("Rock"),
+        "the library's filters are the library's to clear"
+    );
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
 fn clearing_the_letter_clears_the_librarys_filters() {
     let (services, vm) = loaded(FilterType::Genre);
     vm.select_node(&id_of(&vm, "Rock"));

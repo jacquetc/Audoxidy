@@ -6,6 +6,8 @@
 //! [`FrontendEventSource`] the app does, over the test's [`AppContext`], with a
 //! poster that drops what it is given: the subscriptions are real, they are
 //! simply never delivered, since a headless tree has no event loop.
+//! [`tree_with_pump`] keeps what is posted instead, and [`EventPump::deliver`]
+//! hands it to the subscribers, as the event loop would.
 //!
 //! The input helpers drive the real dispatch path ([`access_click`],
 //! [`key_down`], [`type_text`], [`pointer_click`], [`press`]), so a handler
@@ -14,7 +16,7 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use teksilo::canvas::Point;
@@ -41,6 +43,61 @@ struct NullPoster;
 
 impl AppEventPoster for NullPoster {
     fn post_subscription_event(&self, _sub_id: SubscriptionId, _event: Box<dyn Any + Send>) {}
+}
+
+/// The events posted to a tree's subscriptions, kept until
+/// [`deliver`](EventPump::deliver) hands them over: the event loop of a
+/// headless tree.
+#[derive(Clone, Default)]
+pub struct EventPump {
+    posted: Arc<Mutex<Vec<(SubscriptionId, Box<dyn Any + Send>)>>>,
+}
+
+impl AppEventPoster for EventPump {
+    fn post_subscription_event(&self, sub_id: SubscriptionId, event: Box<dyn Any + Send>) {
+        self.posted.lock().unwrap().push((sub_id, event));
+    }
+}
+
+impl EventPump {
+    /// How many events wait to be delivered.
+    pub fn pending(&self) -> usize {
+        self.posted.lock().unwrap().len()
+    }
+
+    /// Delivers the waiting events to their subscribers in `tree`, in the
+    /// order they were posted; returns how many. Only `subscribe_event`
+    /// subscriptions: one made with `subscribe_event_with_ctx` needs an
+    /// event context, which a test does not have.
+    pub fn deliver(&self, tree: &WidgetTree) -> usize {
+        let posted = std::mem::take(&mut *self.posted.lock().unwrap());
+        let count = posted.len();
+        for (sub_id, event) in posted {
+            tree.app_context()
+                .dispatch_subscription_event(sub_id, &*event);
+        }
+        count
+    }
+}
+
+/// [`tree_with_async`] whose subscriptions are delivered by the returned
+/// [`EventPump`].
+pub fn tree_with_pump(ctx: &AppContext) -> (WidgetTree, AsyncRuntimeHandle, EventPump) {
+    let runtime = AsyncRuntimeHandle::new();
+    let pump = EventPump::default();
+    let mut tree = WidgetTree::new();
+    tree.set_theme(super::style::audoxidy_dark());
+    let mut state: HashMap<TypeId, Box<dyn Any>> = HashMap::new();
+    state.insert(
+        TypeId::of::<AsyncRuntimeHandle>(),
+        Box::new(runtime.clone()),
+    );
+    let adapter = EventSourceAdapter::new(FrontendEventSource::new(ctx.hub.clone()));
+    tree.set_app_context(Rc::new(
+        TreeAppContext::with_source_and_poster(adapter, Arc::new(pump.clone()))
+            .with_app_state(state),
+    ));
+    (tree, runtime, pump)
 }
 
 /// A `WidgetTree` whose widgets can subscribe to the facade's events.

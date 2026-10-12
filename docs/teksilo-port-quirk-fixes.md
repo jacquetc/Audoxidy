@@ -75,6 +75,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 59 | The equalizer's preset dialogs stay inside the window |
 | 60 | Cancelling the preset dialog after an import saves the restored equalizer |
 | 61 | A click on empty space commits an open value field |
+| 62 | A memory purge never cuts the library |
 
 ---
 
@@ -96,10 +97,13 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:**
   - The keys are handled by the playlist and library panels themselves, so they act on the
     panel that holds keyboard focus.
+  - Ctrl+A (⌘A on macOS) is the app's one global shortcut (`teksilo_ui::app::keys`): it selects
+    all in the playlist or the library when the focus is inside it, in the library when nothing
+    has the focus (Iced's `AppFocus` starts there), and nowhere else; a text field keeps it.
   - The library's Play button plays the library selection.
   - Text fields, menus and dialogs keep these keys.
 - **Why:** a key that acts on a panel the user is not in is surprising.
-- **Pinned by:** the library by `teksilo_ui::library::library_vm::tests::quirk_2_play_appends_the_library_selection_to_the_active_playlist` and `teksilo_ui::library::panel::tests::{quirk_2_enter_on_the_list_appends_the_selection_to_the_active_playlist, quirk_2_the_arrows_move_the_library_selection, quirk_2_the_search_field_keeps_enter_delete_and_the_arrows}`; the filter column by `teksilo_ui::filters::panel::tests::{the_keyboard_walks_the_tree_and_enter_selects_a_node, the_arrows_move_the_focus_between_the_cells_and_enter_chooses_one}`; the playlist by `teksilo_ui::playlist::list::tests::{the_keys_act_on_the_focused_list, the_keys_are_left_to_an_open_menu}` and `teksilo_ui::playlist::playlist_vm::tests::select_all_takes_every_row`, Ctrl+A by the integration wave, plus the "space and Enter in every text field" probe.
+- **Pinned by:** the library by `teksilo_ui::library::library_vm::tests::quirk_2_play_appends_the_library_selection_to_the_active_playlist` and `teksilo_ui::library::panel::tests::{quirk_2_enter_on_the_list_appends_the_selection_to_the_active_playlist, quirk_2_the_arrows_move_the_library_selection, quirk_2_the_search_field_keeps_enter_delete_and_the_arrows}`; the filter column by `teksilo_ui::filters::panel::tests::{the_keyboard_walks_the_tree_and_enter_selects_a_node, the_arrows_move_the_focus_between_the_cells_and_enter_chooses_one}`; the playlist by `teksilo_ui::playlist::list::tests::{the_keys_act_on_the_focused_list, the_keys_are_left_to_an_open_menu}` and `teksilo_ui::playlist::playlist_vm::tests::select_all_takes_every_row`; Ctrl+A by `teksilo_ui::app::tests::{ctrl_a_with_nothing_focused_selects_the_whole_library, ctrl_a_in_the_playlist_selects_every_row, ctrl_a_in_the_library_selects_the_library_and_follows_the_focus, ctrl_a_in_a_text_field_is_the_fields_own, ctrl_a_outside_the_two_panels_selects_nothing}` and `teksilo_ui::app::keys::tests::the_focused_panel_takes_ctrl_a_and_the_library_takes_it_from_nowhere`; plus the "space and Enter in every text field" probe.
 
 ## 3. Closing the window saves state and stops cleanly
 
@@ -860,3 +864,20 @@ Unfinished Iced features (stubs) are not listed here; they are in
   it; it is listed because the mechanism differs.
 - **Why:** an edited value left uncommitted until Enter or Tab.
 - **Pinned by:** `teksilo_ui::audio_center::volume_mix::volume_mix_tab::tests::a_press_on_the_background_commits_an_open_value_field` (it fails without the focusable frame).
+
+## 62. A memory purge never cuts the library
+
+- **Iced:** the memory purge (`GlobalMemoryPurge`, `src/gui/app.rs:1580-1631`) calls
+  `LibraryManager::unload` (`src/gui/library.rs:252-297`). When the library is not focused and
+  holds at least 150 albums and 700 songs, it is cut to its first 100 albums and 500 songs, and it
+  shows only those until the user acts in it (focus, search, keys, view or filter change:
+  `app.rs:2779`, `:2800`, `:3143`, `:3372`, `:4248`), which reloads it. The purge runs every 60 s
+  and under memory pressure, so a large library left unfocused for a minute shrinks.
+- **Teksilo:** the purge drops the oldest covers (16, after 32 more when a scan has just finished,
+  as Iced's `purge_old_covers` does) and the backend frees its memory as in Iced (the string
+  interner, the preload, the stream buffers when nothing plays, memory back to the OS). The library
+  is never cut.
+- **Why:** the user's decision (2026-10-12). A library that loses most of its rows while the user
+  looks elsewhere looks broken.
+- **Pinned by:** `teksilo_ui::app::tests::a_memory_purge_drops_iceds_16_oldest_covers` (the covers
+  go, every song stays) and `teksilo_ui::shared::cover_store::tests::a_purge_drops_iceds_16_and_32_more_after_a_scan`.

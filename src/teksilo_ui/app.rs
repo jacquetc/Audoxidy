@@ -16,12 +16,16 @@
 //! also starts the startup restore ([`SessionState::start_restore`]) on the
 //! main-thread executor, and creates the [`AppServices`] every panel's
 //! view-model is built from, subscribed to the facade's events for the life
-//! of the window.
+//! of the window. The root owns what spans panels: the Ctrl+A shortcut
+//! ([`keys`]) and the effects between view-models and the UI's memory purge
+//! ([`wiring`]).
 
+pub mod keys;
 pub mod services;
 pub mod session;
+pub mod wiring;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use teksilo::core::PlatformTitleBarHost;
@@ -69,12 +73,37 @@ pub struct Regions {
     pub library: WidgetId,
 }
 
+/// The view-models the root builds for the panels that other parts of the app
+/// act on, and the playlist list's id (what takes the playlist's keys).
+#[derive(Clone)]
+pub struct AppViewModels {
+    /// The services they were built from.
+    pub services: AppServices,
+    /// The playlist's.
+    pub playlist: PlaylistViewModel,
+    /// The library's.
+    pub library: LibraryViewModel,
+    /// The filter column's.
+    pub filters: FiltersViewModel,
+    /// The playlist's list, once the panel is built.
+    pub playlist_list: Rc<Cell<Option<WidgetId>>>,
+}
+
+impl std::fmt::Debug for AppViewModels {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppViewModels")
+            .field("playlist_list", &self.playlist_list.get())
+            .finish_non_exhaustive()
+    }
+}
+
 /// The root widget; see the module documentation.
 pub struct App {
     handles: AppHandles,
     services: Option<AppServices>,
     host: Option<Rc<dyn PlatformTitleBarHost>>,
     regions: Rc<Cell<Option<Regions>>>,
+    view_models: Rc<RefCell<Option<AppViewModels>>>,
     root: Option<WidgetId>,
 }
 
@@ -96,6 +125,7 @@ impl App {
             services: None,
             host,
             regions: Rc::new(Cell::new(None)),
+            view_models: Rc::new(RefCell::new(None)),
             root: None,
         }
     }
@@ -103,6 +133,12 @@ impl App {
     /// A handle on the regions, filled when the root is built.
     pub fn regions(&self) -> Rc<Cell<Option<Regions>>> {
         self.regions.clone()
+    }
+
+    /// A handle on the view-models, filled when the root is built with
+    /// services.
+    pub fn view_models(&self) -> Rc<RefCell<Option<AppViewModels>>> {
+        self.view_models.clone()
     }
 
     /// Starts the startup restore on the executor `install_async` registered.
@@ -135,18 +171,79 @@ impl App {
     }
 }
 
-impl App {
-    /// Adds the panel `make` builds from the services, or an empty slot when
-    /// there are none (no async runtime: logged by `start_session`).
-    fn panel(
-        &self,
-        ctx: &mut BuildContext,
-        make: impl FnOnce(&AppServices) -> Box<dyn Widget>,
-    ) -> WidgetId {
-        match &self.services {
-            Some(services) => ctx.add_boxed(make(services)),
-            None => ctx.add(Spacer::new()),
+/// The feature panels, before they are added to the tree.
+struct Panels {
+    player: Box<dyn Widget>,
+    playlist: Box<dyn Widget>,
+    filters: Box<dyn Widget>,
+    library: Box<dyn Widget>,
+    audio_center: Box<dyn Widget>,
+}
+
+impl Panels {
+    /// Empty slots, when there are no services (no async runtime: logged by
+    /// `start_session`).
+    fn empty() -> Self {
+        Self {
+            player: Box::new(Spacer::new()),
+            playlist: Box::new(Spacer::new()),
+            filters: Box::new(Spacer::new()),
+            library: Box::new(Spacer::new()),
+            audio_center: Box::new(Spacer::new()),
         }
+    }
+
+    /// The panels over `services`, with what spans them registered on the
+    /// root being built: the Ctrl+A shortcut and the wiring between
+    /// view-models.
+    fn new(
+        ctx: &mut BuildContext,
+        services: &AppServices,
+        leading_inset: f32,
+    ) -> (Self, AppViewModels) {
+        let playlist = PlaylistViewModel::new(services);
+        let filters = FiltersViewModel::new(services);
+        let library = LibraryViewModel::new(services);
+        let in_playlist = Signal::new(false);
+        let in_library = Signal::new(false);
+        keys::register_select_all(
+            ctx,
+            keys::SelectAllPanels {
+                playlist: playlist.clone(),
+                library: library.clone(),
+                in_playlist: in_playlist.clone(),
+                in_library: in_library.clone(),
+            },
+        );
+        wiring::wire(ctx, services, &filters, &library);
+        let playlist_panel = PlaylistPanel::new(playlist.clone());
+        let view_models = AppViewModels {
+            services: services.clone(),
+            playlist,
+            library: library.clone(),
+            filters: filters.clone(),
+            playlist_list: playlist_panel.list_id(),
+        };
+        let panels = Self {
+            player: Box::new(
+                PlayerPanel::new(PlayerViewModel::new(services)).leading_inset(leading_inset),
+            ),
+            playlist: Box::new(playlist_panel.focus_within(in_playlist)),
+            filters: Box::new(FiltersPanel::new(filters)),
+            library: Box::new(
+                LibraryPanel::new(library)
+                    .meter_slot(MeterSlot::new(MeterViewModel::new(services)))
+                    .focus_within(in_library),
+            ),
+            audio_center: Box::new(AudioCenterPanel::new(
+                AudioCenterViewModel::new(services),
+                Box::new(ConfigTab::new(ConfigViewModel::new(services))),
+                Box::new(EqualizerTab::new(EqualizerViewModel::new(services))),
+                Box::new(EffectsTab::new(EffectsViewModel::new(services))),
+                Box::new(VolumeMixTab::new(VolumeMixViewModel::new(services))),
+            )),
+        };
+        (panels, view_models)
     }
 }
 
@@ -171,18 +268,22 @@ impl Widget for App {
             .host
             .as_ref()
             .map_or(0.0, |host| host.reserved_leading_inset().width);
-        let player_panel = self.panel(ctx, |services| {
-            Box::new(PlayerPanel::new(PlayerViewModel::new(services)).leading_inset(leading_inset))
-        });
+        let panels = match &self.services {
+            Some(services) => {
+                let (panels, view_models) = Panels::new(ctx, services, leading_inset);
+                *self.view_models.borrow_mut() = Some(view_models);
+                panels
+            }
+            None => Panels::empty(),
+        };
+        let player_panel = ctx.add_boxed(panels.player);
         let player = ctx.add(
             FixedSize::new()
                 .width(LEFT_COLUMN_WIDTH)
                 .height(PLAYER_HEIGHT)
                 .child(player_panel),
         );
-        let playlist_panel = self.panel(ctx, |services| {
-            Box::new(PlaylistPanel::new(PlaylistViewModel::new(services)))
-        });
+        let playlist_panel = ctx.add_boxed(panels.playlist);
         let playlist = ctx.add(Expand::new().child(playlist_panel));
         // `Expand::vertical` in a row claims the row's full height without
         // competing for its width: the column is as tall as the window.
@@ -198,17 +299,10 @@ impl Widget for App {
             Some(host) => ctx.add(title_bar::custom(host)),
             None => ctx.add(title_bar::native()),
         };
-        let filters_panel = self.panel(ctx, |services| {
-            Box::new(FiltersPanel::new(FiltersViewModel::new(services)))
-        });
+        let filters_panel = ctx.add_boxed(panels.filters);
         let filters = ctx.add(FixedSize::new().width(FILTERS_WIDTH).child(filters_panel));
         let filters_column = ctx.add(Expand::vertical().child(filters));
-        let library_panel = self.panel(ctx, |services| {
-            Box::new(
-                LibraryPanel::new(LibraryViewModel::new(services))
-                    .meter_slot(MeterSlot::new(MeterViewModel::new(services))),
-            )
-        });
+        let library_panel = ctx.add_boxed(panels.library);
         let library = ctx.add(Expand::new().child(library_panel));
         let body = ctx.add(row().child(filters_column).child(library));
         let right = ctx.add(
@@ -222,15 +316,7 @@ impl Widget for App {
         let main = ctx.add(row().child(left).child(right));
         // The Audio Center floats over the main layout (`app.rs:5160`): a
         // top-leading layer that lets the pointer through outside its frame.
-        let audio_center = self.panel(ctx, |services| {
-            Box::new(AudioCenterPanel::new(
-                AudioCenterViewModel::new(services),
-                Box::new(ConfigTab::new(ConfigViewModel::new(services))),
-                Box::new(EqualizerTab::new(EqualizerViewModel::new(services))),
-                Box::new(EffectsTab::new(EffectsViewModel::new(services))),
-                Box::new(VolumeMixTab::new(VolumeMixViewModel::new(services))),
-            ))
-        });
+        let audio_center = ctx.add_boxed(panels.audio_center);
         let root = ctx.add(
             Panel::new()
                 .padding(0.0)
@@ -269,78 +355,4 @@ impl Widget for App {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::*;
-    use crate::frontend::AppContext;
-    use crate::frontend::test_fixtures::LibraryFixture;
-    use crate::teksilo_ui::test_support::{VIEWPORT, layout, run_until, tree_with_async};
-
-    const TIMEOUT: Duration = Duration::from_secs(10);
-
-    fn mounted() -> (
-        WidgetTree,
-        AsyncRuntimeHandle,
-        AppHandles,
-        Regions,
-        WidgetId,
-    ) {
-        let ctx = AppContext::in_memory().unwrap();
-        LibraryFixture::demo()
-            .seed_on(&ctx.db)
-            .recv_blocking()
-            .unwrap();
-        let handles = AppHandles::new(ctx.clone());
-        let (mut tree, runtime) = tree_with_async(&ctx);
-        let app = App::new(handles.clone(), None);
-        let regions = app.regions();
-        let app_id = tree.add(app);
-        layout(&mut tree);
-        let regions = regions.get().unwrap();
-        (tree, runtime, handles, regions, app_id)
-    }
-
-    fn rect(tree: &WidgetTree, id: WidgetId) -> (f32, f32, f32, f32) {
-        let b = tree.bounds(id);
-        (b.x, b.y, b.width, b.height)
-    }
-
-    #[test]
-    fn the_regions_have_the_iced_geometry() {
-        let (tree, _runtime, handles, r, _) = mounted();
-        let (w, h) = VIEWPORT;
-        assert_eq!(rect(&tree, r.player), (0.0, 0.0, 400.0, 400.0));
-        assert_eq!(rect(&tree, r.playlist), (0.0, 400.0, 400.0, h - 400.0));
-        assert_eq!(rect(&tree, r.title_bar), (400.0, 0.0, w - 400.0, 40.0));
-        assert_eq!(rect(&tree, r.filters), (400.0, 40.0, 202.0, h - 40.0));
-        assert_eq!(rect(&tree, r.library), (602.0, 40.0, w - 602.0, h - 40.0));
-        assert!(handles.ctx.shutdown());
-    }
-
-    #[test]
-    fn the_panels_are_mounted_in_their_regions() {
-        let (tree, _runtime, handles, r, app) = mounted();
-        use crate::teksilo_ui::test_support::first_of_type;
-        assert!(first_of_type(&tree, r.filters, "FiltersPanel").is_some());
-        assert!(first_of_type(&tree, r.player, "PlayerPanel").is_some());
-        assert!(first_of_type(&tree, r.library, "LibraryPanel").is_some());
-        assert!(first_of_type(&tree, r.library, "MeterSlot").is_some());
-        assert!(first_of_type(&tree, r.playlist, "PlaylistPanel").is_some());
-        assert!(first_of_type(&tree, app, "AudioCenterPanel").is_some());
-        assert!(handles.ctx.shutdown());
-    }
-
-    #[test]
-    fn building_the_root_restores_the_session_once() {
-        let (mut tree, runtime, handles, _, _) = mounted();
-        let status = handles.session.status();
-        assert!(run_until(&runtime, TIMEOUT, || status.get().is_settled()));
-        assert!(matches!(status.get(), RestoreStatus::Restored(_)));
-        // A relayout does not start a second restore (the facade would refuse it).
-        layout(&mut tree);
-        runtime.tick();
-        assert!(matches!(status.get(), RestoreStatus::Restored(_)));
-        assert!(handles.ctx.shutdown());
-    }
-}
+mod tests;

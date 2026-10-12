@@ -19,7 +19,7 @@
 //!   A queued path that the LRU evicted meanwhile is skipped. A decode that is
 //!   running is never cancelled: its result lands in the entry, which a tile
 //!   that still holds its signal still shows.
-//! - **Memory.** [`CoverStore::trim`] drops the oldest covers for the
+//! - **Memory.** [`CoverStore::purge`] drops the oldest covers for the
 //!   memory-purge path ([`MaintenanceEvent::PurgeRequested`](crate::frontend::events::MaintenanceEvent::PurgeRequested)); the pixels of a
 //!   cover that a tile still shows survive in that tile's signal until it is
 //!   rebuilt.
@@ -48,6 +48,7 @@ use std::rc::Rc;
 use teksilo::prelude::{AsyncRuntimeHandle, Signal, spawn_blocking};
 use teksilo::widgets::ImageWidget;
 
+use crate::frontend::events::PurgeReason;
 use crate::teksilo_ui::widgets::{CoverImage, SharedCover};
 use crate::utils::covers::{CoverCache, DecodedCover};
 
@@ -63,9 +64,13 @@ pub const MAX_IN_FLIGHT: usize = 4;
 /// The most decodes running at once in low-resource mode.
 pub const LOW_RESOURCE_MAX_IN_FLIGHT: usize = 2;
 
-/// How many of the oldest covers [`CoverStore::trim`] drops (twice as many in
-/// low-resource mode, as the Iced UI's purge does).
-pub const TRIM_COUNT: usize = 32;
+/// How many of the oldest covers a memory purge drops (`GlobalMemoryPurge`,
+/// `src/gui/app.rs:1613`); twice as many in low-resource mode, as in Iced.
+pub const PURGE_COUNT: usize = 16;
+
+/// How many more a purge after a library scan drops first (`app.rs:1569`):
+/// the covers the scan brought in.
+pub const SCAN_PURGE_COUNT: usize = 32;
 
 /// The edge a store decodes at until [`CoverStore::set_display`] says
 /// otherwise: the size of the cache files.
@@ -277,10 +282,14 @@ impl CoverStore {
         self.pump();
     }
 
-    /// Drops the oldest covers (the memory-purge path): [`TRIM_COUNT`] of
-    /// them, twice as many in low-resource mode.
-    pub fn trim(&self) {
-        self.trim_oldest(TRIM_COUNT);
+    /// Drops the oldest covers for a memory purge requested for `reason`, as
+    /// the Iced UI does: [`PURGE_COUNT`] of them, after [`SCAN_PURGE_COUNT`]
+    /// when a scan finished; twice as many in low-resource mode.
+    pub fn purge(&self, reason: PurgeReason) {
+        if reason == PurgeReason::ScanFinished {
+            self.trim_oldest(SCAN_PURGE_COUNT);
+        }
+        self.trim_oldest(PURGE_COUNT);
     }
 
     /// Drops the `count` oldest covers (twice as many in low-resource mode).
@@ -633,8 +642,25 @@ mod tests {
         assert_eq!(store.len(), 6);
         assert!(!store.contains(&covers.path(0)) && !store.contains(&covers.path(3)));
         assert!(store.contains(&covers.path(4)) && store.contains(&covers.path(9)));
-        // `trim` drops 32 (this store has fewer): everything goes.
-        store.trim();
+        // A purge drops 16 (this store has fewer): everything goes.
+        store.purge(PurgeReason::Timer);
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn a_purge_drops_iceds_16_and_32_more_after_a_scan() {
+        let covers = Covers::new("purge");
+        let runtime = AsyncRuntimeHandle::new();
+        let store = CoverStore::with_limits(runtime.clone(), 64, 4);
+        for index in 0..64 {
+            let _ = store.request(&covers.path(index));
+        }
+        assert!(settled(&runtime, &store));
+        store.purge(PurgeReason::Timer);
+        assert_eq!(store.len(), 64 - PURGE_COUNT);
+        assert!(!store.contains(&covers.path(15)) && store.contains(&covers.path(16)));
+        store.purge(PurgeReason::ScanFinished);
+        assert_eq!(store.len(), 64 - 2 * PURGE_COUNT - SCAN_PURGE_COUNT);
         assert!(store.is_empty());
     }
 
@@ -645,7 +671,7 @@ mod tests {
         let store = CoverStore::new(runtime.clone());
         let held = store.request(&covers.path(0));
         assert!(run_until(&runtime, TIMEOUT, || held.get().is_some()));
-        store.trim();
+        store.purge(PurgeReason::Timer);
         assert!(store.is_empty());
         assert!(held.get().is_some(), "the tile keeps showing its cover");
     }

@@ -193,6 +193,19 @@ impl FiltersViewModel {
         self.refresh();
     }
 
+    /// Clears the letter and the selected node and leaves the library's
+    /// filters alone: what the Iced UI does to the filter column when a
+    /// reveal has cleared the library's search and filters itself
+    /// (`src/gui/app.rs:6108-6110`). The app calls it on
+    /// [`LibraryViewModel::reveal_cleared`](crate::teksilo_ui::library::LibraryViewModel::reveal_cleared).
+    pub fn clear_highlight(&self) {
+        let inner = &self.inner;
+        inner.subfilter.set(None);
+        inner.selected_node.set(None);
+        inner.selection.clear();
+        self.refresh();
+    }
+
     /// `SelectTreeNode`: `id` becomes the selected node and the library is
     /// filtered by it (`filters_for_node`). A folder node filters nothing, as
     /// in Iced.
