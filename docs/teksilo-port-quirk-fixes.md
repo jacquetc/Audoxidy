@@ -76,6 +76,8 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 60 | Cancelling the preset dialog after an import saves the restored equalizer |
 | 61 | A click on empty space commits an open value field |
 | 62 | A memory purge never cuts the library |
+| 63 | The cursor shows what can be clicked or resized |
+| 64 | A sideways wheel over the player leaves the volume alone |
 
 ---
 
@@ -881,3 +883,28 @@ Unfinished Iced features (stubs) are not listed here; they are in
   looks elsewhere looks broken.
 - **Pinned by:** `teksilo_ui::app::tests::a_memory_purge_drops_iceds_16_oldest_covers` (the covers
   go, every song stays) and `teksilo_ui::shared::cover_store::tests::a_purge_drops_iceds_16_and_32_more_after_a_scan`.
+
+## 63. The cursor shows what can be clicked or resized
+
+- **Iced:** the whole view is wrapped in `CursorOff` (`src/gui/app.rs:30-175`, used at `:5887`),
+  whose `mouse_interaction` is always `Interaction::Idle`: the cursor is the plain arrow
+  everywhere, over buttons, rows and the column resize grips alike (menus and other overlays
+  excepted).
+- **Teksilo:** clickable controls show the pointing hand (`widgets/pressable.rs`, the rows, the
+  filter cells, the stock controls' looks in `widgets/stock_styles.rs`), a disabled control the
+  arrow, and the column header's grips the column-resize arrows (`widgets/column_header.rs`).
+- **Why:** the user's decision (2026-10-12). The arrow everywhere hides which parts of the window
+  act on a click and where a column can be resized.
+- **Pinned by:** probe (Wave F): hovering a button shows the hand, a disabled entry the arrow, a
+  column grip the resize cursor. Teksilo offers no headless query for the cursor (see the review
+  file, item 49).
+
+## 64. A sideways wheel over the player leaves the volume alone
+
+- **Iced:** `PlayerScroll` (`src/gui/app.rs:4606-4609`) turns every wheel event over the player
+  into a 5 % step, up when the vertical turn is positive and down otherwise, so a zero vertical
+  turn (a sideways wheel, the end of a touchpad gesture) lowers the volume.
+- **Teksilo:** a turn of zero changes nothing (`player/panel.rs`, the band's wheel handler); up and
+  down turns step the volume as in Iced.
+- **Why:** the user's decision (2026-10-12). Scrolling sideways should not turn the music down.
+- **Pinned by:** `teksilo_ui::player::panel::tests::quirk_64_a_sideways_wheel_over_the_band_leaves_the_volume_alone` (it fails without the fix) and `teksilo_ui::player::panel::tests::the_wheel_over_the_band_moves_the_volume_five_percent_and_shows_the_bubble`.

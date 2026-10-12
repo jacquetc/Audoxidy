@@ -438,6 +438,26 @@ fn leaving_the_panel_clears_the_zone() {
 // --- The wheel and the volume bubble ------------------------------------------------------
 
 #[test]
+fn quirk_64_a_sideways_wheel_over_the_band_leaves_the_volume_alone() {
+    // Iced takes any wheel event as a step and a zero vertical turn as down
+    // (`app.rs:4608`): a sideways wheel or a touchpad gesture's end lowered
+    // the volume.
+    let mut f = Fixture::new(0.0, 0.0, true);
+    f.vm.set_volume(0.5);
+    let at = Point::new(200.0, 200.0);
+    move_to(&mut f, at.x, at.y);
+    f.tree.dispatch_event(WidgetEvent::scroll_at(
+        ScrollDelta::Lines { x: 3.0, y: 0.0 },
+        Modifiers::NONE,
+        at,
+    ));
+    layout(&mut f.tree);
+    assert!((f.services.ctx.player.snapshot().volume - 0.5).abs() < 1e-6);
+    assert_eq!(f.vm.volume().get(), None, "no volume bubble either");
+    f.finish();
+}
+
+#[test]
 fn the_wheel_over_the_band_moves_the_volume_five_percent_and_shows_the_bubble() {
     let mut f = Fixture::new(0.0, 0.0, true);
     f.vm.set_volume(0.5);
