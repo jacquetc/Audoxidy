@@ -198,6 +198,13 @@ M3U and M3U8 differ only by extension. Durations are truncated with `as i32`.
 - **Found by:** Wave B2b, as the import side of D19.
 - **Fixed:** for both UIs, the file is decoded by `decode_playlist_text`: UTF-8 (a BOM is skipped), else Latin-1, which cannot fail. Pinned by `db::scanner::playlist_text_tests::*`, including `import_m3u_reads_a_latin1_playlist_with_accented_paths`.
 
+### D29. A slider shorter than its handle panics (latent)
+
+- **Where:** the EQ slider's body, `src/gui/widgets.rs:4199`: `handle_y.clamp(bounds.y, bounds.y + bounds.height - handle_height)`.
+- **Defect:** `f32::clamp` panics when its minimum exceeds its maximum, which happens for a slider shorter than its 16 px handle. Latent: every Iced slider has a fixed size.
+- **Found by:** the Wave F fix pass, in the Teksilo port of the same code.
+- **Fixed:** in the Teksilo UI only (`teksilo_ui::widgets::eq_slider`, `.min(hi).max(lo)`; pinned by `a_slider_smaller_than_its_handle_lays_the_handle_at_the_start_without_panicking`). The Iced UI is unchanged: none of its layouts reaches the case.
+
 ## No decision needed
 
 | ID | Item | Why |

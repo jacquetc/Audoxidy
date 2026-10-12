@@ -71,8 +71,13 @@ pub const FILE_FILTER: &str = "Audoxidy EQ Preset";
 /// The extensions the file filter accepts (`app.rs:4436`).
 pub const FILE_EXTENSIONS: [&str; 2] = ["json", "aeqp"];
 
-/// Opens the Load dialog over `vm` (the load icon, `app.rs:4488`).
+/// Opens the Load dialog over `vm` (the load icon, `app.rs:4488`). Nothing
+/// opens before the view-model is loaded: its backup would not be the
+/// restored equalizer ([`EqualizerViewModel::is_loaded`]).
 pub fn open(vm: &EqualizerViewModel, ctx: &mut EventContext) {
+    if !vm.is_loaded() {
+        return;
+    }
     let session = vm.begin_load();
     let dismissed = session.clone();
     placement::present(
@@ -247,7 +252,9 @@ impl LoadDialog {
                     .radius(2.0)
                     .padding(LIST_PADDING, LIST_PADDING, LIST_PADDING, LIST_PADDING),
             )
-            .access_role(Role::List)
+            // A single-select list: its rows are options that say which one
+            // is chosen (Iced shows it by colour only).
+            .access_role(Role::ListBox)
             .access_label(tr!(ac_equalizer_load_list()))
     }
 }
@@ -370,13 +377,22 @@ impl Widget for PresetRows {
 }
 
 /// One row (`app.rs:5354-5403`): highlighted or hovered, it is filled with the
-/// accent.
-fn preset_row(session: &PresetLoad, index: usize, name: String, width: f32) -> Pressable {
+/// accent. To assistive technologies it is an option of the list box,
+/// selected while highlighted: Iced shows the chosen preset by its colour
+/// only, which a screen reader cannot see.
+fn preset_row(
+    session: &PresetLoad,
+    index: usize,
+    name: String,
+    width: f32,
+) -> impl Widget + 'static {
     let hovered = Signal::new(false);
-    let lit = session
+    let chosen = session
         .selected()
+        .map(move |selected| *selected == Some(index));
+    let lit = chosen
         .zip(&hovered)
-        .map(move |(selected, hovered)| *hovered || *selected == Some(index));
+        .map(|(chosen, hovered)| *hovered || *chosen);
     let fill = lit.map(|lit| {
         if *lit {
             SurfaceRole::Accent
@@ -400,9 +416,13 @@ fn preset_row(session: &PresetLoad, index: usize, name: String, width: f32) -> P
             ),
     );
     let session = session.clone();
+    // `tab` is how a `Pressable` carries a selected state (and keeps the AT
+    // node in step with the signal); the role is then the list box's option.
     Pressable::new(body, label)
+        .tab(chosen)
         .hovered(hovered)
         .on_activate(move |_| session.select(index))
+        .access_role(Role::ListBoxOption)
 }
 
 #[cfg(test)]

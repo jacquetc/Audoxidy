@@ -18,6 +18,7 @@
 
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::error::FrontendError;
@@ -65,9 +66,17 @@ pub struct EngineContext {
     pub player: Arc<dyn PlayerPort>,
     /// The system sound server.
     pub system_audio: Arc<dyn SystemAudioPort>,
+    /// Set when the worker starts shutting down.
+    closing: AtomicBool,
 }
 
 impl EngineContext {
+    /// Whether the worker is shutting down: the jobs still queued run, but
+    /// one that would start something (playback, for instance) should not.
+    pub fn is_closing(&self) -> bool {
+        self.closing.load(Ordering::Acquire)
+    }
+
     /// Applies the sound-server clock as Iced does before it builds a stream:
     /// with PipeWire, force the clock live, wait [`PIPEWIRE_SETTLE`], then
     /// persist it; with PulseAudio, only persist it. `None` means the
@@ -111,6 +120,7 @@ struct EngineWorkerInner {
 
 impl Drop for EngineWorkerInner {
     fn drop(&mut self) {
+        self.shared.context.closing.store(true, Ordering::Release);
         self.shared.queue.close();
         self.thread.join_within(DROP_JOIN_TIMEOUT);
     }
@@ -144,6 +154,7 @@ impl EngineWorker {
             context: EngineContext {
                 player,
                 system_audio,
+                closing: AtomicBool::new(false),
             },
         });
         let worker_shared = Arc::clone(&shared);
@@ -248,10 +259,16 @@ impl EngineWorker {
         self.inner.shared.queue.len()
     }
 
-    /// Refuses new jobs, lets the worker finish the queued ones, and waits at
-    /// most `timeout` for its thread. Returns `true` when the thread has
-    /// stopped. Later calls only wait again.
+    /// Refuses new jobs, lets the worker finish the queued ones (they see
+    /// [`EngineContext::is_closing`]), and waits at most `timeout` for its
+    /// thread. Returns `true` when the thread has stopped. Later calls only
+    /// wait again.
     pub fn shutdown(&self, timeout: Duration) -> bool {
+        self.inner
+            .shared
+            .context
+            .closing
+            .store(true, Ordering::Release);
         self.inner.shared.queue.close();
         self.inner.thread.join_within(timeout)
     }

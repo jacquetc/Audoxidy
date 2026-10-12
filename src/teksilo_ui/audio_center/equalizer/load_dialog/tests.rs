@@ -197,6 +197,28 @@ fn clicking_a_row_previews_it_and_highlights_it() {
 }
 
 #[test]
+fn the_highlighted_row_is_the_selected_option_for_assistive_technologies() {
+    let mut o = open_in("es-ES");
+    let list = o.named("Presets");
+    assert_eq!(o.f.tree.accessibility_node(list).role(), Role::ListBox);
+    // The first built-in, in view under Default.
+    let name = o.f.names()[1].clone();
+    let row = o.named(&name);
+    let default = o.named("Default");
+    assert_eq!(o.f.tree.accessibility_node(row).role(), Role::ListBoxOption);
+    assert!(!o.f.tree.accessibility_node(row).is_selected());
+    let r = rect(&o.f.tree, row);
+    tap_at(&mut o.f.tree, Point::new(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0));
+    assert_eq!(o.f.vm.preset_name().get().as_deref(), Some(name.as_str()));
+    assert!(o.f.tree.accessibility_node(row).is_selected());
+    assert!(!o.f.tree.accessibility_node(default).is_selected());
+    o.click("Default");
+    assert!(o.f.tree.accessibility_node(default).is_selected());
+    assert!(!o.f.tree.accessibility_node(row).is_selected());
+    o.f.finish();
+}
+
+#[test]
 fn aceptar_keeps_the_preview_and_closes() {
     let mut o = open_in("es-ES");
     o.click("Rock");

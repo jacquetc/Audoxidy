@@ -222,14 +222,9 @@ pub fn set_band_gain(ctx: &AppContext, state: &mut EqState, index: usize, value:
 /// active gains rounded to 0.1 dB. Confirm with [`save`], or undo with
 /// [`restore`].
 pub fn preview_preset(ctx: &AppContext, state: &mut EqState, preset: &EqPreset) {
-    apply_preset_to(&*ctx.player, state, preset);
-}
-
-/// [`preview_preset`] against a player (also used off the caller's thread).
-fn apply_preset_to(player: &dyn PlayerPort, state: &mut EqState, preset: &EqPreset) {
     state.selected_preset = Some(preset.clone());
     state.preamp_gain = preset.preamp_gain;
-    player.apply_eq_preset(preset);
+    ctx.player.apply_eq_preset(preset);
     let gains = if state.bands_31 {
         preset.get_gains_31()
     } else {
@@ -443,23 +438,25 @@ pub fn restore_default_presets(ctx: &AppContext) -> Reply<PresetList> {
 pub struct EqImport {
     /// The imported preset, as saved.
     pub preset: EqPreset,
-    /// The state with the preset applied; the view-model adopts it.
-    pub state: EqState,
     /// The updated presets.
     pub presets: PresetList,
 }
 
 /// Imports a preset file (Iced `EqPresetFileImported`): reads and parses it
-/// with `preset_from_json` (one band set is enough, the other is converted),
-/// saves it as a custom preset, applies it to the engine and persists the EQ
-/// keys. The file is read on the database worker, not on the caller's thread.
+/// with `preset_from_json` (one band set is enough, the other is converted)
+/// and saves it as a custom preset. The file is read on the database worker,
+/// not on the caller's thread.
+///
+/// The preset is not applied here: the caller applies it with
+/// [`apply_preset`] when the reply lands, on its own thread, so that the
+/// engine and the caller's state take it at the same moment, in order with
+/// the previews the caller made meanwhile (applying it on the worker let a
+/// preview made while the reply was on its way leave the engine and the state
+/// apart).
 ///
 /// A file that cannot be read, is not UTF-8 or is not a preset is an error the
 /// UI can show (quirk fix 8); Iced only logs it.
-pub fn import_preset(ctx: &AppContext, state: &EqState, path: PathBuf) -> Reply<EqImport> {
-    let mut state = state.clone();
-    let player = Arc::clone(&ctx.player);
-    let worker = ctx.db.clone();
+pub fn import_preset(ctx: &AppContext, path: PathBuf) -> Reply<EqImport> {
     ctx.db.write(move |db| {
         let bytes = std::fs::read(&path)?;
         let text = String::from_utf8(bytes).map_err(|_| {
@@ -473,14 +470,9 @@ pub fn import_preset(ctx: &AppContext, state: &EqState, path: PathBuf) -> Reply<
             FrontendError::InvalidInput(format!("{} is not an EQ preset: {e}", path.display()))
         })?;
         db.save_eq_preset(&preset)?;
-        apply_preset_to(&*player, &mut state, &preset);
-        // Queued behind this job; nothing waits for it here (waiting on the
-        // database worker from one of its own jobs would never return).
-        let _persisted = persist(&worker, &state);
         Ok(EqImport {
             presets: PresetList::read(db)?,
             preset,
-            state,
         })
     })
 }
@@ -873,10 +865,10 @@ mod tests {
     }
 
     #[test]
-    fn importing_a_preset_saves_applies_and_persists_it() {
+    fn importing_a_preset_saves_it_and_leaves_applying_it_to_the_caller() {
         with_timeout(TEST_TIMEOUT, || {
             let (ctx, fakes) = context();
-            let state = twenty_band_state(&ctx);
+            let mut state = twenty_band_state(&ctx);
             let path = temp_path("bright.json");
             let json = serde_json::json!({
                 "version": 1,
@@ -887,25 +879,31 @@ mod tests {
             });
             std::fs::write(&path, json.to_string()).unwrap();
 
-            let imported = import_preset(&ctx, &state, path.clone())
-                .recv_blocking()
-                .unwrap();
+            fakes.player.take_calls();
+            let imported = import_preset(&ctx, path.clone()).recv_blocking().unwrap();
             assert_eq!(imported.preset.name, "Bright");
             assert_eq!(
-                imported.state.gains,
+                imported.preset.get_gains_20(),
                 vec![2.0; 20],
                 "the 20-band set is converted"
             );
-            assert_eq!(imported.state.preamp_gain, -1.5);
             assert!(imported.presets.customs.iter().any(|p| p.name == "Bright"));
+            assert!(
+                fakes.player.calls().is_empty(),
+                "the worker does not touch the engine"
+            );
+
+            apply_preset(&ctx, &mut state, &imported.preset)
+                .recv_blocking()
+                .unwrap();
+            assert_eq!(state.gains, vec![2.0; 20]);
+            assert_eq!(state.preamp_gain, -1.5);
             assert!(
                 fakes
                     .player
                     .calls()
                     .contains(&PlayerCall::ApplyEqPreset("Bright".into()))
             );
-            // The persistence was queued behind the import.
-            ctx.db.read(|_| Ok(())).recv_blocking().unwrap();
             assert_eq!(
                 raw(&ctx, keys::EQ_SELECTED_PRESET).as_deref(),
                 Some("Bright")
@@ -919,20 +917,19 @@ mod tests {
     fn importing_a_file_that_is_not_a_preset_is_an_error() {
         with_timeout(TEST_TIMEOUT, || {
             let (ctx, _fakes) = context();
-            let state = EqState::default();
             let path = temp_path("broken.json");
             std::fs::write(&path, "{ not json").unwrap();
             assert!(matches!(
-                import_preset(&ctx, &state, path.clone()).recv_blocking(),
+                import_preset(&ctx, path.clone()).recv_blocking(),
                 Err(FrontendError::InvalidInput(_))
             ));
             std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
             assert!(matches!(
-                import_preset(&ctx, &state, path.clone()).recv_blocking(),
+                import_preset(&ctx, path.clone()).recv_blocking(),
                 Err(FrontendError::InvalidInput(_))
             ));
             assert!(matches!(
-                import_preset(&ctx, &state, path.with_file_name("missing.json")).recv_blocking(),
+                import_preset(&ctx, path.with_file_name("missing.json")).recv_blocking(),
                 Err(FrontendError::Io(_))
             ));
             let _ = std::fs::remove_dir_all(path.parent().unwrap());

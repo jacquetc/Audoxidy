@@ -439,6 +439,129 @@ mod tests {
         });
     }
 
+    /// A title-bar host with no OS window behind it, recording the window
+    /// requests it gets.
+    struct FakeHost;
+
+    impl PlatformTitleBarHost for FakeHost {
+        fn reserved_leading_inset(&self) -> teksilo::canvas::Size {
+            teksilo::canvas::Size::ZERO
+        }
+        fn reserved_trailing_inset(&self) -> teksilo::canvas::Size {
+            teksilo::canvas::Size::ZERO
+        }
+        fn renders_custom_controls(&self) -> bool {
+            true
+        }
+        fn needs_custom_resize_handles(&self) -> bool {
+            false
+        }
+        fn begin_drag(&self) -> Result<(), teksilo::core::PlatformError> {
+            Ok(())
+        }
+        fn begin_resize(
+            &self,
+            _edge: teksilo::core::ResizeEdge,
+        ) -> Result<(), teksilo::core::PlatformError> {
+            Ok(())
+        }
+        fn show_window_menu(
+            &self,
+            _at: teksilo::canvas::Point,
+        ) -> Result<(), teksilo::core::PlatformError> {
+            Ok(())
+        }
+        fn update_hit_regions(&self, _regions: &teksilo::core::HitRegions) {}
+    }
+
+    fn window_state() -> teksilo::core::WindowState {
+        use teksilo::core::{TeksiloWindowId, WindowState, WindowStateInit};
+        WindowState::new(WindowStateInit {
+            id: TeksiloWindowId::new(1),
+            string_id: None,
+            placement: WindowPlacement::Floating,
+            title: "Audoxidy".to_string(),
+            size: (1360, 880),
+            position: (0, 0),
+            focused: true,
+            resizable: true,
+            always_on_top: false,
+        })
+    }
+
+    /// The custom strip, 1360 px wide at the top of a window, in English.
+    fn custom_strip(window: &teksilo::core::WindowState) -> (WidgetTree, WidgetId) {
+        let mut tree = WidgetTree::new();
+        tree.set_theme(style::audoxidy_dark());
+        tree.set_window_state(window.clone());
+        let id = tree.add(custom(Rc::new(FakeHost)));
+        tree.add(
+            VStack::new()
+                .spacing(0.0)
+                .alignment(HAlignment::Leading)
+                .child(id)
+                .child(Spacer::new()),
+        );
+        layout(&mut tree);
+        (tree, id)
+    }
+
+    /// The Audoxidy control named `name` (the `TitleBar`'s own controls,
+    /// hidden, carry the same names but take no space).
+    fn named_rect(tree: &WidgetTree, root: WidgetId, name: &str) -> (f32, f32, f32, f32) {
+        let shown: Vec<_> = find_by_name(tree, root, name)
+            .into_iter()
+            .map(|id| tree.bounds(id))
+            .filter(|b| b.width > 0.0 && b.height > 0.0)
+            .collect();
+        assert_eq!(shown.len(), 1, "one control named {name:?}: {shown:?}");
+        let b = shown[0];
+        (b.x, b.y, b.width, b.height)
+    }
+
+    #[test]
+    fn quirk_32_the_window_controls_are_30_30_and_34_px_with_minimize_lifted_4_px() {
+        with_shipped_messages("en-US", || {
+            let window = window_state();
+            let (tree, id) = custom_strip(&window);
+            let minimize = named_rect(&tree, id, "Minimize");
+            let maximize = named_rect(&tree, id, "Maximize");
+            let close = named_rect(&tree, id, "Close");
+            assert_eq!((minimize.2, minimize.3), (30.0, 30.0));
+            assert_eq!((maximize.2, maximize.3), (30.0, 30.0));
+            assert_eq!((close.2, close.3), (34.0, 34.0));
+            // 5 px apart, the last 5 px from the strip's trailing edge.
+            let strip = tree.bounds(id);
+            assert_eq!(close.0 + close.2, strip.x + strip.width - 5.0);
+            assert_eq!(maximize.0 + maximize.2 + 5.0, close.0);
+            assert_eq!(minimize.0 + minimize.2 + 5.0, maximize.0);
+            // Centred in the 40 px strip; the 8 px under minimize lifts it 4.
+            let centre = |r: (f32, f32, f32, f32)| r.1 + r.3 / 2.0;
+            assert_eq!(centre(maximize), 20.0);
+            assert_eq!(centre(close), 20.0);
+            assert_eq!(centre(minimize), 16.0);
+        });
+    }
+
+    #[test]
+    fn quirk_32_a_click_on_maximize_maximizes_the_window_and_another_restores_it() {
+        use crate::teksilo_ui::test_support::tap_at;
+        with_shipped_messages("en-US", || {
+            let window = window_state();
+            let (mut tree, id) = custom_strip(&window);
+            let at = |r: (f32, f32, f32, f32)| {
+                teksilo::canvas::Point::new(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+            };
+            let maximize = named_rect(&tree, id, "Maximize");
+            tap_at(&mut tree, at(maximize));
+            assert_eq!(window.placement().get(), WindowPlacement::Maximized);
+            layout(&mut tree);
+            let restore = named_rect(&tree, id, "Restore");
+            tap_at(&mut tree, at(restore));
+            assert_eq!(window.placement().get(), WindowPlacement::Floating);
+        });
+    }
+
     #[test]
     fn maximize_toggles_between_maximized_and_floating() {
         assert_eq!(

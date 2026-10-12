@@ -44,8 +44,13 @@ pub const BUTTON_SIZE: (f32, f32) = (74.0, 30.0);
 /// The space between the buttons (`app.rs:5629`).
 pub const BUTTON_SPACING: f32 = 8.0;
 
-/// Opens the Save dialog over `vm` (the save icon, `app.rs:4515`).
+/// Opens the Save dialog over `vm` (the save icon, `app.rs:4515`). Nothing
+/// opens before the view-model is loaded
+/// ([`EqualizerViewModel::is_loaded`]): there is no restored state to save.
 pub fn open(vm: &EqualizerViewModel, ctx: &mut EventContext) {
+    if !vm.is_loaded() {
+        return;
+    }
     placement::present(
         ctx,
         DialogKind::Save,

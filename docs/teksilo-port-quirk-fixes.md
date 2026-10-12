@@ -80,6 +80,8 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 64 | A sideways wheel over the player leaves the volume alone |
 | 65 | The grid's keys step between cards and enter the open album only from its row |
 | 66 | A letter brings the filter tree to its top |
+| 67 | The window reopens where it was |
+| 68 | The equalizer tab waits for the restored equalizer |
 
 ---
 
@@ -96,7 +98,9 @@ Unfinished Iced features (stubs) are not listed here; they are in
 ## 2. Enter, Delete, Space and Ctrl+A act on the focused panel
 
 - **Iced:** these keys arrive through `GlobalKeyDown` and are routed by an `AppFocus` value that
-  mouse hover and clicks change. `PlayLibrarySelection` plays the playlist's focused row first,
+  mouse hover and clicks change; every action in the filter column also sets it to the library
+  (`src/gui/app.rs:4246`, `:4286`, `:4327`, `:4379`), where in the Teksilo UI the keys then go to
+  the focused tree. `PlayLibrarySelection` plays the playlist's focused row first,
   even when the library has focus (`src/gui/app.rs:3711`).
 - **Teksilo:**
   - The keys are handled by the playlist and library panels themselves, so they act on the
@@ -111,13 +115,15 @@ Unfinished Iced features (stubs) are not listed here; they are in
 
 ## 3. Closing the window saves state and stops cleanly
 
-- **Iced:** the close button calls `std::process::exit(0)` (`src/gui/app.rs:5075`), so nothing is
+- **Iced:** the close button calls `std::process::exit(0)` (`src/gui/app.rs:4669`), so nothing is
   saved at exit.
-- **Teksilo:** the window's close hook does three things, then lets the app exit normally:
+- **Teksilo:** the window's close hook does two things, then lets the app exit normally:
   - saves the playlist position, shuffle and repeat state;
-  - stops the background threads and the audio engine.
+  - stops the background threads and the audio engine. A startup restore still waiting in the
+    engine's queue then loads, seeks and plays nothing, and the player is stopped again once the
+    threads are joined, so a close during the restore never starts playback.
 - **Why:** the playback position and open settings were lost on every close.
-- **Pinned by:** the persistence part by `frontend::session::tests::quirk_3_persist_now_then_stop_stores_the_position_and_the_session` (the position, play state, shuffle and session saved by `session::persist_now` are written before `session::stop` ends the threads); the close path by `teksilo_ui::shell::main_window::tests::closing_runs_the_hooks_and_stops_the_backend` (`AppHandles::before_close` runs the close hooks and queues the save from the window's close guard; `AppHandles::after_close` stops the backend from the window's removal hook) and `teksilo_ui::app::session::tests::persisting_after_the_restore_writes_the_position`. Iced also saves the equalizer and the effects when the Audio Center closes; the Teksilo facade stores every equalizer, effect and mix change as it is made, so nothing is left to save at close (`teksilo_ui::audio_center::shell::audio_center_vm::tests::the_equalizer_and_the_effects_are_stored_without_a_close`).
+- **Pinned by:** the whole close of a restored session by `teksilo_ui::shell::main_window::tests::quirk_3_closing_a_restored_session_stores_the_position_the_player_reached` (the stored song, position and play state after `before_close` and `after_close`); a close during the restore by `frontend::session::tests::a_close_while_the_restore_waits_in_the_queue_starts_no_playback`; the persistence part by `frontend::session::tests::quirk_3_persist_now_then_stop_stores_the_position_and_the_session` (the position, play state, shuffle and session saved by `session::persist_now` are written before `session::stop` ends the threads); the close path by `teksilo_ui::shell::main_window::tests::closing_runs_the_hooks_and_stops_the_backend` (`AppHandles::before_close` runs the close hooks and queues the save from the window's close guard; `AppHandles::after_close` stops the backend from the window's removal hook) and `teksilo_ui::app::session::tests::persisting_after_the_restore_writes_the_position`. Iced also saves the equalizer and the effects when the Audio Center closes; the Teksilo facade stores every equalizer, effect and mix change as it is made, so nothing is left to save at close (`teksilo_ui::audio_center::shell::audio_center_vm::tests::the_equalizer_and_the_effects_are_stored_without_a_close`).
 
 ## 4. Escape closes overlays and dialogs
 
@@ -148,7 +154,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 ## 6. The session is restored once at startup
 
 - **Iced:** `AudoxidyApp::new` restores the last playlist and track, then `InitStartup`
-  (`src/gui/app.rs:5256`) switches to the same playlist again, reloading and re-seeking the file.
+  (`src/gui/app.rs:4835`) switches to the same playlist again, reloading and re-seeking the file.
   Volume and mix settings are also read twice.
 - **Teksilo:** a single restore runs off the UI thread and announces itself with a
   `Session::Restored` event. The UI sends no playback command before that event.
@@ -160,8 +166,8 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Iced:**
   - Context menus and dialogs open at the last mouse position.
   - The VU-meter popup always opens at the window's top-left, because its emitter passes
-    `Point::ORIGIN` (`src/gui/library.rs:3040`).
-  - The tab overflow menu opens at a hard-coded `(220, 440)` (`src/gui/app.rs:2996`).
+    `Point::ORIGIN` (`src/gui/library.rs:1910`).
+  - The tab overflow menu opens at a hard-coded `(220, 440)` (`src/gui/app.rs:2741`).
 - **Teksilo:** context menus open at the pointer, and popups are anchored to the control that
   opened them. Modal dialogs are centred, the framework default. The EQ preset dialogs stay
   positioned relative to the Audio Center.
@@ -178,7 +184,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   has written its list (a success toast, or a warning saying how many song copies failed), and shows
   an error toast when creating, renaming or deleting a playlist, or opening a song's file location,
   fails; Iced only logs these.
-- **Pinned by:** the command side (the failure comes back as an error and a `LongOperation::Failed` event, not only a log line) by `frontend::commands::playlist::tests::quirk_8_an_export_that_cannot_write_its_list_fails`, `frontend::commands::playlist::tests::quirk_25_an_entry_outside_latin_1_fails_the_m3u_export_without_writing` and `frontend::commands::playlist::tests::quirk_8_an_import_that_finds_nothing_or_no_file_fails` (export and import), and `frontend::commands::audio_settings::tests::a_stream_error_comes_back_as_err_and_the_keys_are_still_persisted` (Apply); the toasts are to be filled by the playlist and Audio Center waves; the UI side by `teksilo_ui::library::library_vm::tests::{quirk_8_a_failed_delete_shows_an_error_toast_and_a_cancelled_one_does_not, quirk_8_a_folder_that_cannot_be_scanned_shows_an_error_toast}` and `teksilo_ui::player::panel::tests::{a_scan_that_cannot_start_shows_an_error_toast, a_folder_dialog_that_cannot_open_shows_an_error_toast, a_track_that_cannot_be_played_shows_an_error_toast}`; the playlist by `teksilo_ui::playlist::playlist_vm::tests::{a_failed_export_is_an_error_notice, a_failed_import_is_an_error_notice, a_cancelled_operation_and_someone_elses_say_nothing}` and `teksilo_ui::playlist::notice::tests::every_notice_is_shown_as_a_toast_in_the_window` (the playlist also toasts a failed create, rename, delete or file location, and a successful export); the Audio Center's Apply by `teksilo_ui::audio_center::config::config_vm::tests::a_failed_apply_shows_an_error_toast_and_still_disables_apply` and its preset operations by `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::a_failed_preset_operation_shows_an_error_toast`.
+- **Pinned by:** the command side (the failure comes back as an error and a `LongOperation::Failed` event, not only a log line) by `frontend::commands::playlist::tests::quirk_8_an_export_that_cannot_write_its_list_fails`, `frontend::commands::playlist::tests::quirk_25_an_entry_outside_latin_1_fails_the_m3u_export_without_writing` and `frontend::commands::playlist::tests::quirk_8_an_import_that_finds_nothing_or_no_file_fails` (export and import), and `frontend::commands::audio_settings::tests::a_stream_error_comes_back_as_err_and_the_keys_are_still_persisted` (Apply); the UI side by `teksilo_ui::library::library_vm::tests::{quirk_8_a_failed_delete_shows_an_error_toast_and_a_cancelled_one_does_not, quirk_8_a_folder_that_cannot_be_scanned_shows_an_error_toast}` and `teksilo_ui::player::panel::tests::{a_scan_that_cannot_start_shows_an_error_toast, a_folder_dialog_that_cannot_open_shows_an_error_toast, a_track_that_cannot_be_played_shows_an_error_toast}`; the playlist by `teksilo_ui::playlist::playlist_vm::tests::{a_failed_export_is_an_error_notice, a_failed_import_is_an_error_notice, a_cancelled_operation_and_someone_elses_say_nothing}` and `teksilo_ui::playlist::notice::tests::every_notice_is_shown_as_a_toast_in_the_window` (the playlist also toasts a failed create, rename, delete or file location, and a successful export); the Audio Center's Apply by `teksilo_ui::audio_center::config::config_vm::tests::a_failed_apply_shows_an_error_toast_and_still_disables_apply` and its preset operations by `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::a_failed_preset_operation_shows_an_error_toast`.
 
 ## 9. Downmix settings apply at startup
 
@@ -192,9 +198,9 @@ Unfinished Iced features (stubs) are not listed here; they are in
 ## 10. The VU meter can be enabled on a fresh install; its popup stays open
 
 - **Iced:** `meter_enabled` defaults to false. The only way to open the meter settings is a
-  right-click on the meter (`src/gui/library.rs:3040`), and the meter is hidden when disabled
-  (`src/gui/library.rs:3059-3072`), so a fresh install can never enable it. The popup also closes
-  after each stepper change (`src/gui/app.rs:5346`, `5365`).
+  right-click on the meter (`src/gui/library.rs:1910`), and the meter is hidden when disabled
+  (`src/gui/library.rs:1913-1943`), so a fresh install can never enable it. The popup also closes
+  after each stepper change (`src/gui/app.rs:4925`, `4944`).
 - **Teksilo:**
   - The meter's slot in the library bar is always there and always takes the right-click
     that opens the popup. It is the free space between the figures and the actions, never
@@ -215,7 +221,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   the playing marker can land on the wrong row.
 - **Teksilo:** the playing song is tracked by its song id, and rows are matched by id.
 - **Why:** with an index, the marker drifted to the wrong row whenever a search filtered the list.
-- **Pinned by:** the cursor side by `frontend::commands::playback::tests::quirk_11_the_playing_song_is_tracked_by_id_under_a_search` (`PlaybackCursor` keeps the playing song by id and finds its row in the search result); the playing marker is to be filled by the playlist wave; the view side by `teksilo_ui::playlist::playlist_vm::tests::the_playing_row_is_found_by_song_id_under_a_search`.
+- **Pinned by:** the cursor side by `frontend::commands::playback::tests::quirk_11_the_playing_song_is_tracked_by_id_under_a_search` (`PlaybackCursor` keeps the playing song by id and finds its row in the search result); the playing marker by `teksilo_ui::playlist::playlist_vm::tests::the_playing_row_is_found_by_song_id_under_a_search`; the view side by `teksilo_ui::playlist::playlist_vm::tests::the_playing_row_is_found_by_song_id_under_a_search`.
 
 ## 12. Changing a playlist's content does not reload the playing track
 
@@ -225,13 +231,16 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:** a content change reloads only the playlist's rows. The current track keeps playing
   untouched.
 - **Why:** adding songs caused an audible reload and seek of the playing track.
-- **Pinned by:** the command side by `frontend::commands::playlist::tests::quirk_12_reloading_the_content_refreshes_the_rows_without_touching_the_player` (`playlist::reload_content` refreshes the rows with no load, seek or play-state call); the view-model wiring is to be filled by the playlist wave; the view side by `teksilo_ui::playlist::playlist_vm::tests::added_songs_appear_without_reloading_the_playing_track`.
+- **Pinned by:** the command side by `frontend::commands::playlist::tests::quirk_12_reloading_the_content_refreshes_the_rows_without_touching_the_player` (`playlist::reload_content` refreshes the rows with no load, seek or play-state call); the view-model wiring by `teksilo_ui::playlist::playlist_vm::tests::added_songs_appear_without_reloading_the_playing_track`; the view side by `teksilo_ui::playlist::playlist_vm::tests::added_songs_appear_without_reloading_the_playing_track`.
 
 ## 13. The playlist position is saved on a real 20 s interval
 
-- **Iced:** the "every 20 s" autosave runs when `tick_count % 40 == 0` (`src/gui/app.rs:1657`).
-  `tick_count` only advances in `UITick`, which runs only while the player overlay is active or a
-  title scrolls, so the autosave rarely runs during normal playback.
+- **Iced:** the "every 20 s" autosave runs on a `Tick` (every 500 ms while playing) when
+  `tick_count % 40 == 0` (`src/gui/app.rs:1330`, `:1472-1475`). `tick_count` only advances in
+  `UITick` (`:1666`), which runs only while the player's controls are awake or a title scrolls
+  (`:5911-5917`). The cadence therefore depends on where the count stopped: frozen on a multiple
+  of 40 (from startup, for instance), the position is saved on every tick, twice a second;
+  frozen anywhere else, it is never saved until the controls wake.
 - **Teksilo:** while playing, the position is saved every `behavior.auto_save_interval_secs`
   (20 s by default, from `config.ron`), plus on every event where Iced saves.
 - **Why:** after a crash, the restored position could be far behind.
@@ -242,7 +251,8 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Iced:** deleting a built-in preset only hides it for the session (`hidden_builtins`,
   `src/gui/audio_center.rs:1648`). It comes back after a restart.
 - **Teksilo:** the hidden list is saved under the new settings key `eq_hidden_builtin_presets`.
-  The Iced UI ignores that key.
+  The Iced UI ignores that key, so its "Predeterminado" cannot clear it: built-ins hidden in the
+  Teksilo UI stay hidden after a reset made in the Iced UI.
 - **Why:** a preset the user deleted should stay deleted.
 - **Pinned by:** `frontend::commands::eq::tests::deleting_a_builtin_hides_it_across_restarts` and `frontend::commands::eq::tests::restoring_the_default_presets_clears_customs_and_the_hidden_list`; the JSON encoding (names may contain commas) by `frontend::settings::tests::hidden_preset_names_with_commas_survive_the_json_encoding`.
 
@@ -250,7 +260,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 
 - **Iced:**
   - Counts are formatted with a fixed plural, for example `"{} Canciones"` gives "1 Canciones"
-    (`src/gui/library.rs:2972`).
+    (`src/gui/library.rs:1846`, `:1855`).
   - Several labels have typos.
 - **Teksilo:**
   - The es-ES catalogue uses Fluent plural selectors ("1 Canción", "2 Canciones").
@@ -268,7 +278,12 @@ Unfinished Iced features (stubs) are not listed here; they are in
 
   - Every other string matches the Iced literal exactly.
 - **Why:** spelling and grammar errors in the interface.
-- **Pinned by:** to be filled by the locale parity check (wave E).
+- **Language:** the UI follows the OS locale (`teksilo_ui/startup.rs`, `auto_detect_os_locale`),
+  with es-ES, the Iced UI's language, as the fallback.
+- **Pinned by:** `tools/check_locales.py` (in CI): every es-ES message without a placeable is an
+  Iced literal or differs from one only by a correction above, and the 28 messages with placeables
+  or plural selectors are listed for a hand check (done in Wave E); the plural selectors by
+  `teksilo_ui::library::panel::tests::the_stats_read_the_figures_with_plurals`.
 
 ## 16. "Eliminar lista" is disabled on system playlists
 
@@ -277,7 +292,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   nothing happens.
 - **Teksilo:** the entry is disabled on system playlists.
 - **Why:** the user confirmed a deletion that never happened.
-- **Pinned by:** the command side by `frontend::commands::playlist::tests::quirk_16_deleting_a_system_playlist_is_refused` (`playlist::delete_playlist` refuses a system playlist with an error instead of doing nothing); the disabled entry is to be filled by the playlist wave; the view side by `teksilo_ui::playlist::menus::tests::the_tab_menu_disables_eliminar_lista_on_a_system_playlist` and `teksilo_ui::playlist::playlist_vm::tests::a_system_playlist_cannot_be_deleted`.
+- **Pinned by:** the command side by `frontend::commands::playlist::tests::quirk_16_deleting_a_system_playlist_is_refused` (`playlist::delete_playlist` refuses a system playlist with an error instead of doing nothing); the disabled entry by `teksilo_ui::playlist::menus::tests::the_tab_menu_disables_eliminar_lista_on_a_system_playlist` and `teksilo_ui::playlist::playlist_vm::tests::a_system_playlist_cannot_be_deleted`; the view side by `teksilo_ui::playlist::menus::tests::the_tab_menu_disables_eliminar_lista_on_a_system_playlist` and `teksilo_ui::playlist::playlist_vm::tests::a_system_playlist_cannot_be_deleted`.
 
 ## 17. Apply and startup resolve "Automatic" sound-server rate and quantum the same way
 
@@ -406,7 +421,8 @@ Unfinished Iced features (stubs) are not listed here; they are in
   each duration with `as i32` (defect D19): a 4:59.9 song is listed as 299 s.
 - **Teksilo:** `frontend::commands::playlist::export`:
   - durations are rounded to the nearest second (never below 0);
-  - an `.m3u` file is written in Latin-1 (ISO-8859-1) and an `.m3u8` file in UTF-8;
+  - the M3U format chosen in the export dialog is written in Latin-1 (ISO-8859-1) and the M3U8
+    format in UTF-8 (the encoding follows the chosen format, not the file name's extension);
   - when an entry has a character Latin-1 cannot store, the M3U export fails before anything is
     written or copied, with an error naming the entry and the character and suggesting M3U8. A
     lossy file is never written.
@@ -857,11 +873,12 @@ Unfinished Iced features (stubs) are not listed here; they are in
   then restores the backup in the engine and on screen, without saving it
   (`src/gui/app.rs:2163-2178`). The database keeps the imported preset, so the next start shows it.
 - **Teksilo:** Cancel saves the restored state too, so the database matches what the engine plays
-  and the tab shows. A Cancel while the import is still reading its file wins: when the file has
-  been read, its presets join the list but the backup stays applied and saved.
+  and the tab shows. The import is applied when its reply reaches the tab, not on the database
+  worker: a Cancel before the reply wins, the file's preset joins the list and nothing of it is
+  applied or saved, and a row previewed meanwhile is never split between the engine and the tab.
 - **Why:** the equalizer that came back after a restart was not the one the user had cancelled back
   to.
-- **Pinned by:** `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::{quirk_60_cancelling_after_an_import_saves_the_restored_state, quirk_60_a_cancel_before_the_import_finishes_still_restores_the_backup}` (each fails without its part of the fix).
+- **Pinned by:** `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::{quirk_60_cancelling_after_an_import_saves_the_restored_state, quirk_60_a_cancel_before_the_import_finishes_still_restores_the_backup, a_preview_made_while_an_import_reply_is_on_its_way_never_splits_the_engine_and_the_tab}` (each fails without its part of the fix).
 
 ## 61. A click on empty space commits an open value field
 
@@ -942,4 +959,26 @@ Unfinished Iced features (stubs) are not listed here; they are in
   search do.
 - **Why:** the user's decision (2026-10-12): what Iced's reset evidently intends, without the
   blank rows.
-- **Pinned by:** `teksilo_ui::filters::panel::tests::g1_a_letter_and_the_search_bring_the_scrolled_tree_back_to_its_top`.
+- **Pinned by:** `teksilo_ui::filters::filters_vm::tests::g1_a_type_a_letter_and_the_restore_icon_bring_the_tree_and_the_library_to_the_top` and `teksilo_ui::filters::panel::tests::g1_a_letter_and_the_search_bring_the_scrolled_tree_back_to_its_top`.
+
+## 67. The window reopens where it was
+
+- **Iced:** the window opens at the profile's size from `config.ron` every time (`src/main.rs:50-56`),
+  wherever and however large it was when it closed.
+- **Teksilo:** the size, the position and the maximized state are saved when the window closes and
+  restored when it opens (`teksilo_ui/mod.rs`, `SettingsBundle::with_window_state`, into
+  `window_state.toml` in the app's settings directory); the profile's size applies on the first run.
+- **Why:** the approved plan ("window geometry goes through `WindowStateService`").
+- **Pinned by:** `teksilo_ui::shell::main_window::tests::the_initial_size_is_the_profile_size_within_the_minimum` (the first run) and a live check (Wave E): an edited `window_state.toml` (1500 × 900) came back on the next launch, and closing wrote it again.
+
+## 68. The equalizer tab waits for the restored equalizer
+
+- **Iced:** the equalizer is restored synchronously before the window exists (`src/gui/app.rs:839-875`),
+  and the tab reads the engine when it opens (`src/gui/audio_center.rs:1143-1152`).
+- **Teksilo:** the startup restore runs on the facade's workers while the window is already up.
+  The equalizer's view-model reads the engine once the restore has settled; until that read
+  answers, its controls, "Guardar" and the preset dialogs do nothing (a toggle or a radio that moved
+  goes back).
+- **Why:** reading the engine before the restore showed its defaults, and the first change then
+  stored them over the saved equalizer, for both UIs (found by the Wave F review).
+- **Pinned by:** `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::{the_equalizer_built_during_the_restore_shows_and_keeps_the_restored_settings, the_controls_do_nothing_before_the_restored_equalizer_is_read, the_load_dialogs_backup_is_the_restored_equalizer}`.
