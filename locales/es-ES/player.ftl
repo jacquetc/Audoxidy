@@ -32,7 +32,9 @@ player-menu-quit = Salir
 player-name = Reproductor
 # Not in the Iced UI: accessible names of the three control zones, which are drawn as icons.
 player-previous = Pista anterior
+# Not in the Iced UI: the Iced UI draws this control as an icon with no text; the name is for assistive technology.
 player-play-pause = Reproducir o pausar
+# Not in the Iced UI: the Iced UI draws this control as an icon with no text; the name is for assistive technology.
 player-next = Pista siguiente
 # Not in the Iced UI: accessible name of the seek slider.
 player-seek = Posición de reproducción

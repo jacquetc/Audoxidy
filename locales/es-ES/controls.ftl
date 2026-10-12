@@ -13,8 +13,11 @@ controls-meter-left = L
 controls-meter-right = R
 controls-meter-mid = M
 controls-meter-side = S
+# Part of an Iced literal: src/gui/widgets.rs:4945 "{}Pk:{} Rms:{}".
 controls-meter-peak = Pk
+# Part of an Iced literal: src/gui/widgets.rs:4945 "{}Pk:{} Rms:{}".
 controls-meter-rms = Rms
+# Part of an Iced literal: src/gui/widgets.rs:5087 "Crest: {:.1} dB".
 controls-meter-crest = Crest
 # Not in the Iced UI: the meter's accessible name ("Medidor", as in "Mostrar medidor", widgets.rs:5241).
 controls-meter-name = Medidor VU

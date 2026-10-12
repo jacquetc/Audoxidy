@@ -46,6 +46,10 @@ ICED_SOURCES = [ROOT / "src" / "gui", ROOT / "src" / "logic", ROOT / "src" / "ut
 STARTUP = TEKSILO_SRC / "startup.rs"
 
 MARKER = "# Not in the Iced UI:"
+# A message that is one part of an Iced literal (a format string or a label
+# inside one), cited as `file:line` and the whole literal.
+FRAGMENT_PREFIX = "# Part of an Iced literal:"
+FRAGMENT = re.compile(r'^# Part of an Iced literal: (src/\S+?):(\d+) "(.*)"\.$')
 MESSAGE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*)\s*=(.*)$")
 ATTRIBUTE = re.compile(r"^\s+\.([A-Za-z][A-Za-z0-9_-]*)\s*=(.*)$")
 TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
@@ -67,12 +71,50 @@ CORRECTIONS = [
 class Message:
     """One message or attribute of a catalogue, with the text of its value."""
 
-    def __init__(self, file: str, name: str, text: str, marked: bool, line: int) -> None:
+    def __init__(
+        self,
+        file: str,
+        name: str,
+        text: str,
+        marked: bool,
+        line: int,
+        fragment: tuple[str, int, str] | None,
+    ) -> None:
         self.file = file
         self.name = name
         self.text = text
         self.marked = marked
         self.line = line
+        self.fragment = fragment
+
+
+def parse_fragment(previous: str, where: str, errors: list[str]) -> tuple[str, int, str] | None:
+    """Return the cited (file, line, literal) of a `# Part of an Iced literal` marker, if any."""
+    if not previous.startswith(FRAGMENT_PREFIX):
+        return None
+    match = FRAGMENT.match(previous)
+    if not match:
+        errors.append(f"{where}: malformed marker, want '{FRAGMENT_PREFIX} src/...:LINE \"LITERAL\".'")
+        return None
+    return match.group(1), int(match.group(2)), match.group(3)
+
+
+def verify_fragment(message: Message) -> str | None:
+    """Check that the cited Iced literal exists at the cited line and holds the message text."""
+    assert message.fragment is not None
+    rel, line, literal = message.fragment
+    path = ROOT / rel
+    where = f"{message.file}:{message.line} {message.name}"
+    if not path.is_file():
+        return f"{where}: cited file {rel} does not exist"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not 1 <= line <= len(lines):
+        return f"{where}: cited line {rel}:{line} is out of range"
+    if f'"{literal}"' not in lines[line - 1]:
+        return f'{where}: {rel}:{line} does not hold the literal "{literal}"'
+    if message.text not in literal:
+        return f"{where}: the text {message.text!r} does not occur in the literal {literal!r}"
+    return None
 
 
 def parse_ftl(path: pathlib.Path, errors: list[str]) -> dict[str, Message]:
@@ -83,12 +125,15 @@ def parse_ftl(path: pathlib.Path, errors: list[str]) -> dict[str, Message]:
     pieces: dict[str, list[str]] = {}
     starts: dict[str, int] = {}
     marked: dict[str, bool] = {}
+    fragments: dict[str, tuple[str, int, str] | None] = {}
     pending_attr: str | None = None
     previous = ""
 
     def flush() -> None:
         for name, parts in pieces.items():
-            messages[name] = Message(path.name, name, "\n".join(parts), marked[name], starts[name])
+            messages[name] = Message(
+                path.name, name, "\n".join(parts), marked[name], starts[name], fragments[name]
+            )
         pieces.clear()
 
     for lineno, raw in enumerate(lines, start=1):
@@ -115,6 +160,7 @@ def parse_ftl(path: pathlib.Path, errors: list[str]) -> dict[str, Message]:
             pieces[name] = [first] if first else []
             starts[name] = lineno
             marked[name] = previous.startswith(MARKER)
+            fragments[name] = parse_fragment(previous, f"{path.name}:{lineno}", errors)
             current = name
             pending_attr = None
         else:
@@ -127,6 +173,7 @@ def parse_ftl(path: pathlib.Path, errors: list[str]) -> dict[str, Message]:
                 pieces[pending_attr] = [first] if first else []
                 starts[pending_attr] = lineno
                 marked[pending_attr] = previous.startswith(MARKER)
+                fragments[pending_attr] = parse_fragment(previous, f"{path.name}:{lineno}", errors)
             elif current is not None:
                 target = pending_attr or current
                 pieces[target].append(raw.strip())
@@ -303,8 +350,16 @@ def main() -> int:
     not_found: list[str] = []
     corrected: list[str] = []
     checked = 0
+    fragments = 0
     for name in all_files:
         for key, message in parsed[FALLBACK_LOCALE].get(name, {}).items():
+            if message.fragment is not None:
+                problem = verify_fragment(message)
+                if problem:
+                    errors.append(problem)
+                else:
+                    fragments += 1
+                continue
             if "{" in message.text or "->" in message.text:
                 by_hand.append(f"{name}: {key}")
                 continue
@@ -320,6 +375,7 @@ def main() -> int:
                 corrected.append(f"{name}: {key}: Iced {iced_text!r}, es-ES {message.text!r}")
                 continue
             not_found.append(f"{name}: {key}: {message.text!r}")
+    print(f"verified parts of Iced literals (cited file:line and literal): {fragments}")
     if corrected:
         print(f"quirk-fix-15 corrections (Iced literal differs only by a fix-15 spelling): {len(corrected)}")
         for item in corrected:
