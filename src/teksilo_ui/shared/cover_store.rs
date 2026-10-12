@@ -18,7 +18,9 @@
 //! - **Bounded work.** At most four decodes run at once (two in low-resource
 //!   mode), each on its own thread (`spawn_blocking`); the others wait their
 //!   turn, the most recently requested first, since that is what is on screen.
-//!   A queued path that the LRU evicted meanwhile is skipped. A decode that is
+//!   A queued path that the LRU evicted meanwhile is skipped, unless a tile
+//!   still shows its signal: that one goes back in the LRU and is decoded.
+//!   A decode that is
 //!   running is never cancelled: its result lands in the entry, which a tile
 //!   that still holds its signal still shows.
 //! - **Memory.** [`CoverStore::purge`] drops the oldest covers for the
@@ -138,8 +140,9 @@ struct Entry {
 struct Inner {
     runtime: AsyncRuntimeHandle,
     cache: RefCell<CoverCache<Rc<Entry>>>,
-    /// Paths waiting for a decode slot; the last one is served first.
-    queue: RefCell<Vec<String>>,
+    /// Entries waiting for a decode slot, with their paths; the last one is
+    /// served first.
+    queue: RefCell<Vec<(String, Rc<Entry>)>>,
     in_flight: Cell<usize>,
     max_in_flight: usize,
     capacity: usize,
@@ -205,7 +208,10 @@ impl CoverStore {
                 // The signal stays the one its holders bind, so a retry that
                 // succeeds shows in every tile that asked for it before.
                 entry.state.set(State::Queued);
-                inner.queue.borrow_mut().push(path.to_string());
+                inner
+                    .queue
+                    .borrow_mut()
+                    .push((path.to_string(), entry.clone()));
                 self.pump();
             }
             return entry.signal.clone();
@@ -216,8 +222,11 @@ impl CoverStore {
             edge: Cell::new(inner.edge.get()),
         });
         let signal = entry.signal.clone();
-        inner.cache.borrow_mut().put(path.to_string(), entry);
-        inner.queue.borrow_mut().push(path.to_string());
+        inner
+            .cache
+            .borrow_mut()
+            .put(path.to_string(), entry.clone());
+        inner.queue.borrow_mut().push((path.to_string(), entry));
         self.pump();
         signal
     }
@@ -289,7 +298,7 @@ impl CoverStore {
                 && entry.edge.get() != edge
             {
                 entry.state.set(State::Queued);
-                inner.queue.borrow_mut().push(path);
+                inner.queue.borrow_mut().push((path, entry));
             }
         }
         self.pump();
@@ -340,14 +349,22 @@ impl CoverStore {
     fn pump(&self) {
         let inner = &self.inner;
         while inner.in_flight.get() < inner.max_in_flight {
-            let Some(path) = inner.queue.borrow_mut().pop() else {
+            let Some((path, entry)) = inner.queue.borrow_mut().pop() else {
                 return;
             };
-            // Gone from the LRU, or already taken by an earlier queue entry
-            // for the same path: nothing to do.
-            let Some(entry) = inner.cache.borrow().peek(&path) else {
-                continue;
-            };
+            // Gone from the LRU: nothing to do, unless something still shows
+            // it (a tile keeps the signal it bound until it is rebuilt): then
+            // it goes back in, the most recently used, and is decoded.
+            // Replaced in the LRU by a newer entry: that one has its own place
+            // in the queue.
+            let cached = inner.cache.borrow().peek(&path);
+            match cached {
+                Some(cached) if !Rc::ptr_eq(&cached, &entry) => continue,
+                Some(_) => {}
+                None if entry.signal.observer_count() == 0 => continue,
+                None => inner.cache.borrow_mut().put(path.clone(), entry.clone()),
+            }
+            // Already taken by an earlier queue entry for the same path.
             if entry.state.get() != State::Queued {
                 continue;
             }
@@ -384,7 +401,10 @@ impl CoverStore {
                     // The display changed while this decoded: do it again at
                     // the new edge, if the cover is still cached.
                     entry.state.set(State::Queued);
-                    inner.queue.borrow_mut().push(path.to_string());
+                    inner
+                        .queue
+                        .borrow_mut()
+                        .push((path.to_string(), entry.clone()));
                 }
             }
             None => {
@@ -604,7 +624,7 @@ mod tests {
 
     #[test]
     fn several_requests_for_one_path_share_one_decode() {
-        let covers = Covers::new("shared");
+        let covers = Covers::new("one-decode");
         let runtime = AsyncRuntimeHandle::new();
         let store = CoverStore::new(runtime.clone());
         let path = covers.path(0);
@@ -736,6 +756,27 @@ mod tests {
         // 0 was already running; 1 left the LRU while it waited.
         assert_eq!(store.decodes_started(), 3);
         assert!(store.contains(&covers.path(2)) && store.contains(&covers.path(3)));
+    }
+
+    #[test]
+    fn a_queued_cover_evicted_while_a_tile_shows_it_is_still_decoded() {
+        // Review, plausible case: a tile that still shows a cover whose entry
+        // the LRU evicted before its decode started kept its placeholder
+        // until it was rebuilt (a purge, or more covers asked for than the
+        // store keeps).
+        let covers = Covers::new("evicted-shown");
+        let runtime = AsyncRuntimeHandle::new();
+        let store = CoverStore::with_limits(runtime.clone(), 2, 1);
+        let _ = store.request(&covers.path(0)); // decoding
+        // Queued, and shown: a tile binds the signal it gets.
+        let shown = store.request_shared(&covers.path(1));
+        let _bound = shown.observe(|_| {});
+        let _ = store.request(&covers.path(2)); // queued
+        let _ = store.request(&covers.path(3)); // queued; evicts cover 1's entry
+        assert!(!store.contains(&covers.path(1)));
+        assert!(settled(&runtime, &store));
+        assert!(shown.get().is_some(), "the tile got its cover");
+        assert!(store.contains(&covers.path(1)), "cached again");
     }
 
     #[test]

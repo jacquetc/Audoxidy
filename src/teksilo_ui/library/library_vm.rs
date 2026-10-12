@@ -90,7 +90,7 @@ use teksilo::core::signal::ObserverHandle;
 use teksilo::core::{Key, Modifiers};
 use teksilo::data::{KeyedSelectionModel, SelectionMode};
 use teksilo::prelude::*;
-use teksilo::widgets::{MessageBoxResult, StandardButton, Toast};
+use teksilo::widgets::{StandardButton, Toast};
 
 use super::structure::ListStructure;
 use crate::db::database::{LibrarySearchParams, SongData};
@@ -104,7 +104,7 @@ use crate::logic::library_groups::{
 use crate::logic::library_selection::{
     GridShape, GridSpot, LibraryListItem, LibraryNavDir, LibrarySelection, LibraryStructure,
     apply_bulk_toggle_fixed, artist_to_toggle_fixed, bulk_toggle_targets_fixed, grid_items,
-    grid_nav_target, list_nav_target, selected_song_ids, selected_songs,
+    grid_nav_target, list_nav_target, selected_songs,
 };
 use crate::logic::library_sort::{SortState, sort_songs};
 use crate::logic::selection_modifiers::SelectModifiers;
@@ -115,7 +115,7 @@ use crate::teksilo_ui::models::load::{finish_reply, finish_tracked};
 use crate::teksilo_ui::widgets::column_header::{
     self, ColumnWidths, columns_for, default_widths, width_of,
 };
-use crate::teksilo_ui::widgets::dialog_frame::confirm_box;
+use crate::teksilo_ui::widgets::dialog_frame::{ConfirmResult, confirm_box};
 use crate::utils::{SortColumn, get_effective_artist, song_matches_search};
 
 /// Two clicks on the same header within this make a double click, which
@@ -180,19 +180,25 @@ pub fn content_width(mode: LibraryViewMode, widths: &ColumnWidths) -> f32 {
     column_header::leading_padding(mode) + columns + column_header::ROW_TRAILING
 }
 
-/// The songs a delete of `selected` removes, among the songs `structure`
-/// shows: the songs Play takes (quirk fix 49, [`selected_song_ids`]), the
-/// selected songs, and every song of a selected artist or album none of whose
-/// songs is picked. Iced's `LibraryDeleteSelection` (`src/gui/app.rs:3717-3790`)
-/// adds every song of a selected album or artist even when songs are picked
-/// inside it, so Delete took more than Play. The ids come sorted, without
-/// duplicates.
+/// The songs a delete of `selected` removes: the songs Play takes
+/// ([`selected_songs`] over `songs`, the songs the search and the filters let
+/// through), so songs picked inside a selected artist or album narrow it
+/// (quirk fix 49), and a selected song the search or a filter hides stays.
+/// Iced's `LibraryDeleteSelection` (`src/gui/app.rs:3717-3790`) also looks
+/// only among `filtered_songs` (the loop at `:3759`), but adds every song of
+/// a selected album or artist even when songs are picked inside it, so Delete
+/// took more than Play. The ids come sorted, without duplicates.
 pub fn delete_target_ids(
     selected: &HashSet<LibraryListItem>,
     structure: &impl LibraryStructure,
+    songs: &[Arc<SongData>],
 ) -> Vec<i64> {
-    let mut ids: Vec<i64> = selected_song_ids(selected, structure).into_iter().collect();
+    let mut ids: Vec<i64> = selected_songs(selected, structure, songs)
+        .iter()
+        .map(|s| s.id)
+        .collect();
     ids.sort_unstable();
+    ids.dedup();
     ids
 }
 
@@ -316,6 +322,12 @@ struct Inner {
     grid_anchor: RefCell<Option<String>>,
     /// Set while the view-model itself writes the grid selection.
     writing_grid: Cell<bool>,
+    /// The card a press in the grid was on, with its modifiers, until the
+    /// grid's selection answers it ([`LibraryViewModel::grid_press`]).
+    grid_press: RefCell<Option<(String, Modifiers)>>,
+    /// Set by a key the grid has: the grid's next selection change is its
+    /// keyboard's.
+    grid_key: Cell<bool>,
     /// The grid's cards to a row, as the grid lays them out (Iced's
     /// `albums_per_row`).
     grid_per_row: Cell<usize>,
@@ -324,11 +336,16 @@ struct Inner {
     detail_latest: Latest,
     stats: Signal<LibraryStats>,
     h_offset: Signal<f32>,
+    /// The width the column header is laid out at, the viewport the shared
+    /// offset scrolls in (0 before the first layout).
+    h_viewport: Cell<f32>,
     scroll: Request<ScrollRequest>,
     last_artist_click: RefCell<Option<(String, Instant)>>,
     last_album_click: RefCell<Option<(String, Instant)>>,
     pending_reveal: RefCell<Option<String>>,
     reveal_cleared: Request<LibrarySearchParams>,
+    /// A reveal asks the panel to give the library the keyboard.
+    focus_request: Request<()>,
     /// Set by a library change (a scan, a delete): the next snapshot is a
     /// refresh, which clears the selection (G4).
     refresh_pending: Cell<bool>,
@@ -389,17 +406,21 @@ impl LibraryViewModel {
             grid_seen: RefCell::new(HashSet::new()),
             grid_anchor: RefCell::new(None),
             writing_grid: Cell::new(false),
+            grid_press: RefCell::new(None),
+            grid_key: Cell::new(false),
             grid_per_row: Cell::new(GRID_MIN_COLUMNS),
             expanded_album: Signal::new(None),
             expanded_songs: Signal::new(Rc::new(Vec::new())),
             detail_latest: Latest::new(),
             stats: Signal::new(LibraryStats::default()),
             h_offset: Signal::new(0.0),
+            h_viewport: Cell::new(0.0),
             scroll: Request::default(),
             last_artist_click: RefCell::new(None),
             last_album_click: RefCell::new(None),
             pending_reveal: RefCell::new(None),
             reveal_cleared: Request::default(),
+            focus_request: Request::default(),
             refresh_pending: Cell::new(false),
             filter_figures: Cell::new(false),
             deletes: RefCell::new(HashSet::new()),
@@ -550,6 +571,14 @@ impl LibraryViewModel {
         self.inner.reveal_cleared.latest()
     }
 
+    /// The reveal's requests for the keyboard: the panel moves it to the list
+    /// or the grid on each, as Iced's reveal sets `AppFocus::Library`
+    /// (`src/gui/app.rs:6086`), so that Enter, Delete and the arrows act on
+    /// the song revealed.
+    pub fn focus_request(&self) -> Signal<Option<(u64, ())>> {
+        self.inner.focus_request.latest()
+    }
+
     /// The playing track's path (the playing markers).
     pub fn playing_path(&self) -> Signal<String> {
         self.inner.services.now_playing.path()
@@ -564,8 +593,10 @@ impl LibraryViewModel {
     // View mode, columns, sort, search
     // -----------------------------------------------------------------
 
-    /// Switches to `mode` (`ChangeLibraryViewMode`, `src/gui/app.rs:3365`):
-    /// the covers that failed to decode are retried when next shown (G5:
+    /// Switches to `mode` (`ChangeLibraryViewMode`, `src/gui/app.rs:3365`),
+    /// keeping the selection (the grid's selected cards are the lists'
+    /// selected albums): the covers that failed to decode are retried when
+    /// next shown (G5:
     /// `clear_all_cover_cache`, `:3367`; [`CoverStore::forget_failed`]), the
     /// grid's expanded album closes, the view scrolls back to the top and the
     /// horizontal offset returns to 0.
@@ -573,9 +604,34 @@ impl LibraryViewModel {
     /// [`CoverStore::forget_failed`]: crate::teksilo_ui::shared::cover_store::CoverStore::forget_failed
     pub fn set_view_mode(&self, mode: LibraryViewMode) {
         let inner = &self.inner;
+        // One selection across the modes, as Iced's `selected_items` (11c):
+        // the grid's cards become the lists' albums and back.
+        let items = self.selected_items();
+        self.forget_grid_gesture();
         // Before the views of the new mode ask for their covers.
         inner.services.covers.forget_failed();
         inner.view_mode.set(mode);
+        let (albums, rest): (HashSet<LibraryListItem>, HashSet<LibraryListItem>) =
+            items.into_iter().partition(|item| {
+                mode == LibraryViewMode::Grid && matches!(item, LibraryListItem::Album(_))
+            });
+        let mut selection = inner.selection.get();
+        selection.selected = rest;
+        inner.selection.set_if_changed(selection);
+        let albums: Vec<String> = albums
+            .into_iter()
+            .filter_map(|item| match item {
+                LibraryListItem::Album(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        self.write_grid_selection(|keyed| {
+            if albums.is_empty() {
+                keyed.clear();
+            } else {
+                keyed.select_keys(albums, false);
+            }
+        });
         inner.expanded_album.set(None);
         inner.expanded_songs.set(Rc::new(Vec::new()));
         inner.detail_latest.invalidate();
@@ -598,6 +654,8 @@ impl LibraryViewModel {
         }
         widths.insert(column, width);
         self.inner.column_widths.set(widths);
+        // A narrower column can leave the offset past the content's end.
+        self.clamp_h_offset(self.inner.h_viewport.get());
     }
 
     /// Applies the sort a header click produced (`LibrarySortChanged`; the
@@ -622,6 +680,9 @@ impl LibraryViewModel {
     }
 
     fn on_search(&self, text: &str) {
+        // What the grid's selection does next is the search's, not a
+        // gesture's.
+        self.forget_grid_gesture();
         let services = &self.inner.services;
         let current = services.library_songs.params().query.unwrap_or_default();
         if current != text {
@@ -640,9 +701,24 @@ impl LibraryViewModel {
         self.inner.h_offset.set_if_changed(next);
     }
 
-    /// Clamps the shared offset after the viewport or the columns changed.
+    /// Clamps the shared offset to the content that overflows a viewport
+    /// `viewport_width` wide.
     pub fn clamp_h_offset(&self, viewport_width: f32) {
         self.scroll_horizontally(0.0, viewport_width);
+    }
+
+    /// The column header was laid out `width` px wide (a resize of the
+    /// window, a mode change): the offset is clamped to what overflows it
+    /// now, so a wider window shows the leading columns again (quirk fix 36).
+    /// A column resize clamps against the same width
+    /// ([`set_column_width`](Self::set_column_width)). Called from layout;
+    /// it writes the offset only when it changes.
+    pub fn set_h_viewport(&self, width: f32) {
+        if !width.is_finite() || width <= 0.0 {
+            return;
+        }
+        self.inner.h_viewport.set(width);
+        self.clamp_h_offset(width);
     }
 
     // -----------------------------------------------------------------
@@ -756,6 +832,7 @@ impl LibraryViewModel {
     ///   the same songs again), so the selection's figures stay.
     pub fn on_filter_changed(&self) {
         let inner = &self.inner;
+        self.forget_grid_gesture();
         inner.scroll.send(ScrollRequest::Top);
         if inner.services.library_songs.loading().get() {
             inner.filter_figures.set(true);
@@ -1065,19 +1142,51 @@ impl LibraryViewModel {
         *self.inner.grid_anchor.borrow_mut() = Some(id.to_string());
     }
 
-    /// The grid selection changed. `GridView` does not say which modifiers
-    /// the gesture had, so it is read from the change: one tile added to a
-    /// selection, or one removed from a selection of three or more, is a
-    /// Ctrl-click toggle and keeps the band's songs selected, as Iced
-    /// does; anything else (a plain click, a marquee, a click that leaves one
-    /// tile) replaces the selection and drops them.
+    /// The grid selection changed. `GridView` does not say which gesture
+    /// changed it, so the view tells the view-model first:
+    ///
+    /// - a press on a card ([`grid_press`](Self::grid_press)): the change is
+    ///   replaced by Iced's `handle_click` on that card, over the grid's
+    ///   items, cards and the open album's songs together
+    ///   (`src/gui/library.rs:913-922`): a plain click selects the card
+    ///   alone, Ctrl toggles it and keeps the rest, Shift ranges from the
+    ///   pivot over the cards and the songs between (11b);
+    /// - a key ([`grid_key_pressed`](Self::grid_key_pressed)), or a change
+    ///   that adds cards with neither (an assistive technology's select): the
+    ///   change is read from its size. One card added to the selection, or
+    ///   one removed from three or more, is a toggle and keeps the band's
+    ///   songs; anything else replaces the selection and drops them;
+    /// - cards dropped with neither: the grid dropped cards its albums no
+    ///   longer hold (a search, a filter). The songs picked in the open album
+    ///   stay selected, as Iced's selection survives a search
+    ///   (`src/gui/app.rs:2797`; 11d).
     fn on_grid_selection(&self, keys: &HashSet<String>) {
         if self.inner.writing_grid.get() {
             return;
         }
         let previous = std::mem::replace(&mut *self.inner.grid_seen.borrow_mut(), keys.clone());
+        let press = self.inner.grid_press.borrow_mut().take();
+        if let Some((card, modifiers)) = press {
+            self.inner.grid_key.set(false);
+            let modifiers = select_modifiers(modifiers);
+            let item = LibraryListItem::Album(card.clone());
+            self.update_grid_from(
+                previous.into_iter().collect(),
+                |selection, items, structure| {
+                    selection.click(item, modifiers, || items.to_vec(), &structure.data());
+                },
+            );
+            *self.inner.grid_anchor.borrow_mut() = Some(card);
+            return;
+        }
         let added: Vec<&String> = keys.difference(&previous).collect();
         let removed = previous.difference(keys).count();
+        if !self.inner.grid_key.replace(false) && added.is_empty() {
+            // Cards dropped with no gesture: the grid's albums changed.
+            self.inner.filter_figures.set(false);
+            self.refresh_stats();
+            return;
+        }
         if let Some(last) = added.last() {
             *self.inner.grid_anchor.borrow_mut() = Some((*last).clone());
         } else if keys.len() == 1 {
@@ -1087,7 +1196,7 @@ impl LibraryViewModel {
             && ((added.len() == 1 && removed == 0)
                 || (added.is_empty() && removed == 1 && keys.len() > 1));
         if single_toggle {
-            // A Ctrl-click on a card makes the card the current item (Iced's
+            // A toggle makes the card the current item (Iced's
             // `focused_item`): the keys no longer walk from a band song.
             let mut selection = self.inner.selection.get();
             if matches!(selection.focused, Some(LibraryListItem::Song(_))) {
@@ -1101,6 +1210,62 @@ impl LibraryViewModel {
         }
         self.inner.filter_figures.set(false);
         self.refresh_stats();
+    }
+
+    /// A primary press in the grid at `at`, in content space, with
+    /// `modifiers`; `rect_of` gives each card's and band song's rectangle in
+    /// the grid as laid out (as for [`select_grid_marquee`](Self::select_grid_marquee)).
+    /// On a card, the grid's coming change of
+    /// [`grid_selection`](Self::grid_selection) is replaced by Iced's
+    /// `handle_click` on that card, over the cards and the open album's songs
+    /// (`src/gui/library.rs:913-922`); on a song of
+    /// the band, the row handles it; on the background, nothing is selected
+    /// any more, before the rubber band starts (Iced's `LibraryDeselect` on
+    /// the grid's background, `src/gui/library.rs:1956`,
+    /// `src/gui/app.rs:3343-3362`; 11a).
+    pub fn grid_press(
+        &self,
+        at: (f32, f32),
+        modifiers: Modifiers,
+        rect_of: impl Fn(GridSpot, GridShape) -> ContentRect,
+    ) {
+        let cards = self.grid_cards();
+        let songs = self.band_song_ids();
+        let shape = self.grid_shape(&cards, &songs);
+        let point = ContentRect {
+            x: at.0,
+            y: at.1,
+            width: 0.01,
+            height: 0.01,
+        };
+        let hit = |spot: GridSpot| rect_of(spot, shape).intersects(&point);
+        self.inner.grid_key.set(false);
+        if let Some(card) = (0..cards.len()).find(|i| hit(GridSpot::Card(*i))) {
+            *self.inner.grid_press.borrow_mut() = Some((cards[card].clone(), modifiers));
+            return;
+        }
+        *self.inner.grid_press.borrow_mut() = None;
+        let in_band =
+            shape.band_start().is_some() && (0..songs.len()).any(|row| hit(GridSpot::Song(row)));
+        if !in_band {
+            self.deselect();
+        }
+    }
+
+    /// A key reached the grid: its next selection change is its own
+    /// navigation's, read from the change's size (one card added, or one
+    /// removed from three or more, is a toggle that keeps the open album's
+    /// songs; anything else replaces the selection).
+    pub fn grid_key_pressed(&self) {
+        *self.inner.grid_press.borrow_mut() = None;
+        self.inner.grid_key.set(true);
+    }
+
+    /// Forgets the gesture the grid's next selection change was waiting
+    /// for.
+    fn forget_grid_gesture(&self) {
+        *self.inner.grid_press.borrow_mut() = None;
+        self.inner.grid_key.set(false);
     }
 
     /// The album the last grid gesture was on (Iced's `selected_album`).
@@ -1155,17 +1320,24 @@ impl LibraryViewModel {
         &self,
         f: impl FnOnce(&mut LibrarySelection, &[LibraryListItem], &ListStructure),
     ) {
+        self.update_grid_from(self.inner.grid_selection.selected_keys(), f);
+    }
+
+    /// [`update_grid`](Self::update_grid) from the selected cards `keys`
+    /// rather than the tiles' selection as it is (a click the grid already
+    /// applied its own way).
+    fn update_grid_from(
+        &self,
+        keys: Vec<String>,
+        f: impl FnOnce(&mut LibrarySelection, &[LibraryListItem], &ListStructure),
+    ) {
         let cards = self.grid_cards();
         let songs = self.band_song_ids();
         let items = grid_items(&cards, &songs, self.grid_shape(&cards, &songs));
         let mut selection = self.inner.selection.get();
-        selection.selected.extend(
-            self.inner
-                .grid_selection
-                .selected_keys()
-                .into_iter()
-                .map(LibraryListItem::Album),
-        );
+        selection
+            .selected
+            .extend(keys.into_iter().map(LibraryListItem::Album));
         if selection
             .pivot
             .as_ref()
@@ -1486,13 +1658,19 @@ impl LibraryViewModel {
 
     /// The songs a delete would remove now.
     pub fn delete_targets(&self) -> Vec<i64> {
-        delete_target_ids(&self.selected_items(), &self.inner.structure.get().data())
+        let snapshot = self.inner.services.library_songs.snapshot().get();
+        delete_target_ids(
+            &self.selected_items(),
+            &self.inner.structure.get().data(),
+            &snapshot.songs,
+        )
     }
 
-    /// Delete (quirk fix 1): asks for confirmation with a message box naming
-    /// how many songs go ([`delete_targets`](Self::delete_targets), quirk fix
-    /// 49); only its "Eliminar" deletes. Nothing happens when nothing is
-    /// selected, as in Iced.
+    /// Delete (quirk fix 1): asks for confirmation with a box naming how many
+    /// songs go ([`delete_targets`](Self::delete_targets), quirk fix 49); only
+    /// its "Eliminar" deletes, and Enter does nothing in it
+    /// ([`ConfirmBox`](crate::teksilo_ui::widgets::dialog_frame::ConfirmBox)).
+    /// Nothing happens when nothing is selected, as in Iced.
     pub fn request_delete(&self, ctx: &mut EventContext) {
         let ids = self.delete_targets();
         if ids.is_empty() {
@@ -1504,7 +1682,7 @@ impl LibraryViewModel {
             delete_text(ids.len()),
             tr!(library_delete_confirm()),
         )
-        .on_result(move |result: MessageBoxResult, _ctx| {
+        .on_result(move |result: ConfirmResult, _ctx| {
             if result.button == StandardButton::Ok && !result.was_dismissed() {
                 vm.delete_songs(ids.clone());
             }
@@ -1592,7 +1770,7 @@ impl LibraryViewModel {
 
     /// Reveals the song at `path` (`handle_library_reveal`,
     /// `src/gui/app.rs:6073`): selects it and scrolls to it, opening what hides
-    /// it. When the search or a filter hides it, they are cleared, what was
+    /// it, and asks for the keyboard ([`focus_request`](Self::focus_request)). When the search or a filter hides it, they are cleared, what was
     /// cleared goes out on [`reveal_cleared`](Self::reveal_cleared), and the
     /// reveal resumes when the new results arrive.
     pub fn reveal_path(&self, path: &str) {
@@ -1604,12 +1782,14 @@ impl LibraryViewModel {
             .any(|s| s.full_file_path.as_ref() == path)
         {
             self.reveal_found(path);
+            inner.focus_request.send(());
             return;
         }
         let params = inner.services.library_songs.params();
         if !has_any_filter(&params) && inner.search.get().is_empty() {
             return;
         }
+        inner.focus_request.send(());
         *inner.pending_reveal.borrow_mut() = Some(path.to_string());
         let search = inner.search.get();
         inner.reveal_cleared.send(LibrarySearchParams {

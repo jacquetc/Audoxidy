@@ -30,8 +30,10 @@
 //! can be cleared.
 //!
 //! **The popup stays open while its values change** (quirk fix 10: Iced
-//! closes it after each change, `app.rs:4909-4976`). It closes on Escape and
-//! on a click outside (quirk fix 4), which the popover hosting it provides.
+//! closes it after each change, `app.rs:4909-4976`). It closes on Escape
+//! (quirk fix 4) and on a press outside it, which goes no further, as Iced's
+//! blocker takes it; the overlay hosting it ([`MeterSlot`](super::MeterSlot))
+//! provides both.
 
 use teksilo::prelude::*;
 use teksilo::tokens::{FontWeight, VAlignment};

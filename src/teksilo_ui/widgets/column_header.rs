@@ -58,8 +58,8 @@ use teksilo::core::{Key, WidgetEvent};
 use teksilo::prelude::*;
 use teksilo::tokens::{FontWeight, HAlignment, VAlignment};
 use teksilo::widgets::{
-    FixedSize, HStack, IconWidget, Padding, RectWidget, ScrollArea, ScrollBarPolicy, Spacer,
-    TextWidget, VStack,
+    FixedSize, HStack, IconWidget, MaxSize, Padding, RectWidget, ScrollArea, ScrollBarPolicy,
+    Spacer, TextWidget, VStack,
 };
 
 use crate::logic::library_geometry::LibraryViewMode;
@@ -389,7 +389,22 @@ impl ColumnHeader {
                 .color(TextRole::Secondary)
                 .visible_when(shown)
         };
+        let sorted = up.or(&down);
         let (up, down) = (arrow(self.arrows.up, up), arrow(self.arrows.down, down));
+        // The label never takes more than its cell leaves it (after the
+        // shown arrow, and "#"'s trailing gap): a longer one is cut at that
+        // edge, as the Iced cell clips it, and the row of the cell never
+        // holds more than its width.
+        let trailing = if column == SortColumn::TrackNumber {
+            TRACK_TRAILING
+        } else {
+            0.0
+        };
+        let room = width.zip(&sorted).map(move |(width, sorted)| {
+            let arrow = if *sorted { ARROW_SIZE } else { 0.0 };
+            (width - LABEL_LEADING - trailing - arrow).max(0.0)
+        });
+        let label = MaxSize::width(f32::MAX).max_width(room).child(label);
         let content = if column == SortColumn::TrackNumber {
             HStack::new()
                 .spacing(0.0)
@@ -595,6 +610,16 @@ pub fn key_delta(key: &Key, shift: bool, direction: LayoutDirection) -> Option<i
     Some(if wider { step } else { -step })
 }
 
+/// The pointer's x in the window, for a drag: the grip moves with the
+/// column it resizes, so a position in its own coordinates would count only
+/// half the travel (probe F2). `local_x` when the event carries no window
+/// position.
+fn window_x(local_x: f32, ctx: &EventContext) -> f32 {
+    ctx.pointer_position()
+        .or_else(|| ctx.tree_pointer_position())
+        .map_or(local_x, |point| point.x)
+}
+
 impl Widget for ColumnGrip {
     fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
         let id = ctx.self_id();
@@ -629,13 +654,14 @@ impl Widget for ColumnGrip {
                         ..
                     } => {
                         ctx.capture_pointer();
-                        drag.set(Some((position.x, pointer.width())));
+                        drag.set(Some((window_x(position.x, ctx), pointer.width())));
                         dragging.set(true);
                         EventResponse::Handled
                     }
                     WidgetEvent::PointerMove { position, .. } => match drag.get() {
                         Some((start_x, start_width)) if ctx.owns_pointer() => {
-                            pointer.resize(resized_width(start_width, position.x - start_x), ctx);
+                            let dx = window_x(position.x, ctx) - start_x;
+                            pointer.resize(resized_width(start_width, dx), ctx);
                             EventResponse::Handled
                         }
                         _ => EventResponse::Ignored,

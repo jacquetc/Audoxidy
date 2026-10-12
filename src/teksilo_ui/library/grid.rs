@@ -51,6 +51,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use teksilo::canvas::EdgeInsets;
+use teksilo::core::event::{PointerButton, WidgetEvent};
 use teksilo::core::signal::ObserverHandle;
 use teksilo::core::widget::WidgetPlacement;
 use teksilo::data::{DataChange, ListDataSource, ListModel};
@@ -217,15 +218,20 @@ impl ListDataSource for AlbumSource {
     }
 }
 
-/// One line of a card's text.
+/// One line of a card's text, the text column's width: a line
+/// `smart_truncate`'s estimate lets run longer draws past it, unclipped, as
+/// Iced's text does past its 122 px column.
 fn card_line(text: String) -> FixedSize {
-    FixedSize::new().height(LINE_HEIGHT).child(
-        TextWidget::new(lit!(text))
-            .style(style::inter(TEXT_SIZE, FontWeight::MEDIUM))
-            .color(TextRole::Primary)
-            .single_line()
-            .a11y_hidden(),
-    )
+    FixedSize::new()
+        .width(INFO_WIDTH)
+        .height(LINE_HEIGHT)
+        .child(
+            TextWidget::new(lit!(text))
+                .style(style::inter(TEXT_SIZE, FontWeight::MEDIUM))
+                .color(TextRole::Primary)
+                .single_line()
+                .a11y_hidden(),
+        )
 }
 
 /// A grid card; see the module documentation.
@@ -428,6 +434,9 @@ pub struct LibraryGrid {
     viewport: Rc<Cell<(f32, f32)>>,
     /// The band's id once built: the panel moves the keyboard into it.
     band: Rc<Cell<Option<WidgetId>>>,
+    /// The `GridView`'s id once built: the panel's keys act while it has the
+    /// keyboard.
+    view: Rc<Cell<Option<WidgetId>>>,
     root: Option<WidgetId>,
 }
 
@@ -452,8 +461,17 @@ impl LibraryGrid {
             height: Signal::new(0.0),
             viewport: Rc::new(Cell::new((0.0, 0.0))),
             band: Rc::new(Cell::new(None)),
+            view: Rc::new(Cell::new(None)),
             root: None,
         }
+    }
+
+    /// Shares the cell the `GridView` writes its id to when built: the panel
+    /// takes its keys while the grid has the keyboard, and moves the keyboard
+    /// to it (a reveal).
+    pub fn view_focus(mut self, view: Rc<Cell<Option<WidgetId>>>) -> Self {
+        self.view = view;
+        self
     }
 
     /// Shares the cell the band writes its id to (see
@@ -609,6 +627,7 @@ impl Widget for LibraryGrid {
             ) as Box<dyn Widget>)
         });
         let grid = ctx.add(grid.access_label(tr!(library_grid())));
+        self.view.set(Some(grid));
         self.sync_open_album(ctx, &list);
         // The keys' walk needs the cards to a row.
         let columns = |sizing: &GridSizing| match sizing {
@@ -675,12 +694,36 @@ impl Widget for LibraryGrid {
             },
         );
         let (pointer, cancel) = (marquee.clone(), marquee.clone());
+        let (press_vm, press_scroll, press_viewport) = (
+            vm.clone(),
+            self.scroll_y.clone().unwrap_or_else(|| Signal::new(0.0)),
+            self.viewport.clone(),
+        );
         let root = ctx.add(
             ZStack::new()
                 .alignment(teksilo::tokens::Alignment::TOP_LEADING)
                 .child(grid)
                 .child(Marquee::new(marquee))
-                .on_pointer_event(move |event, ctx| pointer.on_pointer(event, ctx))
+                .on_pointer_event(move |event, ctx| {
+                    // Seen before the grid's own handling of the press: what
+                    // it was on tells the view-model which gesture the
+                    // grid's selection change is (11a, 11b).
+                    if let WidgetEvent::PointerDown {
+                        position,
+                        button: PointerButton::Primary,
+                        modifiers,
+                        ..
+                    } = event
+                    {
+                        let width = press_viewport.get().0;
+                        press_vm.grid_press(
+                            (position.x, position.y + press_scroll.get()),
+                            *modifiers,
+                            |spot, shape| spot_rect(spot, shape, width),
+                        );
+                    }
+                    pointer.on_pointer(event, ctx)
+                })
                 .on_pointer_cancel(move |_, _, _| cancel.cancel()),
         );
         self.root = Some(root);

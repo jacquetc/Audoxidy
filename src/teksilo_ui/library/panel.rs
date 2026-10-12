@@ -13,10 +13,14 @@
 //!   of cards), or one of the three lists ([`LibraryList`]);
 //! - the bottom bar ([`BottomBar`]).
 //!
-//! Keys (quirk fix 2): the panel takes Enter (play the selection: append it
-//! to the active playlist), Delete (confirm, then delete) and the arrows in a
-//! preview handler, before the list or the grid sees them, unless a text
-//! field has the focus. In the list modes ↑ and ↓ move the selection (Shift
+//! Keys (quirk fix 2): while the list, the grid or the grid's band has the
+//! keyboard, the panel takes Enter (play the selection: append it to the
+//! active playlist), Delete (confirm, then delete) and the arrows in a
+//! preview handler, before the list or the grid sees them. A control of the
+//! panel that has the keyboard (an action of the bottom bar, the search
+//! field, a sort header or a grip of the column header, a chevron, the meter
+//! slot) keeps its own keys: Iced's controls take no key, and its
+//! library keys act wherever the library has the focus. In the list modes ↑ and ↓ move the selection (Shift
 //! extends it) and ← and → collapse and expand; in the grid Alt+↑ / Alt+↓ and
 //! ↑ on the open album close and open it, ↓ from a card of the open album's
 //! row enters its songs (the keyboard goes into the band), ↑ and ↓ walk them
@@ -25,13 +29,16 @@
 //! it), and a step between cards is the grid's own navigation (G2,
 //! [`LibraryViewModel::grid_key`]). Ctrl+A is the app's global shortcut, routed to
 //! [`LibraryViewModel::select_all`]. None of these is a global shortcut: a key
-//! acts on the panel that has the keyboard.
+//! acts on the panel that has the keyboard. A reveal ("Mostrar en la
+//! biblioteca", "show playing") gives the list or the grid the keyboard, as
+//! Iced's sets `AppFocus::Library` ([`LibraryViewModel::focus_request`]).
 
 use std::cell::Cell;
 use std::rc::Rc;
 
 use teksilo::core::binding::BindingLevel;
 use teksilo::core::event::{ScrollDelta, WidgetEvent};
+use teksilo::core::widget::WidgetPlacement;
 use teksilo::core::{Key, Modifiers};
 use teksilo::prelude::*;
 use teksilo::tokens::HAlignment;
@@ -64,8 +71,21 @@ pub fn nav_dir(key: &Key) -> Option<LibraryNavDir> {
     }
 }
 
-/// The panel's keys (see the module documentation), for a key that does not
-/// come from a text field; `band` holds the grid band's id once it is built.
+/// Whether the panel's keys apply with `focused` holding the keyboard: the
+/// list or the grid (`view`), or the grid's band. A control inside the panel
+/// (an action of the bottom bar, the search field, a sort header or a grip of
+/// the column header, a chevron, the meter slot) keeps its own keys.
+pub fn has_the_keys(
+    focused: Option<WidgetId>,
+    view: &Cell<Option<WidgetId>>,
+    band: &Cell<Option<WidgetId>>,
+) -> bool {
+    focused.is_some() && (focused == view.get() || focused == band.get())
+}
+
+/// The panel's keys (see the module documentation), while the list, the
+/// grid or the band has the keyboard ([`has_the_keys`]); `band` holds the
+/// grid band's id once it is built.
 pub fn handle_key(
     vm: &LibraryViewModel,
     band: &Cell<Option<WidgetId>>,
@@ -187,6 +207,23 @@ impl Widget for ModeHeader {
             .into()
     }
 
+    fn place_children(
+        &self,
+        bounds: Rect,
+        _proposal: SizeProposal,
+        children: &mut [WidgetPlacement],
+        _ctx: &LayoutContext,
+    ) {
+        for child in children.iter_mut() {
+            child.origin = bounds.origin();
+            child.size = bounds.size();
+        }
+        // The shared offset stays within what overflows the header's width
+        // (quirk fix 36): written from layout behind an equality guard, and
+        // the offset never changes the header's own width.
+        self.vm.set_h_viewport(bounds.width);
+    }
+
     fn children(&self) -> Vec<WidgetId> {
         self.root.into_iter().collect()
     }
@@ -196,6 +233,8 @@ impl Widget for ModeHeader {
 struct ModeBody {
     vm: LibraryViewModel,
     band: Rc<Cell<Option<WidgetId>>>,
+    /// The id of the list or the grid that has the panel's keys.
+    view: Rc<Cell<Option<WidgetId>>>,
     root: Option<WidgetId>,
 }
 
@@ -213,10 +252,15 @@ impl Widget for ModeBody {
         let root = match vm.view_mode().get() {
             LibraryViewMode::Grid => {
                 self.band.set(None);
-                ctx.add(LibraryGrid::new(vm).band_focus(self.band.clone()))
+                ctx.add(
+                    LibraryGrid::new(vm)
+                        .band_focus(self.band.clone())
+                        .view_focus(self.view.clone()),
+                )
             }
             mode => ctx.add(
-                Padding::new(0.0, 0.0, 0.0, CONTENT_LEADING).child(LibraryList::new(vm, mode)),
+                Padding::new(0.0, 0.0, 0.0, CONTENT_LEADING)
+                    .child(LibraryList::new(vm, mode).list_focus(self.view.clone())),
             ),
         };
         self.root = Some(root);
@@ -232,6 +276,44 @@ impl Widget for ModeBody {
 
     fn children(&self) -> Vec<WidgetId> {
         self.root.into_iter().collect()
+    }
+}
+
+/// Moves the keyboard to the list or the grid on each of the view-model's
+/// focus requests (a reveal). The requests come from observers, which have no
+/// event context to call `request_focus` from, so this empty widget rebuilds
+/// on them and focuses from its `build` (`BuildContext::focus`). The request
+/// pending when it is first built is not one.
+struct FocusOnRequest {
+    request: Signal<Option<(u64, ())>>,
+    seen: Option<u64>,
+    view: Rc<Cell<Option<WidgetId>>>,
+}
+
+impl std::fmt::Debug for FocusOnRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FocusOnRequest")
+            .field("seen", &self.seen)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Widget for FocusOnRequest {
+    fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
+        self.request
+            .bind_to(ctx.self_id(), ctx.binding_registry(), BindingLevel::Rebuild);
+        let latest = self.request.get().map(|(sequence, ())| sequence);
+        if latest != self.seen {
+            self.seen = latest;
+            if let Some(view) = self.view.get() {
+                ctx.focus(view);
+            }
+        }
+        Vec::new()
+    }
+
+    fn layout_response(&self, _proposal: SizeProposal, _ctx: &LayoutContext) -> LayoutResponse {
+        Size::ZERO.into()
     }
 }
 
@@ -281,10 +363,16 @@ impl Widget for LibraryPanel {
     fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
         let vm = self.vm.clone();
         vm.wire(ctx);
-        let surfaces = ctx.text_surfaces();
         let key_vm = vm.clone();
         let band = Rc::new(Cell::new(None));
         let key_band = band.clone();
+        let view = Rc::new(Cell::new(None));
+        let key_view = view.clone();
+        let focus = ctx.add(FocusOnRequest {
+            request: vm.focus_request(),
+            seen: vm.focus_request().get().map(|(sequence, ())| sequence),
+            view: view.clone(),
+        });
         let header_width = Rc::new(Cell::new(0.0));
         let root = ctx.add(
             Panel::new()
@@ -303,17 +391,27 @@ impl Widget for LibraryPanel {
                         .child(Expand::new().child(ModeBody {
                             vm: vm.clone(),
                             band,
+                            view,
                             root: None,
                         }))
-                        .child(Expand::horizontal().child(BottomBar::new(vm, self.meter.take()))),
+                        .child(Expand::horizontal().child(BottomBar::new(vm, self.meter.take())))
+                        .child(focus),
                 )
                 .access_role(teksilo::core::accesskit::Role::Region)
                 .access_label(tr!(library_panel()))
                 .on_key_preview(move |event, ctx| match event {
                     WidgetEvent::KeyDown { key, modifiers, .. }
-                        if !surfaces.focused_is_text_surface() =>
+                        if has_the_keys(ctx.focused(), &key_view, &key_band) =>
                     {
-                        handle_key(&key_vm, &key_band, key, *modifiers, ctx)
+                        let response = handle_key(&key_vm, &key_band, key, *modifiers, ctx);
+                        if matches!(response, EventResponse::Ignored)
+                            && key_vm.view_mode().get() == LibraryViewMode::Grid
+                        {
+                            // The grid's own keys: its next selection change
+                            // is theirs.
+                            key_vm.grid_key_pressed();
+                        }
+                        response
                     }
                     _ => EventResponse::Ignored,
                 }),

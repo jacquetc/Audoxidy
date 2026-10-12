@@ -31,8 +31,9 @@
 //! - [`DialogFrame`] is the Iced column itself, for `present_modal` content
 //!   that needs the exact Iced layout (the export dialog);
 //! - [`ModalText`] is `modal_text`: Inter 14 px, primary, every line centred;
-//! - [`input_dialog`] and [`confirm_box`] preset the stock dialogs with the
-//!   Iced "Cancelar" button.
+//! - [`input_dialog`] presets the stock `InputDialog` with the Iced
+//!   "Cancelar" button, and [`confirm_box`] is the Iced confirmation, a
+//!   [`DialogFrame`] in which Enter does nothing ([`ConfirmBox`]).
 //!
 //! [`Frame`] is the painted panel the dialog and the menus share.
 //!
@@ -53,8 +54,8 @@ use teksilo::core::styles::{
 use teksilo::prelude::*;
 use teksilo::tokens::{FontWeight, HAlignment, Shadow, VAlignment};
 use teksilo::widgets::{
-    FixedSize, HStack, InputDialog, MessageBox, MessageBoxButton, ModalContainer, Padding, Panel,
-    RectWidget, Spacer, StandardButton, TextWidget, VStack, ZStack,
+    FixedSize, HStack, InputDialog, ModalContainer, Padding, Panel, RectWidget, Spacer,
+    StandardButton, TextWidget, VStack, ZStack,
 };
 
 use crate::teksilo_ui::style;
@@ -397,24 +398,88 @@ pub fn input_dialog(
         .cancel_label(tr!(chrome_dialog_cancel()))
 }
 
-/// A plain `MessageBox` titled `title` saying `text`, with the Iced "Cancelar"
-/// and `confirm` buttons (the delete confirmation, `app.rs:5297`). Enter and
-/// Escape both pick "Cancelar": the Iced dialog does nothing on Enter, and a
-/// confirmation that deletes must not take Enter for yes. The caller adds
-/// `on_result` (`StandardButton::Ok` is the confirmation) and presents it.
+/// A confirmation titled `title` saying `text`, with the Iced "Cancelar" and
+/// `confirm` buttons (the library's and the playlist's delete confirmations,
+/// `app.rs:5296-5304`): the Iced `standard_modal` around `modal_text`, as a
+/// [`DialogFrame`]. The caller adds `on_result` (`StandardButton::Ok` is the
+/// confirmation) and presents it; see [`ConfirmBox`].
 pub fn confirm_box(
     title: impl Into<LocalizedString>,
     text: impl Into<LocalizedString>,
     confirm: impl Into<LocalizedString>,
-) -> MessageBox {
-    MessageBox::plain(title)
-        .text(text)
-        .add_button(
-            MessageBoxButton::standard(StandardButton::Cancel).label(tr!(chrome_dialog_cancel())),
-        )
-        .add_button(MessageBoxButton::standard(StandardButton::Ok).label(confirm))
-        .default_button(StandardButton::Cancel)
-        .escape_button(StandardButton::Cancel)
+) -> ConfirmBox {
+    ConfirmBox {
+        title: title.into(),
+        text: text.into(),
+        confirm: confirm.into(),
+        on_result: None,
+    }
+}
+
+/// What closed a [`ConfirmBox`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConfirmResult {
+    /// `StandardButton::Ok` for the confirm button; `StandardButton::Cancel`
+    /// for "Cancelar", Escape and a click outside.
+    pub button: StandardButton,
+    dismissed: bool,
+}
+
+impl ConfirmResult {
+    /// Whether the box was closed without a button (Escape, a click
+    /// outside).
+    pub fn was_dismissed(&self) -> bool {
+        self.dismissed
+    }
+}
+
+/// The function a [`ConfirmBox`] reports its answer to.
+type ResultFn = Rc<dyn Fn(ConfirmResult, &mut EventContext)>;
+
+/// A confirmation in the Iced dialog ([`confirm_box`]). Its buttons answer
+/// through [`on_result`](Self::on_result); Escape and a click outside close
+/// it as "Cancelar" (quirk fix 4). **Enter does nothing** in it, as in the
+/// Iced dialog, whose buttons take no key (`app.rs:5296-5304`), whatever has
+/// the keyboard: a stock `MessageBox` presses its default button on Enter,
+/// and the button the keyboard is on when there is none, so a confirmation
+/// that deletes would take Enter for an answer. Space still presses the
+/// button the keyboard is on.
+pub struct ConfirmBox {
+    title: LocalizedString,
+    text: LocalizedString,
+    confirm: LocalizedString,
+    on_result: Option<ResultFn>,
+}
+
+impl std::fmt::Debug for ConfirmBox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConfirmBox")
+            .field("title", &self.title.resolve_now())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ConfirmBox {
+    /// Runs `f` with the answer, once, whatever closes the box.
+    pub fn on_result(mut self, f: impl Fn(ConfirmResult, &mut EventContext) + 'static) -> Self {
+        self.on_result = Some(Rc::new(f));
+        self
+    }
+
+    /// Presents the box as a modal ([`DialogFrame::present`]).
+    pub fn present(self, ctx: &mut EventContext) {
+        let report: ResultFn = self.on_result.unwrap_or_else(|| Rc::new(|_, _| {}));
+        let answer = |button: StandardButton, dismissed: bool| {
+            let report = report.clone();
+            move |ctx: &mut EventContext| report(ConfirmResult { button, dismissed }, ctx)
+        };
+        DialogFrame::new(self.title, ModalText::new(self.text))
+            .on_cancel(answer(StandardButton::Cancel, false))
+            .on_confirm(self.confirm, answer(StandardButton::Ok, false))
+            .on_dismissed(answer(StandardButton::Cancel, true))
+            .ignore_enter()
+            .present(ctx);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -427,8 +492,11 @@ pub struct DialogFrame {
     title: LocalizedString,
     content: Option<Box<dyn Widget>>,
     on_cancel: Option<ActivateFn>,
+    /// What Escape and a click outside run instead of `on_cancel`.
+    on_dismissed: Option<ActivateFn>,
     confirm: Option<(LocalizedString, ActivateFn)>,
     confirm_enabled: Prop<bool>,
+    ignore_enter: bool,
     root: Option<WidgetId>,
 }
 
@@ -448,8 +516,10 @@ impl DialogFrame {
             title: title.into(),
             content: Some(Box::new(content)),
             on_cancel: None,
+            on_dismissed: None,
             confirm: None,
             confirm_enabled: Prop::Static(true),
+            ignore_enter: false,
             root: None,
         }
     }
@@ -471,6 +541,20 @@ impl DialogFrame {
         self
     }
 
+    /// Runs `f`, instead of the cancel action, when Escape or a click
+    /// outside closes the dialog.
+    fn on_dismissed(mut self, f: impl Fn(&mut EventContext) + 'static) -> Self {
+        self.on_dismissed = Some(Rc::new(f));
+        self
+    }
+
+    /// Makes Enter do nothing in the dialog, even on a focused button (the
+    /// Iced dialog's buttons take no key).
+    pub fn ignore_enter(mut self) -> Self {
+        self.ignore_enter = true;
+        self
+    }
+
     /// Whether the confirm button can be pressed (default `true`).
     pub fn confirm_enabled(mut self, enabled: impl Into<Prop<bool>>) -> Self {
         self.confirm_enabled = enabled.into();
@@ -482,7 +566,7 @@ impl DialogFrame {
     /// close it and run the cancel action.
     pub fn present(mut self, ctx: &mut EventContext) {
         let settled = Rc::new(Cell::new(false));
-        let on_cancel = self.on_cancel.clone();
+        let on_cancel = self.on_dismissed.take().or_else(|| self.on_cancel.clone());
         self.on_cancel = self.on_cancel.take().map(|f| settling(&settled, f));
         self.confirm = self
             .confirm
@@ -551,7 +635,19 @@ impl Widget for DialogFrame {
             let content = ctx.add_boxed(content);
             column = column.child(Padding::symmetric(CONTENT_PADDING, 0.0).child(content));
         }
-        let root = ctx.add(column.child(Padding::new(FOOTER_TOP, 0.0, 0.0, 0.0).child(footer)));
+        let column = column.child(Padding::new(FOOTER_TOP, 0.0, 0.0, 0.0).child(footer));
+        let root = if self.ignore_enter {
+            // Before the focused button sees it.
+            ctx.add(column.on_key_preview(|event, _ctx| match event {
+                WidgetEvent::KeyDown {
+                    key: teksilo::core::Key::Enter,
+                    ..
+                } => EventResponse::Handled,
+                _ => EventResponse::Ignored,
+            }))
+        } else {
+            ctx.add(column)
+        };
         self.root = Some(root);
         vec![root]
     }

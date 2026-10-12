@@ -14,8 +14,7 @@
 
 use teksilo::core::binding::BindingLevel;
 use teksilo::prelude::*;
-use teksilo::tokens::HAlignment;
-use teksilo::widgets::{FixedSize, Spacer, VStack};
+use teksilo::widgets::{FixedSize, Spacer};
 
 use super::library_vm::LibraryViewModel;
 use super::list_rows::{artist_header, padded};
@@ -105,12 +104,9 @@ impl Widget for StickyHeader {
             .get()
             .and_then(|(index, _)| artist_header(&self.vm, &structure, index));
         let root = match header {
-            Some(header) => ctx.add(
-                VStack::new()
-                    .spacing(0.0)
-                    .alignment(HAlignment::Leading)
-                    .child(FixedSize::new().height(header_h).child(padded(header))),
-            ),
+            // As wide as the list's rows: a stack would give the header its
+            // natural width only.
+            Some(header) => ctx.add(FixedSize::new().height(header_h).child(padded(header))),
             None => ctx.add(FixedSize::new().width(0.0).height(0.0).child(Spacer::new())),
         };
         self.root = Some(root);

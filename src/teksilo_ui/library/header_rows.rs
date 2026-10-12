@@ -33,7 +33,8 @@ use teksilo::core::widget_builder::HandlerSet;
 use teksilo::prelude::*;
 use teksilo::tokens::{FontWeight, VAlignment};
 use teksilo::widgets::{
-    Center, Expand, FixedSize, HStack, IconWidget, Padding, RectWidget, Spacer, TextWidget, ZStack,
+    Center, Expand, FixedSize, HStack, IconWidget, Padding, RectWidget, Shrinkable, Spacer,
+    TextWidget, ZStack,
 };
 
 use crate::teksilo_ui::icons;
@@ -244,11 +245,14 @@ impl Widget for HeaderRow {
             .spacing(0.0)
             .alignment(VAlignment::Center)
             .child(
-                TextWidget::new(lit!(spec.name.clone()))
-                    .style(style::inter(spec.name_size, FontWeight::MEDIUM))
-                    .color(role.clone())
-                    .single_line()
-                    .a11y_hidden(),
+                // Rigid, a long name would run past the room it has.
+                Shrinkable::new().child(
+                    TextWidget::new(lit!(spec.name.clone()))
+                        .style(style::inter(spec.name_size, FontWeight::MEDIUM))
+                        .color(role.clone())
+                        .single_line()
+                        .a11y_hidden(),
+                ),
             )
             .child(
                 TextWidget::new(lit!(" •"))

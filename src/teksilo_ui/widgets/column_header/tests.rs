@@ -456,3 +456,25 @@ fn the_sorted_column_header_carries_its_sort_direction() {
         assert_eq!(direction(artist), None);
     });
 }
+
+#[test]
+fn a_grip_dragged_in_small_steps_follows_the_pointer() {
+    // Probe F2: ten 10 px moves widened the column by 50 px. The grip moves
+    // with the column, so a position in its own coordinates halves the
+    // travel; the drag is measured in the window's.
+    with_shipped_messages("en-US", || {
+        let mut h = harness(LibraryViewMode::SimpleList);
+        let grip = h.grip("Title");
+        let start = h.tree.bounds(grip).center();
+        h.tree.pointer_move(start);
+        h.tree.pointer_down_button(start, PointerButton::Primary);
+        for step in 1..=10 {
+            h.tree
+                .pointer_move(Point::new(start.x + 10.0 * step as f32, start.y));
+            h.relayout();
+        }
+        h.tree
+            .pointer_up_button(Point::new(start.x + 100.0, start.y), PointerButton::Primary);
+        assert_eq!(h.widths.get()[&SortColumn::Title], 375);
+    });
+}

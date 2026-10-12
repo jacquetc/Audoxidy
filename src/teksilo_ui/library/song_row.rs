@@ -52,7 +52,8 @@ pub const ROW_PADDING: f32 = 5.0;
 pub const CELL_LEADING: f32 = 15.0;
 /// A cell's trailing padding (`widgets.rs:2464`).
 pub const CELL_TRAILING: f32 = 5.0;
-/// Each half of the "#" cell (`widgets.rs:2427`, `:2437`).
+/// Each half of the "#" cell (`widgets.rs:2427`, `:2437`); the number's
+/// half gets what the cell leaves after the dot's (16 px at the default 47 px).
 pub const TRACK_HALF: f32 = 26.0;
 /// The text size (`widgets.rs:2420`, `:2446`).
 pub const TEXT_SIZE: f32 = 13.0;
@@ -200,25 +201,33 @@ impl SongRow {
                 .no_shrink()
                 .a11y_hidden()
                 .visible_when(self.playing.clone());
+            // Iced's two 26 px halves (`widgets.rs:2415-2442`) in the 42 px
+            // the cell leaves (47 less its 5 px of trailing padding): an Iced
+            // row gives each fixed-width child at most the room left, so the
+            // dot's half keeps its 26 px and the number's gets the rest (16
+            // px), the number ending at the cell's padding. A label wider
+            // than its half overflows it to the leading side, under the
+            // cell's clip.
+            let content = width.map(|width| (width - CELL_TRAILING).max(0.0));
+            let dot_half = content.map(|content| content.min(TRACK_HALF));
+            let number_half = content.map(|content| (content - TRACK_HALF).max(0.0));
             Box::new(
                 HStack::new()
                     .spacing(0.0)
                     .alignment(VAlignment::Center)
                     .child(
                         FixedSize::new()
-                            .width(TRACK_HALF)
+                            .width(dot_half)
                             .height(self.height)
                             .child(Center::new().child(dot)),
                     )
                     .child(
                         FixedSize::new()
-                            .width(TRACK_HALF)
+                            .width(number_half)
                             .height(self.height)
                             .child(
-                                HStack::new()
-                                    .spacing(0.0)
-                                    .alignment(VAlignment::Center)
-                                    .child(Spacer::new())
+                                ZStack::new()
+                                    .alignment(Alignment::CENTER_TRAILING)
                                     .child(self.cell_label(column)),
                             ),
                     ),
@@ -449,6 +458,45 @@ mod tests {
             .find(|b| b.width == 275.0)
             .unwrap();
         assert_eq!(title.x - row.x, ROW_PADDING + 47.0);
+    }
+
+    #[test]
+    fn the_track_number_ends_where_the_cell_leaves_room_as_in_iced() {
+        // An Iced row gives each fixed-width child at most the room left
+        // (`widgets.rs:2415-2442`): the dot's half keeps 26 px, the number's
+        // gets the 16 px left of the 42 px, and the number ends 5 px before
+        // the cell's edge, whole. Two 26 px halves ran 10 px past the room
+        // (the hazard stripes of the probes' p05).
+        let widths = Signal::new(default_widths());
+        let columns = columns_for(LibraryViewMode::SimpleList);
+        let (tree, id) = mounted(SongRow::new(song(), columns, widths.clone()));
+        let row = tree.bounds(id);
+        let track = all_of_type(&tree, id, "FixedSize")
+            .into_iter()
+            .find(|c| tree.bounds(*c).width == 47.0)
+            .unwrap();
+        let cell = tree.bounds(track);
+        let label = all_of_type(&tree, track, "TextWidget")
+            .into_iter()
+            .map(|t| tree.bounds(t))
+            .find(|b| b.width > 0.0 && b.x > cell.x + TRACK_HALF - 0.5)
+            .unwrap();
+        assert!(
+            (label.x + label.width - (cell.x + 47.0 - CELL_TRAILING)).abs() < 0.5,
+            "{label:?} in {cell:?}"
+        );
+        assert_eq!(cell.x - row.x, ROW_PADDING);
+        let found = crate::teksilo_ui::library::test_util::overflowing_stacks(&tree, id);
+        assert!(found.is_empty(), "{found:#?}");
+        // At the narrowest the column goes (30 px), the dot's half takes the
+        // 25 px and nothing runs past.
+        let mut narrow = default_widths();
+        narrow.insert(SortColumn::TrackNumber, 30);
+        widths.set(narrow);
+        let mut tree = tree;
+        settle_layout(&mut tree);
+        let found = crate::teksilo_ui::library::test_util::overflowing_stacks(&tree, id);
+        assert!(found.is_empty(), "{found:#?}");
     }
 
     #[test]
