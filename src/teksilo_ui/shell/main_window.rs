@@ -272,6 +272,54 @@ mod tests {
     }
 
     #[test]
+    fn quirk_3_closing_a_restored_session_stores_the_position_the_player_reached() {
+        use std::time::Duration;
+
+        use crate::frontend::commands::playback;
+        use crate::teksilo_ui::mock_data::screenshot_library;
+        use crate::teksilo_ui::test_support::run_until;
+
+        let (ctx, fakes) = AppContext::in_memory_with_fakes().unwrap();
+        screenshot_library()
+            .seed_on(&ctx.db)
+            .recv_blocking()
+            .unwrap();
+        let runtime = AsyncRuntimeHandle::new();
+        let handles = AppHandles::new(ctx.clone());
+        handles.session.start_restore(&ctx, &runtime);
+        let status = handles.session.status();
+        assert!(run_until(&runtime, Duration::from_secs(10), || status
+            .get()
+            .is_settled()));
+        let (playlist, song) = handles
+            .session
+            .with_cursor(|cursor| {
+                let song = cursor.song_at(1).map(|song| song.song_id).unwrap();
+                playback::play_song(&ctx, cursor, song).unwrap();
+                (cursor.playlist_id(), song)
+            })
+            .unwrap();
+        fakes.player.advance(77.0);
+        assert_eq!(
+            ctx.player.snapshot().current_pos_sec,
+            77.0,
+            "the song plays"
+        );
+
+        handles.before_close();
+        handles.after_close();
+
+        assert!(ctx.is_shut_down());
+        // The workers are gone: read the connection directly.
+        let connection = ctx.db.connection();
+        let db = connection.lock().unwrap();
+        let stored = db.get_playlist_by_id(playlist).unwrap().unwrap();
+        assert_eq!(stored.last_song_id, Some(song));
+        assert_eq!(stored.last_pos_sec, 77.0, "the position the player reached");
+        assert!(stored.is_playing);
+    }
+
+    #[test]
     fn closing_runs_the_hooks_and_stops_the_backend() {
         let ctx = AppContext::in_memory().unwrap();
         let handles = AppHandles::new(ctx.clone());
