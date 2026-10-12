@@ -45,8 +45,9 @@ jobs:
         run: python3 tools/clippy_gate.py ${{ matrix.set }}
 
   # The Teksilo port's documents and catalogues: every Iced stub site is
-  # documented, and the es-ES / en-US catalogues match each other and the
-  # Iced UI's literals.
+  # documented, the es-ES / en-US catalogues match each other and the Iced
+  # UI's literals, and the parity document covers every Iced message and
+  # names only tests that exist.
   port-checks:
     runs-on: ubuntu-latest
     steps:
@@ -55,6 +56,8 @@ jobs:
         run: python3 tools/check_stubs.py
       - name: Locale catalogues
         run: python3 tools/check_locales.py
+      - name: Parity document
+        run: python3 tools/check_parity.py
 
   rustfmt:
     runs-on: ubuntu-latest

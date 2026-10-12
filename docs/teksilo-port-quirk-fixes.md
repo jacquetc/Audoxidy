@@ -907,4 +907,4 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:** a turn of zero changes nothing (`player/panel.rs`, the band's wheel handler); up and
   down turns step the volume as in Iced.
 - **Why:** the user's decision (2026-10-12). Scrolling sideways should not turn the music down.
-- **Pinned by:** `teksilo_ui::player::panel::tests::quirk_64_a_sideways_wheel_over_the_band_leaves_the_volume_alone` (it fails without the fix) and `teksilo_ui::player::panel::tests::the_wheel_over_the_band_moves_the_volume_five_percent_and_shows_the_bubble`.
+- **Pinned by:** `teksilo_ui::player::panel::tests::a_wheel_with_no_turn_is_not_a_step` (it fails without the fix) and `teksilo_ui::player::panel::tests::the_wheel_over_the_band_moves_the_volume_five_percent_and_shows_the_bubble`.
