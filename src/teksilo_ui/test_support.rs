@@ -45,12 +45,15 @@ impl AppEventPoster for NullPoster {
     fn post_subscription_event(&self, _sub_id: SubscriptionId, _event: Box<dyn Any + Send>) {}
 }
 
+/// An event posted to a subscription, waiting to be delivered.
+type Posted = (SubscriptionId, Box<dyn Any + Send>);
+
 /// The events posted to a tree's subscriptions, kept until
 /// [`deliver`](EventPump::deliver) hands them over: the event loop of a
 /// headless tree.
 #[derive(Clone, Default)]
 pub struct EventPump {
-    posted: Arc<Mutex<Vec<(SubscriptionId, Box<dyn Any + Send>)>>>,
+    posted: Arc<Mutex<Vec<Posted>>>,
 }
 
 impl AppEventPoster for EventPump {
