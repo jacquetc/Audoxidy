@@ -105,7 +105,7 @@ fn the_bar_reads_in_spanish() {
     with_shipped_messages("es-ES", || {
         let (tree, _) = mounted(&env);
         for name in [
-            "Buscar...",
+            "Buscar en la lista",
             "Lyrics",
             "Repetir: desactivado",
             "Aleatorio",
@@ -113,5 +113,26 @@ fn the_bar_reads_in_spanish() {
         ] {
             assert!(tree.find_by_label(name).is_some(), "{name}");
         }
+    });
+}
+
+#[test]
+fn the_search_field_has_its_own_name_not_the_filter_fields() {
+    // Review 13a: named by its placeholder, it read "Search..." like the
+    // filter column's field.
+    let env = restored();
+    let (tree, _) = mounted(&env);
+    let field = tree.find_by_role(Role::TextInput).unwrap();
+    assert_eq!(
+        tree.accessibility_node(field).name(),
+        Some("Search the playlist")
+    );
+    with_shipped_messages("es-ES", || {
+        let (tree, _) = mounted(&env);
+        let field = tree.find_by_role(Role::TextInput).unwrap();
+        assert_eq!(
+            tree.accessibility_node(field).name(),
+            Some("Buscar en la lista")
+        );
     });
 }

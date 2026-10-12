@@ -305,22 +305,27 @@ fn the_next_song_is_preloaded_once_per_track() {
     );
 }
 
-#[test]
-fn the_autosave_persists_the_position() {
-    // Quirk fix 13: the playlist position is saved on `Session::AutosaveDue`.
-    let env = restored();
-    env.vm.play_row(4);
-    env.fakes.player.advance(42.0);
-    env.vm.on_event(&Event::Session(SessionEvent::AutosaveDue));
-    let reply = env.vm.autosave().unwrap();
-    assert!(resolve(&env, reply).is_ok());
-    let bowie = env.playlist_id("David Bowie");
-    let data = playlist::load_playlist(&env.services.ctx, bowie)
+/// The stored last song and position of playlist `id`.
+fn stored_position(env: &Env, id: i64) -> (Option<i64>, f64) {
+    let data = playlist::load_playlist(&env.services.ctx, id)
         .recv_blocking()
         .unwrap()
         .data;
-    assert_eq!(data.last_song_id, Some(env.song_id(4)));
-    assert_eq!(data.last_pos_sec, 42.0);
+    (data.last_song_id, data.last_pos_sec)
+}
+
+#[test]
+fn the_autosave_persists_the_position() {
+    // Quirk fix 13: the playlist position is saved on `Session::AutosaveDue`,
+    // the event alone.
+    let env = restored();
+    env.vm.play_row(4);
+    let bowie = env.playlist_id("David Bowie");
+    env.fakes.player.advance(42.0);
+    assert_ne!(stored_position(&env, bowie).1, 42.0);
+    env.vm.on_event(&Event::Session(SessionEvent::AutosaveDue));
+    let song = env.song_id(4);
+    env.wait(|| stored_position(&env, bowie) == (Some(song), 42.0));
 }
 
 #[test]
@@ -605,12 +610,151 @@ fn a_switch_overtaken_by_another_is_dropped() {
     let env = restored();
     let audoxidy = env.playlist_id("Audoxidy");
     let drift = env.playlist_id("Oxidy Drift");
-    env.vm.switch_playlist(audoxidy, false);
+    let shown = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = shown.clone();
+    let _watch = env
+        .vm
+        .active_playlist()
+        .observe(move |id| seen.borrow_mut().push(*id));
+    // The first switch would play Audoxidy's first song; the second, which
+    // overtakes it, plays nothing.
+    env.vm.switch_playlist(audoxidy, true);
     env.vm.switch_playlist(drift, false);
     env.wait(|| env.vm.active_playlist().get() == Some(drift));
     env.services.runtime.tick();
     assert_eq!(env.vm.active_playlist().get(), Some(drift));
     assert!(env.rows().is_empty(), "Oxidy Drift is empty");
+    assert!(
+        !shown.borrow().contains(&Some(audoxidy)),
+        "Audoxidy was never shown: {:?}",
+        shown.borrow()
+    );
+    assert_eq!(env.loads(), 0, "nor played");
+}
+
+#[test]
+fn a_content_change_during_a_switch_reaches_the_switched_playlist() {
+    // The change's event arrives while the cursor still shows the old
+    // playlist, after the switch read the new one's rows: the rows applied
+    // are stale, so they are reloaded.
+    let env = restored();
+    let audoxidy = env.playlist_id("Audoxidy");
+    let before = playlist::load_playlist(&env.services.ctx, audoxidy)
+        .recv_blocking()
+        .unwrap();
+    let count = |groups: &[crate::db::database::PlaylistFolderGroup]| -> usize {
+        groups.iter().map(|group| group.songs.len()).sum()
+    };
+    let old_count = count(&before.groups);
+    env.vm.switch_playlist(audoxidy, false);
+    // The switch's read has run on the database worker (FIFO), not the
+    // change below.
+    env.services
+        .ctx
+        .db
+        .read(|_| Ok(()))
+        .recv_blocking()
+        .unwrap();
+    let in_playlist: Vec<i64> = before
+        .groups
+        .iter()
+        .flat_map(|group| group.songs.iter().map(|song| song.song_id))
+        .collect();
+    let extra: Vec<i64> = env
+        .seeded
+        .songs
+        .iter()
+        .map(|song| song.id)
+        .filter(|id| !in_playlist.contains(id))
+        .take(2)
+        .collect();
+    playlist::add_songs(&env.services.ctx, audoxidy, extra)
+        .recv_blocking()
+        .unwrap();
+    // Its event reaches the content model before the switch is applied.
+    let event = Event::Playlists(crate::frontend::events::PlaylistsEvent::ContentChanged {
+        playlist_id: audoxidy,
+    });
+    assert!(!env.services.playlist_content.is_content_event(&event));
+    env.wait(|| env.vm.active_playlist().get() == Some(audoxidy));
+    env.wait(|| {
+        env.vm
+            .read_cursor(|cursor| count(cursor.groups()))
+            .is_some_and(|n| n == old_count + 2)
+    });
+}
+
+#[test]
+fn a_search_typed_before_the_restore_applies_once_it_settles() {
+    let env = unrestored();
+    env.vm.search().set("2017".to_string());
+    env.services
+        .session
+        .start_restore(&env.services.ctx, &env.services.runtime);
+    env.wait(|| env.services.session.status().get().is_settled());
+    assert_eq!(env.rows(), vec![0, 1, 2, 3, 4], "the search result");
+    assert_eq!(
+        env.vm.read_cursor(|cursor| cursor.search().to_string()),
+        Some("2017".to_string())
+    );
+}
+
+#[test]
+fn an_end_of_track_before_the_restore_settles_is_handled_once_it_does() {
+    // The restored song ends before the UI sees the restore: the event is
+    // ignored then (quirk fix 6), and its flag is handled on the settle.
+    let env = unrestored();
+    let bowie = env.playlist_id("David Bowie");
+    let first = playlist::load_playlist(&env.services.ctx, bowie)
+        .recv_blocking()
+        .unwrap()
+        .groups[0]
+        .songs[0]
+        .song_id;
+    env.services
+        .ctx
+        .db
+        .write(move |db| {
+            Ok(db.update_playlist_persistence(bowie, Some(first), 10.0, true, false, 0, 0, None)?)
+        })
+        .recv_blocking()
+        .unwrap();
+    env.services
+        .session
+        .start_restore(&env.services.ctx, &env.services.runtime);
+    // The restore's engine job has run; the UI has not taken its reply.
+    env.services
+        .ctx
+        .engine
+        .run(|_| Ok(()))
+        .recv_blocking()
+        .unwrap();
+    assert!(!env.fakes.player.snapshot().path.is_empty(), "restored");
+    env.fakes.player.finish_track();
+    assert_eq!(env.vm.end_of_track(), None, "not settled yet");
+    env.wait(|| env.services.session.status().get().is_settled());
+    let next = env
+        .vm
+        .read_cursor(|cursor| cursor.playing_song_id())
+        .flatten();
+    assert!(next.is_some());
+    assert_ne!(next, Some(first), "the playlist advanced");
+    assert_eq!(env.vm.end_of_track(), Some(EndOfTrackOutcome::NotPending));
+}
+
+#[test]
+fn d28_a_preload_the_next_song_no_longer_is_is_dropped_at_once() {
+    // Whatever changes the cursor (here the next song is disabled), the
+    // view-model drops a stale preload without waiting for the position.
+    let env = restored();
+    env.vm.play_row(1);
+    env.vm.position_changed(170.0, 180.0);
+    let second = env.vm.song_at(2).unwrap().file_path.to_string();
+    assert_eq!(env.fakes.player.preloaded_path(), Some(second));
+    env.vm.toggle_song_enabled(2);
+    assert_eq!(env.fakes.player.preloaded_path(), None);
+    assert!(env.fakes.player.calls().contains(&PlayerCall::PurgePreload));
+    assert!(!env.services.ctx.preload.snapshot().is_active());
 }
 
 #[test]

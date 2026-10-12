@@ -396,6 +396,52 @@ mod tests {
     }
 
     #[test]
+    fn a_library_change_reloads_under_the_active_search() {
+        // Kept as a quirk fix: Iced's refresh after a scan loads every song
+        // (`get_all_songs`, `src/gui/app.rs:1345-1362`, `InternalLibraryRefreshed`)
+        // and the list drops the search while its text stays.
+        let (ctx, seeded) = test_env::demo();
+        let (model, runtime) = model_over(&ctx);
+        model.reload();
+        wait_for_version(&runtime, &model, 1);
+        model.set_query("Static");
+        wait_for_version(&runtime, &model, 2);
+        let matching = model.snapshot().get().songs.len();
+        assert!(matching < seeded.songs.len());
+
+        LibraryFixture::new()
+            .song(FixtureSong::new(
+                "/fixtures/music/New/Fresh/01 - Static Fresh.flac",
+                "Static Fresh",
+                "New Band",
+                "Fresh",
+            ))
+            .song(FixtureSong::new(
+                "/fixtures/music/New/Fresh/02 - Other.flac",
+                "Other",
+                "New Band",
+                "Fresh",
+            ))
+            .seed_on(&ctx.db)
+            .recv_blocking()
+            .unwrap();
+        // What the library-changed event does (`is_reload_event`).
+        model.reload();
+        wait_for_version(&runtime, &model, 3);
+        let snapshot = model.snapshot().get();
+        let titles: Vec<_> = snapshot
+            .songs
+            .iter()
+            .filter_map(|song| song.title.as_deref())
+            .collect();
+        assert_eq!(snapshot.songs.len(), matching + 1, "{titles:?}");
+        assert!(titles.contains(&"Static Fresh"));
+        assert!(!titles.contains(&"Other"));
+        assert_eq!(snapshot.stats.songs, seeded.songs.len() as u64 + 2);
+        assert_eq!(model.params().query.as_deref(), Some("Static"));
+    }
+
+    #[test]
     fn a_scan_that_adds_songs_shows_after_a_reload() {
         let (ctx, seeded) = test_env::demo();
         let (model, runtime) = model_over(&ctx);

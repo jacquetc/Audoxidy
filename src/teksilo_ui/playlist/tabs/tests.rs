@@ -207,3 +207,54 @@ fn the_strip_reads_in_spanish() {
         );
     });
 }
+
+#[test]
+fn a_new_playlist_switched_to_before_its_tab_exists_scrolls_into_view() {
+    // The switch asks for the tab before the tabs reload adds it: the request
+    // waits for the rebuild instead of being dropped.
+    let env = restored();
+    overflowing(&env);
+    let (mut tree, root) = mounted(&env);
+    let id = playlist::create_playlist(&env.services.ctx, "Una lista nueva al final", Vec::new())
+        .recv_blocking()
+        .unwrap();
+    env.vm.switch_playlist(id, false);
+    env.wait(|| env.vm.active_playlist().get() == Some(id));
+    layout(&mut tree);
+    assert!(find_by_name(&tree, root, "Una lista nueva al final").is_empty());
+    env.reload_tabs();
+    layout(&mut tree);
+    let _ = tree.render();
+    layout(&mut tree);
+    let tab = tab_bounds(&tree, root, "Una lista nueva al final");
+    let chevron = tree.bounds(tree.find_by_label("All playlists").unwrap());
+    assert!(
+        tab.x >= 0.0 && tab.x + tab.width <= chevron.x,
+        "the new tab is in view: {tab:?}"
+    );
+}
+
+#[test]
+fn a_rebuild_keeps_the_strips_offset() {
+    let env = restored();
+    overflowing(&env);
+    let (mut tree, root) = mounted(&env);
+    let id = env.vm.tab_list().last().unwrap().id;
+    env.vm.switch_playlist(id, false);
+    env.wait(|| env.vm.active_playlist().get() == Some(id));
+    layout(&mut tree);
+    let _ = tree.render();
+    layout(&mut tree);
+    let before = tab_bounds(&tree, root, "Audoxidy").x;
+    assert!(before < 0.0, "scrolled: {before}");
+    // A playlist is created elsewhere: the tabs reload and the strip
+    // rebuilds, where Iced's scrollable keeps its offset by id.
+    playlist::create_playlist(&env.services.ctx, "X", Vec::new())
+        .recv_blocking()
+        .unwrap();
+    env.reload_tabs();
+    layout(&mut tree);
+    let _ = tree.render();
+    layout(&mut tree);
+    assert_eq!(tab_bounds(&tree, root, "Audoxidy").x, before);
+}

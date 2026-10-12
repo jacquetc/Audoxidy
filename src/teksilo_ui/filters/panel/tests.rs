@@ -183,17 +183,33 @@ fn the_letters_are_16_pixel_cells_ten_to_a_line_under_15_by_10_pixels_of_padding
 }
 
 #[test]
-fn the_tree_rows_are_32_pixels_high_and_as_wide_as_the_column() {
+fn a_nodes_row_is_32_pixels_high_a_leafs_25_and_each_as_wide_as_the_column() {
+    // Iced's row `button` keeps its 5 px padding above and below, and its
+    // container's `center_y(Length::Fill)` replaces `height(32)`: 22 + 10 for
+    // a node, the 15 px label line + 10 for a leaf (review 14b).
     with_shipped_messages("en-US", || {
-        let (services, vm, tree, panel) = mounted(true);
+        let (services, vm, mut tree, panel) = mounted(true);
+        let top = vm.visible_items()[0].clone();
+        vm.toggle_node(&top.id);
+        let child = vm.visible_items()[1].clone();
+        vm.toggle_node(&child.id);
+        layout(&mut tree);
+        let items = vm.visible_items();
+        assert!(items.iter().any(|row| !row.has_children), "a leaf shows");
         let rows = rows(&tree, panel);
-        assert!(rows.len() >= 3 && rows.len() <= vm.visible_items().len());
+        assert!(rows.len() >= 3 && rows.len() <= items.len());
         let mut previous: Option<Rect> = None;
-        for row in &rows {
+        for (row, item) in rows.iter().zip(&items) {
             let bounds = tree.bounds(*row);
-            assert_eq!((bounds.height, bounds.width), (ROW_HEIGHT, WIDTH));
+            let height = if item.has_children { 32.0 } else { 25.0 };
+            assert_eq!(
+                (bounds.height, bounds.width),
+                (height, WIDTH),
+                "{}",
+                item.label
+            );
             if let Some(previous) = previous {
-                assert_eq!(bounds.y, previous.y + ROW_HEIGHT);
+                assert_eq!(bounds.y, previous.y + previous.height);
             }
             previous = Some(bounds);
         }
@@ -210,9 +226,14 @@ fn a_row_indents_12_pixels_a_level_and_a_leaf_keeps_16_pixels_for_the_chevron() 
         let row = row_of(&tree, panel, &vm, &top.label);
         let chevron = first_of_type(&tree, row, "IconWidget").unwrap();
         assert_eq!(tree.bounds(chevron).width, CHEVRON);
-        assert_eq!(tree.bounds(chevron).x, 0.0);
+        // The iced button's 10 px padding comes first (review 14b).
+        assert_eq!(tree.bounds(chevron).x, 10.0);
         let label = first_of_type(&tree, row, "TextWidget").unwrap();
-        assert_eq!(tree.bounds(label).x, CHEVRON);
+        assert_eq!(tree.bounds(label).x, 10.0 + CHEVRON);
+        assert!(
+            tree.bounds(label).x + tree.bounds(label).width <= WIDTH - 25.0,
+            "25 px from the trailing edge at most"
+        );
 
         vm.toggle_node(&top.id);
         layout(&mut tree);
@@ -220,7 +241,7 @@ fn a_row_indents_12_pixels_a_level_and_a_leaf_keeps_16_pixels_for_the_chevron() 
         assert_eq!(child.depth, 1);
         let row = rows(&tree, panel)[1];
         let chevron = first_of_type(&tree, row, "IconWidget").unwrap();
-        assert_eq!(tree.bounds(chevron).x, INDENT);
+        assert_eq!(tree.bounds(chevron).x, 10.0 + INDENT);
         // Expand until a leaf shows, one level deeper.
         vm.toggle_node(&child.id);
         layout(&mut tree);
@@ -234,7 +255,7 @@ fn a_row_indents_12_pixels_a_level_and_a_leaf_keeps_16_pixels_for_the_chevron() 
         let label = first_of_type(&tree, row, "TextWidget").unwrap();
         assert_eq!(
             tree.bounds(label).x,
-            leaf.depth as f32 * INDENT + LEAF_SPACE
+            10.0 + leaf.depth as f32 * INDENT + LEAF_SPACE
         );
         assert!(services.ctx.shutdown());
     });
@@ -476,9 +497,13 @@ fn the_selector_opens_a_172_pixel_menu_of_five_types_anchored_at_it() {
         // The row is the 172 px frame less the 4 px the stock list keeps on each
         // side (see the menu module).
         assert_eq!(tree.bounds(genre).width, MENU_WIDTH - 8.0);
-        let _ = menu;
         // Quirk fix 7: under the selector, not at a fixed place of the window.
         assert_eq!(menu.x, selector.x);
+        // Centred in the 202 px column, as Iced centres it (review 14a).
+        assert_eq!(
+            tree.bounds(genre).x,
+            selector.x + (WIDTH - MENU_WIDTH) / 2.0 + 4.0
+        );
         // (the popover keeps a gap of a few pixels below its trigger)
         let gap = menu.y - (selector.y + selector.height);
         assert!((0.0..=4.0).contains(&gap), "{gap}");
@@ -550,14 +575,101 @@ fn escape_closes_the_menu_without_choosing() {
 
 #[test]
 fn the_menu_marks_the_current_type_and_follows_a_change() {
+    // The mark itself (the accent label) is drawn by the menu widget only:
+    // it publishes no selected state and a headless frame draws no menu text,
+    // so this pins that the menu is rebuilt from the current type, while
+    // open, when the type changes.
     with_shipped_messages("en-US", || {
         let (services, vm, mut tree, panel) = mounted(true);
-        let entries = type_entries(&vm);
-        assert_eq!(entries.len(), 5);
+        assert_eq!(type_entries(&vm).len(), 5);
         open_menu(&mut tree, panel);
         let genre = tree.find_by_label("Genre").unwrap();
-        // The current type is the only one in the accent.
-        assert!(a11y_node(&mut tree, genre).is_selected() != Some(false));
+        vm.set_filter_type(FilterType::Year);
+        layout(&mut tree);
+        assert_eq!(tree.active_overlays().len(), 1, "still open");
+        let rebuilt = tree.find_by_label("Genre").unwrap();
+        assert_ne!(rebuilt, genre, "the entries were built again");
+        assert!(services.ctx.shutdown());
+    });
+}
+
+/// Whether the row `row` is painted filled (a solid shape over its whole
+/// bounds).
+fn filled(tree: &mut WidgetTree, row: WidgetId) -> bool {
+    let b = tree.bounds(row);
+    let frame = tree.render();
+    let covers = |[x, y, w, h]: [f32; 4], color: [f32; 4]| {
+        color[3] > 0.0
+            && (x - b.x).abs() < 0.5
+            && (y - b.y).abs() < 0.5
+            && (w - b.width).abs() < 0.5
+            && (h - b.height).abs() < 0.5
+    };
+    frame.shapes.iter().any(|s| covers(s.screen, s.color))
+        || frame.decorations.iter().any(|d| covers(d.rect, d.color))
+}
+
+#[test]
+fn the_highlight_is_the_active_filter_not_the_keyboard_cursor() {
+    // Iced fills only `selected_tree_node` (`library_filters.rs:494`); the
+    // arrows move the tree view's cursor without choosing a filter.
+    with_shipped_messages("en-US", || {
+        let (services, vm, mut tree, panel) = mounted(true);
+        let view = named(&tree, panel, "Filters");
+        tree.focus(view);
+        key_down(&mut tree, view, Key::ArrowDown);
+        key_down(&mut tree, view, Key::ArrowDown);
+        layout(&mut tree);
+        assert_eq!(vm.selected_node().get(), None, "no filter yet");
+        for row in rows(&tree, panel) {
+            assert!(!filled(&mut tree, row), "the cursor's row is not lit");
+        }
+        key_down(&mut tree, view, Key::Enter);
+        layout(&mut tree);
+        let chosen = vm.selected_node().get().expect("Enter chose a node");
+        let label = vm
+            .visible_items()
+            .into_iter()
+            .find(|row| row.id == chosen)
+            .unwrap()
+            .label;
+        let row = row_of(&tree, panel, &vm, &label);
+        assert!(filled(&mut tree, row), "the active filter's row is lit");
+        // The cursor moves on; the active filter stays lit, alone.
+        key_down(&mut tree, view, Key::ArrowDown);
+        layout(&mut tree);
+        let lit: Vec<WidgetId> = rows(&tree, panel)
+            .into_iter()
+            .filter(|row| filled(&mut tree, *row))
+            .collect();
+        assert_eq!(lit, vec![row_of(&tree, panel, &vm, &label)]);
+        assert!(services.ctx.shutdown());
+    });
+}
+
+#[test]
+fn a_tree_row_is_named_by_its_label() {
+    // Review 5: the label is hidden from assistive technologies, so the row
+    // carries it; the tree item takes its row's name.
+    with_shipped_messages("en-US", || {
+        let (services, vm, mut tree, panel) = mounted(true);
+        let shown = rows(&tree, panel).len();
+        let update = tree.sync_accessibility();
+        let mut names: Vec<Option<String>> = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == Role::TreeItem)
+            .map(|(_, node)| node.label().map(str::to_string))
+            .collect();
+        names.sort();
+        let mut labels: Vec<Option<String>> = vm
+            .visible_items()
+            .into_iter()
+            .take(shown)
+            .map(|item| Some(item.label))
+            .collect();
+        labels.sort();
+        assert_eq!(names, labels);
         assert!(services.ctx.shutdown());
     });
 }
@@ -686,17 +798,40 @@ fn g1_a_letter_and_the_search_bring_the_scrolled_tree_back_to_its_top() {
     // `FilterSearchChanged` scrolls it to the top (`:4379-4386`).
     with_shipped_messages("en-US", || {
         let (services, vm, mut tree, panel) = short_and_expanded(400.0);
-        assert!(vm.visible_items().len() as f32 * ROW_HEIGHT > 400.0);
+        let height =
+            |vm: &FiltersViewModel| -> f32 { vm.visible_items().iter().map(row_height).sum() };
+        // The letter whose tree is the tallest; it must not fit either, or
+        // the view could not stay scrolled and the check would prove nothing
+        // (quirk fix 66).
+        let letter = vm
+            .subfilters()
+            .get()
+            .into_iter()
+            .max_by_key(|letter| {
+                vm.select_subfilter(Some(letter));
+                let rows = vm.visible_items().len();
+                vm.select_subfilter(Some(letter));
+                rows
+            })
+            .unwrap();
+        layout(&mut tree);
+        let view_height = tree.bounds(tree_view(&tree, panel)).height;
+        assert!(height(&vm) > view_height);
         wheel_down(&mut tree, panel, 100.0);
         assert!(vm.tree_scroll().get() > 0.0, "the wheel moves the offset");
         let (top, first) = tree_and_first_row_tops(&tree, panel);
         assert!(first < top, "scrolled");
         // A letter, with the pointer.
-        let letter = vm.subfilters().get()[0].clone();
         let cell = named(&tree, panel, &letter);
         let target = centre(tree.bounds(cell));
         crate::teksilo_ui::test_support::tap_at(&mut tree, target);
         assert_eq!(vm.subfilter().get(), Some(letter));
+        layout(&mut tree);
+        let view_height = tree.bounds(tree_view(&tree, panel)).height;
+        assert!(
+            height(&vm) > view_height + 100.0,
+            "the letter's tree does not fit: it could stay scrolled"
+        );
         assert_eq!(vm.tree_scroll().get(), 0.0);
         let (top, first) = tree_and_first_row_tops(&tree, panel);
         assert_eq!(first, top, "back at the top");

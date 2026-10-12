@@ -33,7 +33,13 @@
 //!   session (quirk fixes 22 to 24, Iced defects D14 to D16);
 //! - Next and Previous settle a pending end of track first, so they move
 //!   once from the track actually playing (quirk fix 28);
-//! - a track change saves position 0 for the new track (quirk fix 29).
+//! - a track change saves position 0 for the new track (quirk fix 29), unless
+//!   the engine skips the load because that track already plays: then its
+//!   position is saved;
+//! - Repeat One replays the playing song, found by id even when a search
+//!   hides it (quirk fix 11);
+//! - a pending preload that is no longer the song Next would play is dropped
+//!   from the engine (Iced defect D28).
 //!
 //! [`EngineWorker::request_purge`]: crate::frontend::engine_worker::EngineWorker::request_purge
 
@@ -202,8 +208,12 @@ impl PlaybackCursor {
 
     /// The song Next would play, for the preload and the cover prefetch:
     /// `None` when nothing plays, at a re-shuffle and at the end
-    /// (`logic::playlist_nav::next_song_ref`).
+    /// (`logic::playlist_nav::next_song_ref`). Under Repeat One it is the
+    /// playing song, by id, even when a search hides it (quirk fix 11).
     pub fn next_song(&self) -> Option<&PlaylistSongRef> {
+        if self.repeat == RepeatMode::One {
+            return self.playing_song();
+        }
         nav::next_song_ref(
             self.active_groups(),
             self.playing_index(),
@@ -240,7 +250,16 @@ impl PlaybackCursor {
 
     /// Plays the next song in the cursor (`logic::playlist_nav::advance_next`)
     /// and returns its id; `None` when there is nothing to play.
+    ///
+    /// Repeat One replays the playing song, found by id in the whole playlist
+    /// (quirk fix 11): a search that hides it, or a change that moves it, does
+    /// not stop playback. Iced replays whatever row its stale index points at
+    /// (`src/gui/playlist.rs:1252-1265`); a song removed from the playlist
+    /// has nothing to replay, and playback stops.
     fn advance(&mut self) -> Option<i64> {
+        if self.repeat == RepeatMode::One {
+            return self.playing_song().map(|song| song.song_id);
+        }
         let groups = self.filtered.as_deref().unwrap_or(&self.groups);
         let mut playing = Self::index_in(groups, self.playing);
         let target = nav::advance_next(
@@ -331,11 +350,55 @@ fn load_and_play(
     Ok(())
 }
 
+/// Whether the engine will skip a load of `song_id`: its track already
+/// plays, and has not reached its end (the duplicate-load rule of
+/// [`PlayerPort::load_file`](crate::frontend::ports::PlayerPort::load_file)).
+/// Read before the load.
+fn load_is_skipped(ctx: &AppContext, cursor: &PlaybackCursor, song_id: i64) -> bool {
+    let state = ctx.player.snapshot();
+    state.is_playing
+        && !state.eof_reached
+        && cursor
+            .song(song_id)
+            .is_some_and(|song| song.file_path.as_ref() == state.path.as_str())
+}
+
 /// Persists the playlist state after a track change: the new track starts at
 /// 0 (quirk fix 29; the engine's position may still be the previous
-/// track's).
-fn persist_after_change(ctx: &AppContext, cursor: &PlaybackCursor) {
-    let _ = playlist::persist_state_at(ctx, cursor, 0.0, ctx.player.is_playing());
+/// track's). When the engine skipped the load (`skipped`: the same track
+/// plays on, as after Next under Repeat One), its position is the track's
+/// and is saved instead.
+fn persist_after_change(ctx: &AppContext, cursor: &PlaybackCursor, skipped: bool) {
+    let state = ctx.player.snapshot();
+    let position = if skipped { state.current_pos_sec } else { 0.0 };
+    let _ = playlist::persist_state_at(ctx, cursor, position, state.is_playing);
+}
+
+/// Drops a pending preload that is no longer the song Next would play (Iced
+/// defect D28, fixed here only): the decoder would otherwise promote it at
+/// the end of the track, playing a song the playlist did not choose while
+/// the cursor stays on the ended one. It happens when the next song
+/// disappears or changes after the preload: Repeat Off on the last song,
+/// shuffle toggled, the next song removed, disabled or hidden by a search.
+/// The engine's preload is purged and the bookkeeping forgotten, so
+/// [`maybe_preload`] preloads the new next song, if any, on its next call.
+/// Returns whether a preload was dropped. Iced never calls
+/// `AudioManager::clear_preload` (`src/gui/app.rs:1371-1448`).
+pub fn drop_stale_preload(ctx: &AppContext, cursor: &PlaybackCursor) -> bool {
+    let Some(pending) = ctx.preload.preloaded_next_path() else {
+        return false;
+    };
+    if cursor
+        .next_song()
+        .is_some_and(|next| next.file_path.as_ref() == pending.as_str())
+    {
+        return false;
+    }
+    if let Err(e) = ctx.player.purge_preload() {
+        tracing::warn!("the stale preload could not be dropped: {e}");
+    }
+    ctx.preload.clear();
+    true
 }
 
 /// Saves the shuffle session when shuffle is on, as Iced does after every
@@ -487,7 +550,7 @@ pub fn play_song(
         ctx.player.seek(0.0);
         ctx.player.play();
         cursor.playing = Some(song_id);
-        persist_after_change(ctx, cursor);
+        persist_after_change(ctx, cursor, false);
         return Ok(TrackChange::Restarted(song_id));
     }
     ctx.player
@@ -500,7 +563,7 @@ pub fn play_song(
         nav::record_manual_play(session, song_id);
     }
     ctx.preload.mark_track_advanced(unix_now_secs());
-    persist_after_change(ctx, cursor);
+    persist_after_change(ctx, cursor, false);
     Ok(TrackChange::Loaded(song_id))
 }
 
@@ -576,10 +639,11 @@ pub fn next(ctx: &AppContext, cursor: &mut PlaybackCursor) -> Result<TrackChange
     }
 
     let target = cursor.advance();
+    let skipped = target.is_some_and(|song_id| load_is_skipped(ctx, cursor, song_id));
     let loaded = target.map(|song_id| load_and_play(ctx, cursor, song_id));
     ctx.preload.mark_track_advanced(unix_now_secs());
     match target {
-        Some(_) => persist_after_change(ctx, cursor),
+        Some(_) => persist_after_change(ctx, cursor, skipped),
         None => {
             let _ = playlist::persist_state(ctx, cursor);
         }
@@ -605,11 +669,12 @@ pub fn previous(
         settle_pending_end(ctx, cursor);
     }
     let target = cursor.step_back();
+    let skipped = target.is_some_and(|song_id| load_is_skipped(ctx, cursor, song_id));
     let loaded = target.map(|song_id| load_and_play(ctx, cursor, song_id));
     match target {
         Some(_) => {
             ctx.preload.mark_track_advanced(unix_now_secs());
-            persist_after_change(ctx, cursor);
+            persist_after_change(ctx, cursor, skipped);
         }
         None => {
             let _ = playlist::persist_state(ctx, cursor);
@@ -639,11 +704,12 @@ pub fn end_of_track(
         return Ok(EndOfTrackOutcome::NotPending);
     }
     let target = cursor.advance();
+    let skipped = target.is_some_and(|song_id| load_is_skipped(ctx, cursor, song_id));
     let loaded = target.map(|song_id| load_and_play(ctx, cursor, song_id));
     ctx.preload.mark_track_advanced(unix_now_secs());
     save_session_if_shuffling(ctx, cursor);
     match target {
-        Some(_) => persist_after_change(ctx, cursor),
+        Some(_) => persist_after_change(ctx, cursor, skipped),
         None => {
             let _ = playlist::persist_state(ctx, cursor);
         }
@@ -660,13 +726,15 @@ pub fn end_of_track(
 /// ([`PlaybackCursor::next_song`]) is preloaded with its gains, once per
 /// track: the preload bookkeeping records it. Returns that song's cover path
 /// (whether or not it was just preloaded), so the UI can prefetch the cover;
-/// `None` otherwise.
+/// `None` otherwise. A pending preload that is no longer that song is dropped
+/// first ([`drop_stale_preload`]).
 pub fn maybe_preload(
     ctx: &AppContext,
     cursor: &PlaybackCursor,
     position_secs: f64,
     duration_secs: f64,
 ) -> Option<String> {
+    drop_stale_preload(ctx, cursor);
     if !ctx.player.is_playing() || duration_secs <= 0.0 {
         return None;
     }
@@ -690,9 +758,11 @@ pub fn maybe_preload(
 // --- Repeat and shuffle -----------------------------------------------------------
 
 /// Cycles the repeat mode Off → All → One → Off (Iced's `ToggleRepeat`),
-/// persists it, and returns the new mode.
+/// persists it, and returns the new mode. A pending preload the new mode no
+/// longer plays next is dropped ([`drop_stale_preload`]).
 pub fn toggle_repeat(ctx: &AppContext, cursor: &mut PlaybackCursor) -> RepeatMode {
     cursor.repeat = cursor.repeat.cycled();
+    drop_stale_preload(ctx, cursor);
     let _ = playlist::persist_state(ctx, cursor);
     cursor.repeat
 }
@@ -705,7 +775,8 @@ pub fn toggle_repeat(ctx: &AppContext, cursor: &mut PlaybackCursor) -> RepeatMod
 /// song, shuffle stays off and the previous session is dropped, in memory and
 /// in the database (quirk fix 24, Iced defect D16: Iced keeps it and saves it
 /// again). Turning it off drops the session and clears it in the database.
-/// The playlist state is persisted either way.
+/// The playlist state is persisted either way, and a pending preload that is
+/// no longer the next song is dropped ([`drop_stale_preload`]).
 pub fn toggle_shuffle(ctx: &AppContext, cursor: &mut PlaybackCursor) -> bool {
     if cursor.shuffle {
         cursor.shuffle = false;
@@ -721,6 +792,7 @@ pub fn toggle_shuffle(ctx: &AppContext, cursor: &mut PlaybackCursor) -> bool {
             &mut fastrand::Rng::new(),
         );
     }
+    drop_stale_preload(ctx, cursor);
     let _ = match &cursor.session {
         Some(session) => playlist::save_shuffle_session(ctx, cursor.playlist_id, session),
         None => playlist::clear_shuffle_session(ctx, cursor.playlist_id),

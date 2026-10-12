@@ -16,7 +16,11 @@
 //! list is open. After a switch, the active tab scrolls into view as Iced
 //! scrolls it ([`tab_scroll_offset`]).
 //!
-//! The strip is rebuilt when the playlists change.
+//! The strip is rebuilt when the playlists change. A rebuild keeps the
+//! strip's horizontal offset (Iced's scrollable keeps its state by id), and a
+//! request to bring a tab into view that arrives before the tab exists (a
+//! new playlist is switched to before the tabs reload) waits for the
+//! rebuild that adds it.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -57,6 +61,8 @@ pub const CHEVRON_PADDING: f32 = 4.0;
 pub struct TabsStrip {
     vm: PlaylistViewModel,
     viewport: Rc<Cell<f32>>,
+    offset: Rc<Cell<f32>>,
+    pending: Rc<Cell<Option<i64>>>,
     root: Option<WidgetId>,
 }
 
@@ -72,6 +78,8 @@ impl TabsStrip {
         Self {
             vm,
             viewport: Rc::new(Cell::new(0.0)),
+            offset: Rc::new(Cell::new(0.0)),
+            pending: Rc::new(Cell::new(None)),
             root: None,
         }
     }
@@ -163,22 +171,44 @@ impl Widget for TabsStrip {
                 ),
             );
         let scroll_x = scroll.scroll_x_signal().clone();
+        // A rebuild starts where the previous strip was.
+        scroll_x.set(self.offset.get());
+        let offset = self.offset.clone();
+        ctx.effect(&scroll_x, move |x| offset.set(*x));
 
-        // After a switch, the active tab comes into view.
-        let (vm, viewport) = (self.vm.clone(), self.viewport.clone());
+        // After a switch, the active tab comes into view: the tab of the
+        // request, among the tabs this build shows. A tab not built yet
+        // stays pending until the rebuild that adds it.
+        let names: Rc<Vec<(i64, String)>> =
+            Rc::new(tabs.iter().map(|tab| (tab.id, tab.name.clone())).collect());
+        let bring_into_view = {
+            let (pending, viewport, scroll_x) = (
+                self.pending.clone(),
+                self.viewport.clone(),
+                scroll_x.clone(),
+            );
+            move || {
+                let Some(id) = pending.get() else {
+                    return;
+                };
+                let Some(position) = names.iter().position(|(tab, _)| *tab == id) else {
+                    return;
+                };
+                pending.set(None);
+                let names: Vec<&str> = names.iter().map(|(_, name)| name.as_str()).collect();
+                if let Some(offset) =
+                    tab_scroll_offset(&names, position, scroll_x.get(), viewport.get())
+                {
+                    scroll_x.set(offset);
+                }
+            }
+        };
+        bring_into_view();
+        let pending = self.pending.clone();
         ctx.effect(&self.vm.tab_scroll_request(), move |request| {
-            let Some((_, id)) = *request else {
-                return;
-            };
-            let tabs = vm.tab_list();
-            let names: Vec<&str> = tabs.iter().map(|tab| tab.name.as_str()).collect();
-            let Some(position) = tabs.iter().position(|tab| tab.id == id) else {
-                return;
-            };
-            if let Some(offset) =
-                tab_scroll_offset(&names, position, scroll_x.get(), viewport.get())
-            {
-                scroll_x.set(offset);
+            if let Some((_, id)) = *request {
+                pending.set(Some(id));
+                bring_into_view();
             }
         });
 

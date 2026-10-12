@@ -113,6 +113,16 @@ impl FilterTreeSource {
         self.state.rows.borrow().clone()
     }
 
+    /// The height of the row at `index` in the panel: a node's row is taller
+    /// than a leaf's (`super::panel::row_height`); 0 past the end.
+    pub fn row_height_at(&self, index: usize) -> f32 {
+        self.state
+            .rows
+            .borrow()
+            .get(index)
+            .map_or(0.0, super::panel::row_height)
+    }
+
     /// The id of the row at `index`.
     pub fn id_at(&self, index: usize) -> Option<String> {
         self.state.rows.borrow().get(index).map(|r| r.id.clone())

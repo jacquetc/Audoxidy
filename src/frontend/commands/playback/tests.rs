@@ -912,6 +912,128 @@ fn the_preloaded_song_is_the_one_next_plays_in_shuffle() {
     });
 }
 
+#[test]
+fn d28_turning_repeat_off_on_the_last_song_drops_the_preload_of_the_first() {
+    // Iced defect D28: the engine would promote song 1 at the end of song 5
+    // while the cursor stays on song 5.
+    with_timeout(TEST_TIMEOUT, || {
+        let mut rig = Rig::new();
+        rig.start(5);
+        toggle_repeat(&rig.ctx, &mut rig.cursor); // All: song 1 comes next
+        maybe_preload(&rig.ctx, &rig.cursor, 190.0, 200.0);
+        assert_eq!(rig.fakes.player.preloaded_path(), Some(path(1)));
+        rig.take_calls();
+
+        toggle_repeat(&rig.ctx, &mut rig.cursor); // One: song 5 comes next
+        assert_eq!(rig.take_calls(), vec![PlayerCall::PurgePreload]);
+        assert_eq!(rig.fakes.player.preloaded_path(), None);
+        assert!(!rig.ctx.preload.snapshot().is_active());
+        maybe_preload(&rig.ctx, &rig.cursor, 191.0, 200.0);
+        assert_eq!(rig.fakes.player.preloaded_path(), Some(path(5)));
+
+        toggle_repeat(&rig.ctx, &mut rig.cursor); // Off: nothing comes next
+        assert_eq!(rig.fakes.player.preloaded_path(), None);
+        maybe_preload(&rig.ctx, &rig.cursor, 192.0, 200.0);
+        rig.fakes.player.finish_track();
+        assert_eq!(
+            end_of_track(&rig.ctx, &mut rig.cursor).unwrap(),
+            EndOfTrackOutcome::Stopped
+        );
+        assert!(!rig.fakes.player.is_playing(), "song 1 does not play");
+        assert_eq!(rig.fakes.player.snapshot().path, path(5));
+        assert_eq!(rig.playing(), Some(5));
+    });
+}
+
+#[test]
+fn d28_a_disabled_next_song_gives_its_preload_to_the_new_next_one() {
+    with_timeout(TEST_TIMEOUT, || {
+        let mut rig = Rig::new();
+        rig.start(1);
+        maybe_preload(&rig.ctx, &rig.cursor, 190.0, 200.0);
+        assert_eq!(rig.fakes.player.preloaded_path(), Some(path(2)));
+        rig.take_calls();
+        // Song 2 is linear index 2.
+        crate::frontend::commands::playlist::toggle_song_enabled(&rig.ctx, &mut rig.cursor, 2);
+        assert!(drop_stale_preload(&rig.ctx, &rig.cursor));
+        assert!(!drop_stale_preload(&rig.ctx, &rig.cursor), "once");
+        maybe_preload(&rig.ctx, &rig.cursor, 191.0, 200.0);
+        let calls: Vec<PlayerCall> = rig
+            .take_calls()
+            .into_iter()
+            .filter(|call| matches!(call, PlayerCall::PurgePreload | PlayerCall::Preload { .. }))
+            .collect();
+        assert_eq!(
+            calls,
+            vec![
+                PlayerCall::PurgePreload,
+                PlayerCall::Preload {
+                    path: path(3),
+                    gains: ReplayGains::default()
+                }
+            ]
+        );
+        rig.fakes.player.finish_track();
+        assert_eq!(
+            end_of_track(&rig.ctx, &mut rig.cursor).unwrap(),
+            EndOfTrackOutcome::Advanced(rig.id(3))
+        );
+        assert_eq!(rig.fakes.player.snapshot().path, path(3));
+    });
+}
+
+#[test]
+fn quirk_11_repeat_one_replays_the_playing_song_a_search_hides() {
+    // Iced replays the row of its stale index; with the song tracked by id,
+    // Repeat One found no row and stopped.
+    with_timeout(TEST_TIMEOUT, || {
+        let mut rig = Rig::new();
+        rig.start(1);
+        toggle_repeat(&rig.ctx, &mut rig.cursor);
+        toggle_repeat(&rig.ctx, &mut rig.cursor);
+        assert_eq!(rig.cursor.repeat(), RepeatMode::One);
+        rig.cursor.set_search("Charlie");
+        assert_eq!(rig.cursor.playing_index(), None, "the search hides song 1");
+        assert_eq!(
+            rig.cursor.next_song().map(|song| song.song_id),
+            Some(rig.id(1)),
+            "the gapless preload is song 1 again"
+        );
+        rig.take_calls();
+        rig.fakes.player.finish_track();
+        assert_eq!(
+            end_of_track(&rig.ctx, &mut rig.cursor).unwrap(),
+            EndOfTrackOutcome::Advanced(rig.id(1))
+        );
+        assert_eq!(rig.take_calls(), vec![plain(1), PlayerCall::Play]);
+        assert_eq!(rig.playing(), Some(1));
+    });
+}
+
+#[test]
+fn quirk_29_next_under_repeat_one_keeps_the_position_of_the_track_that_plays_on() {
+    // The engine skips the load of the track that plays, so it plays on: its
+    // position is saved, not 0 (review 14f).
+    with_timeout(TEST_TIMEOUT, || {
+        let mut rig = Rig::new();
+        rig.start(2);
+        toggle_repeat(&rig.ctx, &mut rig.cursor);
+        toggle_repeat(&rig.ctx, &mut rig.cursor);
+        rig.fakes.player.advance(80.0);
+        assert_eq!(
+            next(&rig.ctx, &mut rig.cursor).unwrap(),
+            TrackChange::Loaded(rig.id(2))
+        );
+        assert!(
+            rig.take_calls()
+                .contains(&PlayerCall::LoadSkipped { path: path(2) })
+        );
+        let stored = rig.stored(rig.playlist_id("List"));
+        assert_eq!(stored.last_song_id, Some(rig.id(2)));
+        assert_eq!(stored.last_pos_sec, 80.0);
+    });
+}
+
 // --- Repeat and shuffle -----------------------------------------------------------
 
 #[test]
@@ -1191,8 +1313,15 @@ impl PlayerPort for LaggingPlayer {
     }
 }
 
-#[test]
-fn quirk_29_a_track_change_saves_position_zero_before_the_engine_applies_the_load() {
+/// A context over a [`LaggingPlayer`], seeded with [`fixture`]: the context,
+/// the player, the seeded library, the id of "List" and its cursor.
+fn lagging_rig() -> (
+    AppContext,
+    Arc<LaggingPlayer>,
+    SeededLibrary,
+    i64,
+    PlaybackCursor,
+) {
     use crate::db::Database;
     use crate::db::scanner::Scanner;
     use crate::frontend::app_context::Parts;
@@ -1201,28 +1330,45 @@ fn quirk_29_a_track_change_saves_position_zero_before_the_engine_applies_the_loa
     use crate::integrations::control::external_control_channel;
     use crate::utils::config::AppConfig;
 
-    with_timeout(TEST_TIMEOUT, || {
-        let database: SharedDatabase =
-            Arc::new(std::sync::Mutex::new(Database::new_memory().unwrap()));
-        let player = Arc::new(LaggingPlayer {
-            inner: Arc::new(FakePlayer::new()),
-            pending: parking_lot::Mutex::new(None),
-        });
-        let (_external_tx, external_rx) = external_control_channel();
-        let ctx = AppContext::assemble(Parts {
-            scanner: Arc::new(Scanner::new(Arc::clone(&database))),
-            database,
-            player: player.clone(),
-            media: Arc::new(FakeMediaControls::new()),
-            system_audio: Arc::new(FakeSystemAudio::new()),
-            external: external_rx,
-            probe: Arc::new(FakeMemoryProbe::new()),
-            config: AppConfig::default(),
-        })
+    let database: SharedDatabase = Arc::new(std::sync::Mutex::new(Database::new_memory().unwrap()));
+    let player = Arc::new(LaggingPlayer {
+        inner: Arc::new(FakePlayer::new()),
+        pending: parking_lot::Mutex::new(None),
+    });
+    let (_external_tx, external_rx) = external_control_channel();
+    let ctx = AppContext::assemble(Parts {
+        scanner: Arc::new(Scanner::new(Arc::clone(&database))),
+        database,
+        player: player.clone(),
+        media: Arc::new(FakeMediaControls::new()),
+        system_audio: Arc::new(FakeSystemAudio::new()),
+        external: external_rx,
+        probe: Arc::new(FakeMemoryProbe::new()),
+        config: AppConfig::default(),
+    })
+    .unwrap();
+    let seeded = fixture().seed_on(&ctx.db).recv_blocking().unwrap();
+    let list = seeded.playlist("List").unwrap().id;
+    let cursor = PlaybackCursor::new(load_playlist(&ctx, list).recv_blocking().unwrap());
+    (ctx, player, seeded, list, cursor)
+}
+
+/// The stored last song and position of playlist `list`.
+fn stored_song_and_position(ctx: &AppContext, list: i64) -> (Option<i64>, f64) {
+    flush(ctx);
+    let stored = ctx
+        .db
+        .read(move |db| Ok(db.get_playlist_by_id(list)?))
+        .recv_blocking()
+        .unwrap()
         .unwrap();
-        let seeded = fixture().seed_on(&ctx.db).recv_blocking().unwrap();
-        let list = seeded.playlist("List").unwrap().id;
-        let mut cursor = PlaybackCursor::new(load_playlist(&ctx, list).recv_blocking().unwrap());
+    (stored.last_song_id, stored.last_pos_sec)
+}
+
+#[test]
+fn quirk_29_a_track_change_saves_position_zero_before_the_engine_applies_the_load() {
+    with_timeout(TEST_TIMEOUT, || {
+        let (ctx, player, seeded, list, mut cursor) = lagging_rig();
         let one = seeded.song_id(&path(1)).unwrap();
         play_song(&ctx, &mut cursor, one).unwrap();
         player.apply_pending_load();
@@ -1234,17 +1380,74 @@ fn quirk_29_a_track_change_saves_position_zero_before_the_engine_applies_the_loa
             80.0,
             "the load is pending"
         );
-        flush(&ctx);
-        let stored = ctx
-            .db
-            .read(move |db| Ok(db.get_playlist_by_id(list)?))
-            .recv_blocking()
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored.last_song_id, seeded.song_id(&path(2)));
         assert_eq!(
-            stored.last_pos_sec, 0.0,
+            stored_song_and_position(&ctx, list),
+            (seeded.song_id(&path(2)), 0.0),
             "not the previous track's 80 s, which Iced would save"
+        );
+    });
+}
+
+#[test]
+fn quirk_29_playing_a_song_saves_position_zero_before_the_engine_applies_the_load() {
+    with_timeout(TEST_TIMEOUT, || {
+        let (ctx, player, seeded, list, mut cursor) = lagging_rig();
+        play_song(&ctx, &mut cursor, seeded.song_id(&path(1)).unwrap()).unwrap();
+        player.apply_pending_load();
+        player.inner.advance(80.0);
+
+        let four = seeded.song_id(&path(4)).unwrap();
+        play_song(&ctx, &mut cursor, four).unwrap();
+        assert_eq!(
+            player.snapshot().current_pos_sec,
+            80.0,
+            "the load is pending"
+        );
+        assert_eq!(stored_song_and_position(&ctx, list), (Some(four), 0.0));
+    });
+}
+
+#[test]
+fn quirk_29_previous_saves_position_zero_before_the_engine_applies_the_load() {
+    with_timeout(TEST_TIMEOUT, || {
+        let (ctx, player, seeded, list, mut cursor) = lagging_rig();
+        play_song(&ctx, &mut cursor, seeded.song_id(&path(3)).unwrap()).unwrap();
+        player.apply_pending_load();
+        player.inner.advance(80.0);
+
+        previous(&ctx, &mut cursor).unwrap();
+        assert_eq!(
+            player.snapshot().current_pos_sec,
+            80.0,
+            "the load is pending"
+        );
+        assert_eq!(
+            stored_song_and_position(&ctx, list),
+            (seeded.song_id(&path(2)), 0.0)
+        );
+    });
+}
+
+#[test]
+fn quirk_29_the_end_of_a_track_saves_position_zero_before_the_engine_applies_the_load() {
+    with_timeout(TEST_TIMEOUT, || {
+        let (ctx, player, seeded, list, mut cursor) = lagging_rig();
+        play_song(&ctx, &mut cursor, seeded.song_id(&path(1)).unwrap()).unwrap();
+        player.apply_pending_load();
+        // Song 1 ends with nothing preloaded: the engine stops at its end.
+        player.inner.finish_track();
+
+        assert_eq!(
+            end_of_track(&ctx, &mut cursor).unwrap(),
+            EndOfTrackOutcome::Advanced(seeded.song_id(&path(2)).unwrap())
+        );
+        assert!(
+            player.snapshot().current_pos_sec > 0.0,
+            "the load is pending: the ended track's position"
+        );
+        assert_eq!(
+            stored_song_and_position(&ctx, list),
+            (seeded.song_id(&path(2)), 0.0)
         );
     });
 }

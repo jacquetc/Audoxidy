@@ -54,6 +54,8 @@ playlist-all-lists = All playlists
 
 ## Bottom bar
 playlist-search = Search...
+# The search field's accessible name (the placeholder is the filter field's too).
+playlist-search-label = Search the playlist
 # The bottom bar icons' accessible names.
 playlist-lyrics = Lyrics
 playlist-shuffle = Shuffle
