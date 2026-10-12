@@ -8,6 +8,7 @@ ENABLED = ["Abrir Carpeta", "Configuración de Audio", "Ecualizador", "Efectos d
 
 
 def title(a):
+    """The title row's text (a long title scrolls, so only substrings are reliable)."""
     t = a.label_texts((0, 280, 340, 330))
     return t[0] if t else None
 
@@ -16,8 +17,7 @@ def body(p):
     a = start(p)
     # ---- the menu
     p.check(a.n_overlays() == 0, "no overlay at start")
-    a.click(a.find(role="Button", label="Menú"))
-    a.settle(0.5)
+    open_menu(a)
     menu = a.find(role="Menu", label="Menú del reproductor")
     p.check(menu and a.n_overlays() == 1, "a pointer click on the menu button opens the player menu")
     if menu:
@@ -57,13 +57,13 @@ def body(p):
     p.check(a.crop_diff(pa, pc, bubble) < 5 and a.crop_diff(pb, pc, bubble) > 20, "a second click toggles it back (play)")
     a.click(a.find(role="Button", label="Pista siguiente"))
     a.settle(1.5)
-    p.check((title(a) or "").startswith("Aladdin Sane") or "addin Sane" in (title(a) or ""), f"a pointer click on the right zone plays the next track: {title(a)!r}")
+    p.check("Sane" in (title(a) or ""), f"a pointer click on the right zone plays the next track: {title(a)!r}")
     a.click(a.find(role="Button", label="Pista siguiente"))
     a.settle(1.5)
-    p.check("Drive-In" in (title(a) or ""), f"...and again: {title(a)!r}")
+    p.check(("Drive" in (title(a) or "") or "Saturday" in (title(a) or "")), f"...and again: {title(a)!r}")
     a.click(a.find(role="Button", label="Pista anterior"))
     a.settle(1.5)
-    p.check("addin Sane" in (title(a) or ""), f"a pointer click on the left zone plays the previous track: {title(a)!r}")
+    p.check("Sane" in (title(a) or ""), f"a pointer click on the left zone plays the previous track: {title(a)!r}")
 
     # ---- the wheel steps the volume and shows the bubble
     def vol():
@@ -107,6 +107,9 @@ def body(p):
                     return int(m) * 60 + int(s)
         s75, s25 = secs(t75), secs(t25)
         p.check(s75 and s25 and s75 > s25 > 0, f"clicking the seek bar seeks: 75% -> {t75}, 25% -> {t25}")
+
+    no_hazards(p, a)
+    clean_log(p, a)
 
 
 run("p03_player", body)

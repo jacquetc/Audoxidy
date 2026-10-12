@@ -248,6 +248,7 @@ def body(p):
     a.settle(0.6)
     p.check(ac_dialog(a) is None, "a second Escape closes the Audio Center")
     no_hazards(p, a)
+    clean_log(p, a)
 
 
 run("p07_audio_center", body)

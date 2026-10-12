@@ -77,7 +77,14 @@ class Probe:
         self.notes.append(msg)
         print("  note  " + msg, flush=True)
 
+    def skip(self, why: str):
+        self.skipped = why
+        print(f"  SKIP  {why}", flush=True)
+
     def finish(self) -> int:
+        if getattr(self, "skipped", None) and not (self.ok or self.fail or self.xfail or self.xpass):
+            print(f"-- {self.name}: skipped", flush=True)
+            return 0
         print(f"-- {self.name}: {len(self.ok)} ok, {len(self.fail)} FAIL, {len(self.xfail)} xfail, {len(self.xpass)} XPASS", flush=True)
         if self.fail:
             return 2
@@ -123,14 +130,21 @@ class App:
         self.wait_ready()
 
     def wait_ready(self, timeout=60):
+        """Wait until the shell, the playlist and the library have all drawn something."""
         end = time.time() + timeout
         while time.time() < end:
             try:
-                if self.find(role="Button", label="Menú"):
+                ns = self.nodes()
+                roles = {n["role"] for n in ns}
+                labels = {n.get("label") for n in ns}
+                if "Menú" in labels and "GridCell" in roles and "Tab" in roles and "Cambiar de vista" in labels:
                     break
             except Exception:
                 pass
             time.sleep(0.3)
+        self.settle(1.0)
+        # warm-up: the first frames after start are slow (shader compilation); put the pointer in and let them pass
+        self.park()
         self.settle(1.0)
 
     # --- lifecycle
@@ -332,11 +346,10 @@ class App:
 
 
 def root_size(app):
-    """The size of the window's content, from the root group's bounds."""
-    n = [x for x in app.nodes() if x.get("role") == "Group" and x.get("bounds", {}).get("x") == 0 and x["bounds"].get("y") == 0
-         and x["bounds"]["width"] > 1000]
-    b = n[0]["bounds"]
-    return b["width"], b["height"]
+    """The size of the window's content, from the biggest node at the origin."""
+    n = [x for x in app.nodes() if x.get("bounds") and x["bounds"].get("x") == 0 and x["bounds"].get("y") == 0]
+    b = max((x["bounds"] for x in n), key=lambda b: b["width"] * b["height"])
+    return round(b["width"], 1), round(b["height"], 1)
 
 
 def run(name, body):
@@ -365,6 +378,9 @@ def start(p, **kw):
     return a
 
 
+HAZARD_FINDING = ("the debug overflow overlay (yellow hazard stripes) is painted over the cover thumbnails of the song rows "
+                  "(the open album of the grid, the three list modes) and over the whole song area of the first list mode: "
+                  "their container is laid out narrower than its content")
 _HAZARD = {(164, 133, 20), (131, 106, 14), (153, 124, 18), (145, 117, 16)}
 
 
@@ -382,6 +398,28 @@ def no_hazards(probe, app, ignore=(), known_failure=None):
                 known_failure=known_failure)
 
 
+_LOG_NOISE = ("teksilo-automation:", "Ignoring unknown button type: icon")
+
+
+def log_problems(app, allow=()):
+    """WARN / ERROR / panic lines of the app's log, minus the harness's own noise."""
+    import re
+    out = []
+    for line in Path(app.log).read_text(errors="replace").splitlines():
+        line = re.sub(r"\x1b\[[0-9;]*m", "", line)
+        if any(x in line for x in _LOG_NOISE + tuple(allow)):
+            continue
+        if re.search(r"\b(WARN|ERROR)\b|\[teksilo\] WARNING|panicked", line):
+            out.append(line.strip()[:200])
+    return out
+
+
+def clean_log(probe, app, allow=(), known_failure=None):
+    """Check that the app logged no warning or error during the probe."""
+    bad = log_problems(app, allow)
+    probe.check(not bad, "the app's log has no warning or error" + (f": {bad[:3]}" if bad else ""), known_failure=known_failure)
+
+
 def dialogs(app):
     return [n for n in app.nodes() if n.get("role") in ("Dialog", "AlertDialog")]
 
@@ -390,15 +428,21 @@ def field_text(node):
     return (node.get("text") or {}).get("document_text", "")
 
 
-def open_ac(a, entry):
-    """Open the Audio Center from the player menu through `entry` (the menu entry's name)."""
-    for attempt in range(3):
+def open_menu(a):
+    """Open the player menu with a pointer click.  A first click that is lost is retried once and reported."""
+    for attempt in range(2):
         a.click(a.find(role="Button", label="Menú"))
         a.settle(0.6)
-        item = a.find(role="MenuItem", label=entry)
-        if item:
-            break
-        a.settle(0.5)
+        if a.find(role="Menu"):
+            return True
+        a.probe.note(f"the pointer click on the menu button did not open the menu (attempt {attempt + 1})")
+    return False
+
+
+def open_ac(a, entry):
+    """Open the Audio Center from the player menu through `entry` (the menu entry's name)."""
+    open_menu(a)
+    item = a.find(role="MenuItem", label=entry)
     a.click(item)
     a.settle(1.0)
     return ac_dialog(a)

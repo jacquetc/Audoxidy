@@ -49,5 +49,9 @@ def body(p):
     code = a.wait_exit(20)
     p.check(code == 0, f"a click on Cerrar closes the window and the process exits 0 (exit={code})")
 
+    no_hazards(p, a)
+    clean_log(p, a, known_failure="each click on Maximizar makes winit log 'WARN Unminimizing is ignored on Wayland' (the toggle "
+              "un-minimizes first); harmless, but a warning per click")
+
 
 run("p01_title_bar", body)

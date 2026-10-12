@@ -92,6 +92,7 @@ def body(p):
     a.key("Escape")
     a.settle(0.4)
     no_hazards(p, a)
+    clean_log(p, a)
 
 
 run("p08_vu_meter", body)

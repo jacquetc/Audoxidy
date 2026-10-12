@@ -2,10 +2,9 @@
 confirmation, Ctrl+A, "Mostrar lo que suena"."""
 from lib import *
 
-HAZARD_FINDING = ("the debug overflow overlay (yellow hazard stripes) is painted over the cover thumbnails of the song rows "
-                  "(and over the whole song area of the first list mode): their container is laid out narrower than its content")
 RESIZE_FINDING = ("dragging a column grip with the pointer moving in small steps resizes at half the pointer's speed "
-                  "(+50 px of width for 100 px of travel in ten 10 px moves; a single 100 px jump is exact)")
+                  "(+50 px of width for 100 px of travel in ten 10 px moves; a single 100 px jump is exact); same cause as the "
+                  "Audio Center header drag of p07")
 
 
 def cells(a):
@@ -63,6 +62,7 @@ def body(p):
     rows = song_rows(a)
     p.check([r["label"] for r in rows] == ["Sonata in C, I. Allegro", "Sonata in C, II. Adagio"], f"the open album shows its songs: {[r['label'] for r in rows]}")
     a.shot("album_open")
+    p.check(a.hazards["album_open"] < 50, f"the open album's song rows show no overflow overlay ({a.hazards['album_open']} stripe pixels)", known_failure=HAZARD_FINDING)
     a.click(a.find(role="Button", label="Abrir o cerrar Piano Sonatas"))
     a.settle(1.0)
     anna = a.find(role="GridCell", label_contains="Anna Keller")
@@ -202,6 +202,7 @@ def body(p):
     selr = [r["label"] for r in song_rows(a) if r.get("selected")]
     p.check(len(selr) >= 3, f"a rubber band in a list mode selects the rows it covers ({len(selr)})")
     a.shot("band_list")
+    clean_log(p, a)
 
 
 run("p05_library", body)

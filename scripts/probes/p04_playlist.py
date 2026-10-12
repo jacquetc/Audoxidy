@@ -255,5 +255,8 @@ def body(p):
     sel = [r for r in song_rows(a) if r.get("selected")]
     p.check(len(sel) == len(song_rows(a)) > 1, f"Ctrl+A selects every row of the list ({len(sel)}/{len(song_rows(a))})")
 
+    no_hazards(p, a)
+    clean_log(p, a)
+
 
 run("p04_playlist", body)

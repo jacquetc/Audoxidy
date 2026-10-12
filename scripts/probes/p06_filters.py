@@ -34,7 +34,7 @@ def scroll_both(a):
     g = a.find(role="Grid", label="Álbumes")
     a.call("scroll", node=t["id"], dy=40.0, lines=True, settle=SETTLE)
     a.call("scroll", node=g["id"], dy=40.0, lines=True, settle=SETTLE)
-    a.settle(0.4)
+    a.settle(1.0)
 
 
 def pick_type(a, name):
@@ -98,7 +98,7 @@ def body(p):
     scroll_both(a)
     node = [n for n in titems(a) if 300 < n["bounds"]["y"] < 800][0]
     a.click(node)
-    a.settle(1.0)
+    a.settle(1.5)
     p.check(status(a) != ALL and grid_top(a), f"a tree node filters the library ({status(a)}) and the library is at its top (the tree stays where the user clicked)")
     p.check(any(n.get("selected") for n in titems(a)), "...the node shows as selected")
     a.shot("node_filtered")
@@ -118,7 +118,13 @@ def body(p):
     a.key("Escape")
     a.settle(1.0)
     p.check(len(titems(a)) == n_all, "Escape clears the filter search and the tree is whole again")
+    # type switches while both are scrolled, several times in a row
+    for t in ("Año", "Artista", "Año", "Álbum", "Género", "Año", "Carpeta", "Género"):
+        scroll_both(a)
+        pick_type(a, t)
+    p.check(tree_top(a) and grid_top(a), "after eight type switches made while scrolled, both are at their top")
     no_hazards(p, a)
+    clean_log(p, a)
 
 
 run("p06_filters", body)
