@@ -53,6 +53,7 @@ ac-config-reset = Predeterminado
 ac-config-apply = Aplicar
 
 ## Errors
-# Not in the Iced UI: the Iced UI only logs the failure (quirk fix 8). The body is its log text.
+# Not in the Iced UI: the Iced UI only logs this (src/gui/audio_center.rs:1308-1312); the toast is quirk fix 8.
 ac-config-apply-failed = No se pudo aplicar la configuración de audio
+# Not in the Iced UI: the Iced UI only logs this (src/gui/audio_center.rs:1308-1312); the toast is quirk fix 8.
 ac-config-apply-failed-body = El dispositivo puede no soportar la combinación de tasa de muestreo y canales elegida ({ $error }). La reproducción queda detenida hasta aplicar una configuración válida.
