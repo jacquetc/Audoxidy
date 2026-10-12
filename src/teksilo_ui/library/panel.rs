@@ -36,6 +36,7 @@ use std::rc::Rc;
 
 use teksilo::core::binding::BindingLevel;
 use teksilo::core::event::{ScrollDelta, WidgetEvent};
+use teksilo::core::widget::WidgetPlacement;
 use teksilo::core::{Key, Modifiers};
 use teksilo::prelude::*;
 use teksilo::tokens::HAlignment;
@@ -202,6 +203,23 @@ impl Widget for ModeHeader {
                 proposal.resolve(0.0, column_header::HEIGHT + column_header::RULE_HEIGHT)
             })
             .into()
+    }
+
+    fn place_children(
+        &self,
+        bounds: Rect,
+        _proposal: SizeProposal,
+        children: &mut [WidgetPlacement],
+        _ctx: &LayoutContext,
+    ) {
+        for child in children.iter_mut() {
+            child.origin = bounds.origin();
+            child.size = bounds.size();
+        }
+        // The shared offset stays within what overflows the header's width
+        // (quirk fix 36): written from layout behind an equality guard, and
+        // the offset never changes the header's own width.
+        self.vm.set_h_viewport(bounds.width);
     }
 
     fn children(&self) -> Vec<WidgetId> {

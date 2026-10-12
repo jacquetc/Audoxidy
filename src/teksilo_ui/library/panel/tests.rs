@@ -776,3 +776,105 @@ fn the_keys_still_act_on_the_list_and_the_grid() {
     assert_eq!(drain_dialog_titles(&mut m.tree).len(), 1, "the grid");
     assert!(m.services.ctx.shutdown());
 }
+
+// ---- review #4: the shared offset follows a resize --------------------------
+
+/// The panel alone in a window, so that the window's size is the panel's.
+fn windowed() -> Mounted {
+    let (services, vm) = loaded();
+    let mut tree = tree_for(&services);
+    let id = tree.add(LibraryPanel::new(vm.clone()));
+    Mounted {
+        services,
+        vm,
+        tree,
+        id,
+    }
+}
+
+impl Mounted {
+    /// Lays the window out `width` px wide, as a resize does.
+    fn resize(&mut self, width: f32) {
+        let size = SizeProposal::exact(width, REGION.1);
+        self.tree.layout(size);
+        self.tree.layout(size);
+    }
+
+    /// The column header's "Title" cell.
+    fn title_header(&self) -> WidgetId {
+        find_by_name(&self.tree, self.id, "Title")
+            .into_iter()
+            .find(|id| {
+                self.tree.accessibility_node(*id).role()
+                    == teksilo::core::accesskit::Role::ColumnHeader
+            })
+            .unwrap()
+    }
+
+    /// A wheel notch sideways over the column header.
+    fn wheel_header(&mut self, dx: f32) {
+        let header = self.tree.bounds(self.node("ModeHeader"));
+        self.tree.dispatch_event(WidgetEvent::scroll_at(
+            ScrollDelta::Pixels { x: dx, y: 0.0 },
+            Modifiers::NONE,
+            teksilo::canvas::Point::new(header.x + 100.0, header.y + 10.0),
+        ));
+    }
+}
+
+#[test]
+fn quirk_36_a_wider_window_brings_the_leading_columns_back() {
+    let mut m = windowed();
+    m.vm.set_view_mode(LibraryViewMode::DetailedList);
+    let content = crate::teksilo_ui::library::library_vm::content_width(
+        LibraryViewMode::DetailedList,
+        &m.vm.column_widths().get(),
+    );
+    let narrow = content - 300.0;
+    m.resize(narrow);
+    let title_x = m.tree.bounds(m.title_header()).x;
+    m.wheel_header(-10_000.0);
+    m.resize(narrow);
+    assert_eq!(m.vm.h_offset().get(), 300.0, "scrolled to the end");
+    // Maximized: the content fits, nothing is left to scroll.
+    m.resize(content + 100.0);
+    assert_eq!(m.vm.h_offset().get(), 0.0);
+    assert_eq!(m.tree.bounds(m.title_header()).x, title_x, "back in place");
+    // Part of the way: the offset keeps only what still overflows.
+    m.resize(narrow);
+    m.wheel_header(-10_000.0);
+    m.resize(content - 100.0);
+    assert_eq!(m.vm.h_offset().get(), 100.0);
+    assert!(m.services.ctx.shutdown());
+}
+
+#[test]
+fn quirk_36_narrowing_a_column_keeps_the_offset_within_the_content() {
+    let mut m = windowed();
+    m.vm.set_view_mode(LibraryViewMode::DetailedList);
+    let content = |m: &Mounted| {
+        crate::teksilo_ui::library::library_vm::content_width(
+            LibraryViewMode::DetailedList,
+            &m.vm.column_widths().get(),
+        )
+    };
+    let width = content(&m) - 50.0;
+    m.resize(width);
+    m.wheel_header(-10_000.0);
+    m.resize(width);
+    assert_eq!(m.vm.h_offset().get(), 50.0);
+    // ← on a grip narrows its column, with no layout at another width.
+    let grip = m.node("ColumnGrip");
+    m.tree.focus(grip);
+    m.tree.dispatch_event(WidgetEvent::KeyDown {
+        key: Key::ArrowLeft,
+        modifiers: Modifiers::NONE,
+        text: None,
+    });
+    let left = (content(&m) - width).max(0.0);
+    assert!(left < 50.0, "the column narrowed: {left}");
+    assert_eq!(m.vm.h_offset().get(), left, "before any layout");
+    m.resize(width);
+    assert_eq!(m.vm.h_offset().get(), left);
+    assert!(m.services.ctx.shutdown());
+}

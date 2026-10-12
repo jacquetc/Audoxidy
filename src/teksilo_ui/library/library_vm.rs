@@ -330,6 +330,9 @@ struct Inner {
     detail_latest: Latest,
     stats: Signal<LibraryStats>,
     h_offset: Signal<f32>,
+    /// The width the column header is laid out at, the viewport the shared
+    /// offset scrolls in (0 before the first layout).
+    h_viewport: Cell<f32>,
     scroll: Request<ScrollRequest>,
     last_artist_click: RefCell<Option<(String, Instant)>>,
     last_album_click: RefCell<Option<(String, Instant)>>,
@@ -401,6 +404,7 @@ impl LibraryViewModel {
             detail_latest: Latest::new(),
             stats: Signal::new(LibraryStats::default()),
             h_offset: Signal::new(0.0),
+            h_viewport: Cell::new(0.0),
             scroll: Request::default(),
             last_artist_click: RefCell::new(None),
             last_album_click: RefCell::new(None),
@@ -604,6 +608,8 @@ impl LibraryViewModel {
         }
         widths.insert(column, width);
         self.inner.column_widths.set(widths);
+        // A narrower column can leave the offset past the content's end.
+        self.clamp_h_offset(self.inner.h_viewport.get());
     }
 
     /// Applies the sort a header click produced (`LibrarySortChanged`; the
@@ -646,9 +652,24 @@ impl LibraryViewModel {
         self.inner.h_offset.set_if_changed(next);
     }
 
-    /// Clamps the shared offset after the viewport or the columns changed.
+    /// Clamps the shared offset to the content that overflows a viewport
+    /// `viewport_width` wide.
     pub fn clamp_h_offset(&self, viewport_width: f32) {
         self.scroll_horizontally(0.0, viewport_width);
+    }
+
+    /// The column header was laid out `width` px wide (a resize of the
+    /// window, a mode change): the offset is clamped to what overflows it
+    /// now, so a wider window shows the leading columns again (quirk fix 36).
+    /// A column resize clamps against the same width
+    /// ([`set_column_width`](Self::set_column_width)). Called from layout;
+    /// it writes the offset only when it changes.
+    pub fn set_h_viewport(&self, width: f32) {
+        if !width.is_finite() || width <= 0.0 {
+            return;
+        }
+        self.inner.h_viewport.set(width);
+        self.clamp_h_offset(width);
     }
 
     // -----------------------------------------------------------------
