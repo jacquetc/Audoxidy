@@ -1194,6 +1194,18 @@ fn alt_down_opens_and_alt_up_closes_the_selected_tile_and_up_closes_the_open_one
     assert!(services.ctx.shutdown());
 }
 
+/// A press on the grid's card `index` with `modifiers`, as the grid reports
+/// it before its own selection change ([`LibraryViewModel::grid_press`]).
+fn press_card(vm: &LibraryViewModel, index: usize, modifiers: Modifiers) {
+    vm.grid_press((0.5, 0.5), modifiers, |spot, _| {
+        if spot == GridSpot::Card(index) {
+            ContentRect::new(0.0, 0.0, 1.0, 1.0)
+        } else {
+            ContentRect::new(-10.0, -10.0, 1.0, 1.0)
+        }
+    });
+}
+
 #[test]
 fn a_tile_click_replaces_the_detail_songs_and_a_ctrl_toggle_keeps_them() {
     let (services, vm) = loaded();
@@ -1210,12 +1222,15 @@ fn a_tile_click_replaces_the_detail_songs_and_a_ctrl_toggle_keeps_them() {
         0,
         "a plain song click clears the tiles"
     );
+    // The grid applies each click its own way; Iced's applies instead.
+    press_card(&vm, 1, Modifiers::NONE);
     vm.grid_selection().toggle(b.clone());
     assert!(
         vm.selection().get().selected.is_empty(),
         "from no tile to one: a plain click"
     );
     vm.click(song(first), ctrl(), at(1000));
+    press_card(&vm, 0, ctrl());
     vm.grid_selection().toggle(a.clone());
     assert!(
         vm.selection().get().selected.contains(&song(first)),
@@ -1223,8 +1238,130 @@ fn a_tile_click_replaces_the_detail_songs_and_a_ctrl_toggle_keeps_them() {
     );
     assert_eq!(vm.selected_items().len(), 3);
     // A plain click on one of two selected tiles leaves one: a replacement.
-    vm.grid_selection().select(b);
+    press_card(&vm, 1, Modifiers::NONE);
+    vm.grid_selection().select(b.clone());
     assert!(vm.selection().get().selected.is_empty());
+    assert_eq!(vm.grid_selection().selected_keys(), vec![b]);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn a_shift_click_on_a_card_ranges_over_the_open_albums_songs_as_iced() {
+    // Review #11b: Iced's `handle_click` ranges over the grid's items, cards
+    // and the band's songs (`library.rs:913-922`); the grid's own Shift
+    // range is over the cards alone, and the size of its change was taken
+    // for a Ctrl toggle (adjacent) or a replacement (farther).
+    let (services, vm) = loaded();
+    vm.set_grid_per_row(2);
+    let list = services.albums.list();
+    let cards: Vec<String> = (0..list.len())
+        .map(|i| list.with_item(i, |c| c.id.clone()).unwrap())
+        .collect();
+    // An album with a few songs, on an even card (the first of its row of
+    // two), with a row under it.
+    let snapshot = services.library_songs.snapshot().get();
+    let count = |id: &String| {
+        album_songs_in_memory(id, &snapshot.songs, &snapshot.albums).map_or(0, |s| s.len())
+    };
+    let open = (0..cards.len().saturating_sub(2))
+        .step_by(2)
+        .find(|i| count(&cards[*i]) >= 3)
+        .unwrap();
+    let (next, below) = (open + 1, open + 2);
+    vm.toggle_album(&cards[open]);
+    let songs: Vec<i64> = vm.expanded_songs().get().iter().map(|s| s.id).collect();
+    // A plain click on the band's second song: the pivot.
+    vm.click(song(songs[1]), Modifiers::NONE, at(0));
+    // Shift+click on the first card of the row under the band: the grid
+    // ranges over the cards from its own anchor.
+    press_card(&vm, below, Modifiers::SHIFT);
+    vm.grid_selection()
+        .select_keys(cards[open..=below].to_vec(), false);
+    assert_eq!(
+        vm.grid_selection().selected_keys(),
+        vec![cards[below].clone()]
+    );
+    // The songs from the pivot on, and, the card being an end of the range,
+    // its own songs (`select_range`).
+    let selected = vm.selection().get().selected;
+    assert!(songs[1..].iter().all(|id| selected.contains(&song(*id))));
+    assert!(!selected.contains(&song(songs[0])));
+    let below_songs =
+        album_songs_in_memory(&cards[below], &snapshot.songs, &snapshot.albums).unwrap();
+    assert_eq!(selected.len(), songs.len() - 1 + below_songs.len());
+    // Adjacent: the band is after the row, so the range holds no song.
+    press_card(&vm, open, Modifiers::NONE);
+    vm.grid_selection().select(cards[open].clone());
+    press_card(&vm, next, Modifiers::SHIFT);
+    vm.grid_selection()
+        .select_keys(vec![cards[open].clone(), cards[next].clone()], false);
+    let mut keys = vm.grid_selection().selected_keys();
+    keys.sort();
+    let mut wanted = vec![cards[open].clone(), cards[next].clone()];
+    wanted.sort();
+    assert_eq!(keys, wanted);
+    // Both ends are cards: their songs, nothing else (`select_range`).
+    let ends: HashSet<LibraryListItem> = [open, next]
+        .iter()
+        .flat_map(|i| album_songs_in_memory(&cards[*i], &snapshot.songs, &snapshot.albums).unwrap())
+        .map(|s| song(s.id))
+        .collect();
+    assert_eq!(vm.selection().get().selected, ends);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn the_selection_carries_from_the_grid_to_a_list_and_back() {
+    // Review #11c: Iced keeps one `selected_items` across the modes.
+    let (services, vm) = loaded();
+    let card = services
+        .albums
+        .list()
+        .with_item(0, |c| c.id.clone())
+        .unwrap();
+    vm.grid_selection().select(card.clone());
+    let songs = vm.selected_songs().len();
+    assert!(songs > 0);
+    vm.set_view_mode(LibraryViewMode::DetailedList);
+    assert!(
+        vm.selection()
+            .get()
+            .selected
+            .contains(&LibraryListItem::Album(card.clone()))
+    );
+    assert_eq!(
+        vm.selected_songs().len(),
+        songs,
+        "Play takes the same songs"
+    );
+    assert_eq!(vm.delete_targets().len(), songs);
+    vm.set_view_mode(LibraryViewMode::Grid);
+    assert_eq!(vm.grid_selection().selected_keys(), vec![card]);
+    assert!(vm.selection().get().selected.is_empty());
+    assert_eq!(vm.selected_songs().len(), songs);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn cards_the_grid_drops_leave_the_open_albums_songs_selected() {
+    // Review #11d: a search that drops a selected card from the grid's
+    // selection is no gesture; Iced's selection survives a search
+    // (`app.rs:2797`).
+    let (services, vm) = loaded();
+    let list = services.albums.list();
+    let (a, b) = (
+        list.with_item(0, |c| c.id.clone()).unwrap(),
+        list.with_item(1, |c| c.id.clone()).unwrap(),
+    );
+    vm.toggle_album(&a);
+    let first = vm.expanded_songs().get()[0].id;
+    vm.click(song(first), Modifiers::NONE, at(0));
+    press_card(&vm, 1, ctrl());
+    vm.grid_selection().toggle(b.clone());
+    assert_eq!(vm.selected_items().len(), 2);
+    // The grid drops `b`, which its albums no longer hold.
+    vm.grid_selection().clear();
+    assert!(vm.selection().get().selected.contains(&song(first)));
     assert!(services.ctx.shutdown());
 }
 
@@ -1843,5 +1980,28 @@ fn g3_a_sweep_selects_the_cards_and_the_band_songs_it_crosses() {
         [song(songs[1])].into_iter().collect()
     );
     assert_eq!(grid_keys(&vm).len(), 2, "the cards it does not cross stay");
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn a_press_on_the_grids_background_empties_the_selection() {
+    // Review #11a in the grid: Iced's grid background deselects on the press
+    // (`library.rs:1956`), before the rubber band.
+    let (services, vm) = loaded();
+    let list = services.albums.list();
+    let (a, b) = (
+        list.with_item(0, |c| c.id.clone()).unwrap(),
+        list.with_item(1, |c| c.id.clone()).unwrap(),
+    );
+    vm.toggle_album(&a);
+    let first = vm.expanded_songs().get()[0].id;
+    vm.click(song(first), Modifiers::NONE, at(0));
+    press_card(&vm, 1, ctrl());
+    vm.grid_selection().toggle(b);
+    assert_eq!(vm.selected_items().len(), 2);
+    vm.grid_press((0.5, 0.5), Modifiers::SHIFT, |_, _| {
+        ContentRect::new(-10.0, -10.0, 1.0, 1.0)
+    });
+    assert!(vm.selected_items().is_empty());
     assert!(services.ctx.shutdown());
 }

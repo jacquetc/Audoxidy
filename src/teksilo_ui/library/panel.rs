@@ -403,7 +403,15 @@ impl Widget for LibraryPanel {
                     WidgetEvent::KeyDown { key, modifiers, .. }
                         if has_the_keys(ctx.focused(), &key_view, &key_band) =>
                     {
-                        handle_key(&key_vm, &key_band, key, *modifiers, ctx)
+                        let response = handle_key(&key_vm, &key_band, key, *modifiers, ctx);
+                        if matches!(response, EventResponse::Ignored)
+                            && key_vm.view_mode().get() == LibraryViewMode::Grid
+                        {
+                            // The grid's own keys: its next selection change
+                            // is theirs.
+                            key_vm.grid_key_pressed();
+                        }
+                        response
                     }
                     _ => EventResponse::Ignored,
                 }),

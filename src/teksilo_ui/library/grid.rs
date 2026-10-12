@@ -51,6 +51,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use teksilo::canvas::EdgeInsets;
+use teksilo::core::event::{PointerButton, WidgetEvent};
 use teksilo::core::signal::ObserverHandle;
 use teksilo::core::widget::WidgetPlacement;
 use teksilo::data::{DataChange, ListDataSource, ListModel};
@@ -693,12 +694,36 @@ impl Widget for LibraryGrid {
             },
         );
         let (pointer, cancel) = (marquee.clone(), marquee.clone());
+        let (press_vm, press_scroll, press_viewport) = (
+            vm.clone(),
+            self.scroll_y.clone().unwrap_or_else(|| Signal::new(0.0)),
+            self.viewport.clone(),
+        );
         let root = ctx.add(
             ZStack::new()
                 .alignment(teksilo::tokens::Alignment::TOP_LEADING)
                 .child(grid)
                 .child(Marquee::new(marquee))
-                .on_pointer_event(move |event, ctx| pointer.on_pointer(event, ctx))
+                .on_pointer_event(move |event, ctx| {
+                    // Seen before the grid's own handling of the press: what
+                    // it was on tells the view-model which gesture the
+                    // grid's selection change is (11a, 11b).
+                    if let WidgetEvent::PointerDown {
+                        position,
+                        button: PointerButton::Primary,
+                        modifiers,
+                        ..
+                    } = event
+                    {
+                        let width = press_viewport.get().0;
+                        press_vm.grid_press(
+                            (position.x, position.y + press_scroll.get()),
+                            *modifiers,
+                            |spot, shape| spot_rect(spot, shape, width),
+                        );
+                    }
+                    pointer.on_pointer(event, ctx)
+                })
                 .on_pointer_cancel(move |_, _, _| cancel.cancel()),
         );
         self.root = Some(root);

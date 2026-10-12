@@ -967,3 +967,72 @@ fn the_detailed_song_rows_get_their_width_beside_the_card() {
     );
     assert!(m.services.ctx.shutdown());
 }
+
+// ---- review #11b: a Shift+click on a card, with the pointer -----------------
+
+#[test]
+fn a_shift_click_on_a_card_takes_the_open_albums_songs_from_the_pivot() {
+    let mut m = mounted();
+    // An album of the first row with a few songs, so the row under its band
+    // shows.
+    let list = m.services.albums.list();
+    let snapshot = m.services.library_songs.snapshot().get();
+    let card = (0..3)
+        .filter_map(|i| list.with_item(i, |c| c.id.clone()))
+        .filter(|id| {
+            crate::teksilo_ui::library::library_vm::album_songs_in_memory(
+                id,
+                &snapshot.songs,
+                &snapshot.albums,
+            )
+            .is_some_and(|songs| songs.len() >= 2)
+        })
+        .min_by_key(|id| {
+            crate::teksilo_ui::library::library_vm::album_songs_in_memory(
+                id,
+                &snapshot.songs,
+                &snapshot.albums,
+            )
+            .map_or(0, |songs| songs.len())
+        })
+        .expect("a first-row album of two songs or more");
+    m.vm.toggle_album(&card);
+    m.relayout();
+    let songs: Vec<i64> = m.vm.expanded_songs().get().iter().map(|s| s.id).collect();
+    let band = m.node("GridDetail");
+    let row = m.tree.bounds(all_of_type(&m.tree, band, "SongRow")[1]);
+    crate::teksilo_ui::test_support::tap_at(
+        &mut m.tree,
+        teksilo::canvas::Point::new(row.x + 100.0, row.y + row.height / 2.0),
+    );
+    // The first card of the row under the band.
+    let band_bounds = m.tree.bounds(band);
+    let tiles = all_of_type(&m.tree, m.id, "AlbumTile");
+    let below = tiles
+        .into_iter()
+        .map(|t| m.tree.bounds(t))
+        .filter(|t| t.y >= band_bounds.y + band_bounds.height - 0.5)
+        .min_by(|a, b| (a.y, a.x).partial_cmp(&(b.y, b.x)).unwrap())
+        .expect("a row under the band");
+    let at = teksilo::canvas::Point::new(below.x + 60.0, below.y + 60.0);
+    m.tree.dispatch_event(WidgetEvent::pointer_down(
+        at,
+        PointerButton::Primary,
+        Modifiers::SHIFT,
+    ));
+    m.tree.dispatch_event(WidgetEvent::pointer_up(
+        at,
+        PointerButton::Primary,
+        Modifiers::SHIFT,
+    ));
+    m.relayout();
+    let selected = m.vm.selection().get().selected;
+    let song = crate::logic::library_selection::LibraryListItem::Song;
+    assert!(
+        songs[1..].iter().all(|id| selected.contains(&song(*id))),
+        "the band's songs from the pivot: {selected:?}"
+    );
+    assert!(!selected.contains(&song(songs[0])));
+    assert_eq!(m.vm.grid_selection().count(), 1, "the card clicked");
+    assert!(m.services.ctx.shutdown());
+}
