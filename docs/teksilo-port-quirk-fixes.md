@@ -87,6 +87,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 71 | A sort reorders the albums a filter shows |
 | 72 | The title marquee starts over on a new title and rests while paused |
 | 73 | Only the player's own events wake its controls |
+| 74 | In the narrowest window the window controls stay in view |
 
 ---
 
@@ -1042,3 +1043,13 @@ Unfinished Iced features (stubs) are not listed here; they are in
   bar, the wheel) wake them; a movement elsewhere in the window and the media keys do not.
 - **Why:** the user's decision (2026-10-12): keep the Teksilo behaviour.
 - **Pinned by:** `teksilo_ui::player::player_vm::tests::{the_controls_are_active_for_1500_ms_after_a_mouse_move, a_transport_action_hides_the_bubble_and_wakes_the_controls}`.
+
+## 74. In the narrowest window the window controls stay in view
+
+- **Iced:** the window can be as narrow as 900 px (`src/main.rs:53`), which leaves the title strip
+  500 px beside the 400 px left column, less than the logo cell and the source pills need; the strip's
+  row lays them out at their size and the window controls fall off its end (`src/gui/library.rs:1300`).
+- **Teksilo:** the source pills give way and are cut at the strip's end, so minimize, maximize and
+  close stay inside the window.
+- **Why:** a window whose close button cannot be reached (found by the live probes, Wave F).
+- **Pinned by:** `teksilo_ui::shell::title_bar::tests::in_the_narrowest_window_the_controls_stay_and_the_pills_give_way` (it fails without the fix).

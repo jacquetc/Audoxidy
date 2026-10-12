@@ -32,7 +32,7 @@ use teksilo::core::accesskit::Role;
 use teksilo::prelude::*;
 use teksilo::tokens::{FontWeight, HAlignment, VAlignment};
 use teksilo::widgets::{
-    FixedSize, HStack, IconWidget, Padding, Panel, Spacer, TextWidget, TitleBar, VStack,
+    FixedSize, HStack, IconWidget, Padding, Panel, Shrinkable, Spacer, TextWidget, TitleBar, VStack,
 };
 
 use crate::teksilo_ui::icons;
@@ -158,20 +158,27 @@ pub fn native() -> FixedSize {
     )
 }
 
-/// The logo cell and the source pills.
+/// The logo cell and the source pills. In a window too narrow for them all
+/// (the minimum, 900 px, leaves the strip 500), the pills give way and are cut
+/// at the strip's end, so the window controls stay in the window; Iced lets
+/// the controls fall off its end.
 fn leading() -> HStack {
     HStack::new()
         .spacing(0.0)
         .alignment(VAlignment::Center)
         .child(logo())
         .child(
-            Padding::new(0.0, 0.0, 0.0, PILLS_LEADING).child(
-                HStack::new()
-                    .spacing(PILL_SPACING)
-                    .alignment(VAlignment::Center)
-                    .children(Source::ALL.into_iter().map(pill))
-                    .access_role(Role::TabList)
-                    .access_label(tr!(titlebar_sources())),
+            Shrinkable::new().shrink(1.0).child(
+                Padding::new(0.0, 0.0, 0.0, PILLS_LEADING)
+                    .child(
+                        HStack::new()
+                            .spacing(PILL_SPACING)
+                            .alignment(VAlignment::Center)
+                            .children(Source::ALL.into_iter().map(pill))
+                            .access_role(Role::TabList)
+                            .access_label(tr!(titlebar_sources())),
+                    )
+                    .clips_children_on(true),
             ),
         )
 }
@@ -540,6 +547,28 @@ mod tests {
             assert_eq!(centre(maximize), 20.0);
             assert_eq!(centre(close), 20.0);
             assert_eq!(centre(minimize), 16.0);
+        });
+    }
+
+    #[test]
+    fn in_the_narrowest_window_the_controls_stay_and_the_pills_give_way() {
+        // The window's minimum width is 900 px (Iced's), leaving the strip
+        // 500 px beside the 400 px left column: less than the logo and the
+        // pills need. The window controls must stay inside the strip.
+        with_shipped_messages("en-US", || {
+            let window = window_state();
+            let (mut tree, id) = custom_strip(&window);
+            tree.layout(SizeProposal::exact(500.0, 880.0));
+            let strip = tree.bounds(id);
+            assert_eq!(strip.width, 500.0);
+            let close = named_rect(&tree, id, "Close");
+            assert_eq!(close.0 + close.2, strip.x + strip.width - 5.0);
+            let minimize = named_rect(&tree, id, "Minimize");
+            let pills = tree.bounds(find_by_name(&tree, id, "Sources")[0]);
+            assert!(
+                pills.x + pills.width <= minimize.0 + 0.01,
+                "the pills end before the controls: {pills:?} {minimize:?}"
+            );
         });
     }
 
