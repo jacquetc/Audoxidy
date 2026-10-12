@@ -153,12 +153,21 @@ impl Widget for TabsStrip {
             BindingLevel::Rebuild,
         );
         let tabs = self.vm.tab_list();
-        let row = tabs.iter().fold(
-            HStack::new()
-                .spacing(TAB_SPACING)
-                .alignment(VAlignment::Center),
-            |row, tab| row.child(self.tab(tab)),
-        );
+        let mut row = HStack::new()
+            .spacing(TAB_SPACING)
+            .alignment(VAlignment::Center);
+        for tab in &tabs {
+            let id = ctx.add(self.tab(tab));
+            // A tab reports whether it is selected: a switch from elsewhere
+            // (the overflow list, a new playlist, an import) is no event on
+            // the tab, and must still reach the accessibility tree.
+            let playlist = tab.id;
+            self.vm
+                .active_playlist()
+                .map(move |active| *active == Some(playlist))
+                .bind_to(id, ctx.binding_registry(), BindingLevel::AccessibilityOnly);
+            row = row.child(id);
+        }
         let scroll = ScrollArea::new()
             .vertical_scroll_bar_policy(ScrollBarPolicy::AlwaysOff)
             .horizontal_scroll_bar_policy(ScrollBarPolicy::AlwaysOff)

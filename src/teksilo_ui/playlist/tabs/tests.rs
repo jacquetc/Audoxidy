@@ -258,3 +258,40 @@ fn a_rebuild_keeps_the_strips_offset() {
     layout(&mut tree);
     assert_eq!(tab_bounds(&tree, root, "Audoxidy").x, before);
 }
+
+#[test]
+fn a_switch_from_the_overflow_list_reaches_the_tabs_accessibility() {
+    // Probe F5b: picked in the overflow list, the new tab stayed unselected
+    // for assistive technology (and the old one selected) until a click on
+    // a tab.
+    let env = restored();
+    overflowing(&env);
+    let (mut tree, root) = mounted(&env);
+    let _ = tree.sync_accessibility();
+    let chevron = tree.find_by_label("All playlists").unwrap();
+    access_click(&mut tree, chevron);
+    let menu = *menus(&tree).last().unwrap();
+    let entry = find_by_name(&tree, menu, "Audoxidy")[0];
+    tree.click(entry);
+    layout(&mut tree);
+    // The list closes and the tree is sent before the switch is applied.
+    let _ = tree.sync_accessibility();
+    let id = env.playlist_id("Audoxidy");
+    env.wait(|| env.vm.active_playlist().get() == Some(id));
+    layout(&mut tree);
+    let update = tree.sync_accessibility();
+    let selected = |name: &str| {
+        let node = teksilo::core::accessibility::widget_id_to_node_id(tab(&tree, root, name));
+        update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == node)
+            .map(|(_, node)| node.is_selected())
+    };
+    assert_eq!(selected("Audoxidy"), Some(Some(true)), "re-sent, selected");
+    assert_eq!(
+        selected("David Bowie"),
+        Some(Some(false)),
+        "re-sent, not selected"
+    );
+}
