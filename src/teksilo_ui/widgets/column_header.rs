@@ -610,6 +610,16 @@ pub fn key_delta(key: &Key, shift: bool, direction: LayoutDirection) -> Option<i
     Some(if wider { step } else { -step })
 }
 
+/// The pointer's x in the window, for a drag: the grip moves with the
+/// column it resizes, so a position in its own coordinates would count only
+/// half the travel (probe F2). `local_x` when the event carries no window
+/// position.
+fn window_x(local_x: f32, ctx: &EventContext) -> f32 {
+    ctx.pointer_position()
+        .or_else(|| ctx.tree_pointer_position())
+        .map_or(local_x, |point| point.x)
+}
+
 impl Widget for ColumnGrip {
     fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
         let id = ctx.self_id();
@@ -644,13 +654,14 @@ impl Widget for ColumnGrip {
                         ..
                     } => {
                         ctx.capture_pointer();
-                        drag.set(Some((position.x, pointer.width())));
+                        drag.set(Some((window_x(position.x, ctx), pointer.width())));
                         dragging.set(true);
                         EventResponse::Handled
                     }
                     WidgetEvent::PointerMove { position, .. } => match drag.get() {
                         Some((start_x, start_width)) if ctx.owns_pointer() => {
-                            pointer.resize(resized_width(start_width, position.x - start_x), ctx);
+                            let dx = window_x(position.x, ctx) - start_x;
+                            pointer.resize(resized_width(start_width, dx), ctx);
                             EventResponse::Handled
                         }
                         _ => EventResponse::Ignored,
