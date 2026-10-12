@@ -294,6 +294,22 @@ class App:
         mask = d.convert("L").point(lambda v: 255 if v > 8 else 0)
         return sum(1 for v in mask.getdata() if v)
 
+    def crop_diff(self, path_a, path_b, box):
+        """Differing pixels between two screenshots inside `box` = (x0, y0, x1, y1)."""
+        from PIL import Image, ImageChops
+        d = ImageChops.difference(Image.open(path_a).convert("RGB").crop(box), Image.open(path_b).convert("RGB").crop(box))
+        return sum(1 for v in d.convert("L").point(lambda v: 255 if v > 8 else 0).getdata() if v)
+
+    def label_texts(self, region):
+        """document_text of every Label whose top-left lies in region (x0, y0, x1, y1)."""
+        x0, y0, x1, y1 = region
+        out = []
+        for n in self.nodes():
+            b = n.get("bounds")
+            if n.get("role") == "Label" and b and x0 <= b["x"] < x1 and y0 <= b["y"] < y1:
+                out.append(((n.get("text") or {}).get("document_text")) or n.get("value") or "")
+        return out
+
     def sha(self, node=None):
         return self.shot(f"_tmp", node)[1]
 
@@ -334,3 +350,11 @@ def start(p, **kw):
     a = App(p, **kw)
     p.apps.append(a)
     return a
+
+
+def dialogs(app):
+    return [n for n in app.nodes() if n.get("role") in ("Dialog", "AlertDialog")]
+
+
+def field_text(node):
+    return (node.get("text") or {}).get("document_text", "")
