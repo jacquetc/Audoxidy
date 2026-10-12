@@ -320,3 +320,43 @@ fn quirk_13_persist_now_on_autosave_resolves_once_the_state_is_stored() {
         assert_eq!(stored.last_song_id, Some(rig.id(4)));
     });
 }
+
+#[test]
+fn a_close_while_the_restore_waits_in_the_queue_starts_no_playback() {
+    with_timeout(TEST_TIMEOUT, || {
+        let (ctx, fakes) = AppContext::in_memory_with_fakes().unwrap();
+        seed(&ctx, &PLAYING_2);
+        // The engine worker is busy (a stream rebuild, a slow sound server)
+        // until the shutdown closes its queue, so the restore is still
+        // queued when the window closes.
+        let (started_tx, started_rx) = mpsc::channel();
+        let engine = ctx.engine.clone();
+        let _busy = ctx.engine.run(move |_| {
+            let _ = started_tx.send(());
+            while !engine.is_closed() {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Ok(())
+        });
+        started_rx.recv_timeout(TEST_TIMEOUT).unwrap();
+        let restored = restore(&ctx);
+
+        assert!(stop(&ctx), "every thread stopped in time");
+
+        assert!(
+            !fakes.player.snapshot().is_playing,
+            "nothing plays after the close"
+        );
+        assert!(
+            !fakes
+                .player
+                .calls()
+                .iter()
+                .any(|call| matches!(call, PlayerCall::Load { .. })),
+            "the queued restore loads no track during the shutdown"
+        );
+        let restored = restored.recv_blocking().unwrap();
+        assert_eq!(restored.session.song_id, None);
+        assert!(!restored.session.is_playing);
+    });
+}
