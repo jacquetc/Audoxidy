@@ -27,7 +27,8 @@ def band_values(a):
 
 
 def preset_buttons(a):
-    return [n["label"] for n in a.find_all(role="Button") if n["bounds"]["x"] > 640 and n["bounds"]["x"] < 660 and n["bounds"]["width"] == 138]
+    # The rows are list-box options (selected while highlighted), since Wave F.
+    return [n["label"] for n in a.find_all(role="ListBoxOption") if n["bounds"]["x"] > 640 and n["bounds"]["x"] < 660 and n["bounds"]["width"] == 138]
 
 
 def body(p):
@@ -64,7 +65,9 @@ def body(p):
     d = ac_dialog(a)["bounds"]
     dx, dy = d["x"] - x0, d["y"] - y0
     p.check(dx > 0 and dy > 0, f"a drag on the header moves the dialog towards the pointer ({dx:+.0f},{dy:+.0f})")
-    p.check(abs(dx - 60) < 3 and abs(dy - 30) < 3, f"...by the distance the pointer travelled ({dx:+.0f},{dy:+.0f} for +60,+30)", known_failure=DRAG_FINDING)
+    # The first drag of a centred panel starts from Iced's centre on a 474 px height, 3 px
+    # under the drawn 480 px panel's (src/gui/app.rs, the view-model's CENTRE_HEIGHT).
+    p.check(abs(dx - 60) < 1 and abs(dy - 33) < 1, f"...by the distance the pointer travelled ({dx:+.0f},{dy:+.0f} for +60,+30, plus Iced's 3 px on a first drag)")
     a.shot("dragged")
     # a one-jump drag is exact and clamps inside the window
     d = ac_dialog(a)["bounds"]
@@ -139,7 +142,7 @@ def body(p):
     p.check(dlg is not None, "'Cargar preset' opens the load dialog")
     presets = preset_buttons(a)
     p.check(len(presets) >= 10 and "Default" in presets, f"...listing the presets ({len(presets)}: {presets[:4]}...)")
-    a.click(a.find(role="Button", label="Hard Rock", pred=lambda n: n["bounds"]["x"] < 700))
+    a.click(a.find(role="ListBoxOption", label="Hard Rock", pred=lambda n: n["bounds"]["x"] < 700))
     a.settle(0.6)
     preview = band_values(a)
     p.check(preview != keep, "picking a preset previews it on the sliders")
@@ -150,7 +153,7 @@ def body(p):
     # Escape closes only the dialog
     a.click(a.find(role="Button", label="Cargar preset"))
     a.settle(0.6)
-    a.click(a.find(role="Button", label="Hard Rock", pred=lambda n: n["bounds"]["x"] < 700))
+    a.click(a.find(role="ListBoxOption", label="Hard Rock", pred=lambda n: n["bounds"]["x"] < 700))
     a.settle(0.4)
     a.key("Escape")
     a.settle(0.6)
@@ -159,7 +162,7 @@ def body(p):
     # Aceptar keeps it
     a.click(a.find(role="Button", label="Cargar preset"))
     a.settle(0.6)
-    a.click(a.find(role="Button", label="Hard Rock", pred=lambda n: n["bounds"]["x"] < 700))
+    a.click(a.find(role="ListBoxOption", label="Hard Rock", pred=lambda n: n["bounds"]["x"] < 700))
     a.settle(0.4)
     a.click(a.find(role="Button", label="Aceptar"))
     a.settle(0.6)

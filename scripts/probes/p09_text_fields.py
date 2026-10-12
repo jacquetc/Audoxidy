@@ -70,7 +70,7 @@ def body(p):
     p.check(s0["cards"] and s0["playlist selection"], f"setup: a card and a playlist song are selected")
 
     # ---- the three search fields
-    hammer(p, a, "playlist search", lambda: a.find(role="TextInput", label="Buscar...", pred=lambda n: n["bounds"]["x"] < 100))
+    hammer(p, a, "playlist search", lambda: a.find(role="TextInput", label="Buscar en la lista", pred=lambda n: n["bounds"]["x"] < 100))
     a.key("Escape")
     a.settle(0.4)
     hammer(p, a, "filter search", lambda: a.find(role="TextInput", label="Buscar...", pred=lambda n: 400 < n["bounds"]["x"] < 600))
@@ -158,8 +158,7 @@ def body(p):
     a.click_at(b["x"] + b["width"] / 2, b["y"] + b["height"] / 2)
     a.settle(0.4)
     f = focused_input(a)
-    p.check(f is not None, "meter stepper field: a click on the value gives it the focus (the + and - buttons of the same stepper work)",
-            known_failure=METER_FINDING)
+    p.check(f is not None, "meter stepper field: a click on the value gives it the focus (the + and - buttons of the same stepper work)")
     if f is None:
         p.note(f"after the click the popup is {'open' if a.n_overlays() else 'closed'}")
     if f:

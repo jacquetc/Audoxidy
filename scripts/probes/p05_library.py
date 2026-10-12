@@ -51,7 +51,7 @@ def body(p):
     p.check(a.find(role="Grid", label="Álbumes") and len(cells(a)) > 5, "back in the grid, the album cards are there")
     p.check(a.hazards["mode0"] < 50, "the grid mode shows no overflow overlay")
     p.check(all(a.hazards[f"mode{i}"] < 50 for i in (1, 2, 3)), f"the three list modes show no overflow overlay "
-            f"({[a.hazards[f'mode{i}'] for i in (1, 2, 3)]} stripe pixels)", known_failure=HAZARD_FINDING)
+            f"({[a.hazards[f'mode{i}'] for i in (1, 2, 3)]} stripe pixels)")
 
     # ---- the grid's open album: the chevron, a double click
     chev = a.find(role="Button", label="Abrir o cerrar Piano Sonatas")
@@ -62,7 +62,7 @@ def body(p):
     rows = song_rows(a)
     p.check([r["label"] for r in rows] == ["Sonata in C, I. Allegro", "Sonata in C, II. Adagio"], f"the open album shows its songs: {[r['label'] for r in rows]}")
     a.shot("album_open")
-    p.check(a.hazards["album_open"] < 50, f"the open album's song rows show no overflow overlay ({a.hazards['album_open']} stripe pixels)", known_failure=HAZARD_FINDING)
+    p.check(a.hazards["album_open"] < 50, f"the open album's song rows show no overflow overlay ({a.hazards['album_open']} stripe pixels)")
     a.click(a.find(role="Button", label="Abrir o cerrar Piano Sonatas"))
     a.settle(1.0)
     anna = a.find(role="GridCell", label_contains="Anna Keller")
@@ -141,7 +141,7 @@ def body(p):
     a.settle(0.4)
     grown = width() - w0
     p.check(grown > 0, f"dragging a grip to the right widens the column ({grown:+.0f} px)")
-    p.check(abs(grown - 100) <= 3, f"...by the distance the pointer travelled ({grown:+.0f} px for +100)", known_failure=RESIZE_FINDING)
+    p.check(abs(grown - 100) <= 3, f"...by the distance the pointer travelled ({grown:+.0f} px for +100)")
     g = a.find(role="Splitter", label="Redimensionar Título")
     gx, gy = a.center(g)
     w1 = width()

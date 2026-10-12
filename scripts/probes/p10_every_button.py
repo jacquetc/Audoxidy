@@ -98,6 +98,10 @@ def sweep(p, a, nodes_fn, scope, results, before_each=None, after_each=None):
         if n.get("disabled"):
             results.append((scope, role, label, "disabled (stub)"))
             continue
+        if "radio" in role.lower() and n.get("toggled") in (True, "true"):
+            # Picking the option already chosen changes nothing, in Iced too.
+            results.append((scope, role, label, "already chosen"))
+            continue
         if before_each:
             before_each(role, label)
             n = finder()
@@ -234,7 +238,7 @@ def body(p):
     p.check(not bad, f"every enabled control answers the pointer ({len(pressed)} pressed" + (f"; no effect: {[(r[0], r[2]) for r in bad]}" if bad else "") + ")")
     p.check(len([r for r in results if r[3].startswith("disabled")]) >= 1, "the disabled stubs were left alone")
     p.check(not [r for r in results if r[3] == "gone"], f"every control found could be pressed (gone: {[r[2] for r in results if r[3] == 'gone']})")
-    no_hazards(p, a, known_failure=HAZARD_FINDING)
+    no_hazards(p, a)
     clean_log(p, a)
 
 
