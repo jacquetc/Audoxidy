@@ -25,7 +25,7 @@
 //!
 //! [`LibraryList`] also carries what surrounds the rows in Iced: the sticky
 //! artist header ([`StickyHeader`]), the
-//! empty message, a click on the background (it deselects), the scroll
+//! empty message, a press on the background (it deselects), the scroll
 //! requests of the view-model, the horizontal wheel and the marquee.
 
 use std::cell::Cell;
@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use teksilo::core::Modifiers;
-use teksilo::core::event::{ScrollDelta, WidgetEvent};
+use teksilo::core::event::{PointerButton, ScrollDelta, WidgetEvent};
 use teksilo::core::signal::ObserverHandle;
 use teksilo::core::widget::WidgetPlacement;
 use teksilo::data::{DataChange, ListDataSource, ListModel};
@@ -433,14 +433,24 @@ impl Widget for LibraryList {
                 .child(sticky)
                 .child(Marquee::new(marquee))
                 .child(Self::empty_message(empty))
-                .on_tap(move |_tap, _ctx| deselect_vm.deselect())
                 .on_pointer_event(move |event, ctx| {
-                    // A press anywhere in the list gives it the keyboard, as
-                    // Iced focuses the library on a click (`app.rs:3037`).
-                    if let WidgetEvent::PointerDown { .. } = event
-                        && let Some(list) = focus_list.get()
-                    {
-                        ctx.request_focus(list);
+                    if let WidgetEvent::PointerDown { button, .. } = event {
+                        // A press anywhere in the list gives it the keyboard,
+                        // as Iced focuses the library on a click
+                        // (`app.rs:3037`).
+                        if let Some(list) = focus_list.get() {
+                            ctx.request_focus(list);
+                        }
+                        // A press on the background empties the selection
+                        // before the rubber band starts, whatever the
+                        // modifiers, as Iced's `LibraryDeselect` does on the
+                        // press (`app.rs:3343-3362`): a Shift or Ctrl sweep
+                        // from there starts from nothing.
+                        if *button == PointerButton::Primary
+                            && !ctx.press_claimed_by_interactive_child()
+                        {
+                            deselect_vm.deselect();
+                        }
                     }
                     pointer_marquee.on_pointer(event, ctx)
                 })

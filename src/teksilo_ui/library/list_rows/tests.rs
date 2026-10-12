@@ -428,3 +428,113 @@ fn a_marquee_held_near_the_bottom_scrolls_the_list_from_the_time_elapsed() {
     assert_eq!(m.scroll_y().get(), scrolled);
     assert!(m.services.ctx.shutdown());
 }
+
+/// A drag from `start` to `end` with `modifiers` held.
+fn drag_with(m: &mut Mounted, start: Point, end: Point, modifiers: Modifiers) {
+    use teksilo::core::{EventTime, PointerSample};
+    let mid = Point::new(start.x + 10.0, start.y + 20.0);
+    for (phase, at, ms) in [
+        (PointerPhase::Down, start, 1_000),
+        (PointerPhase::Move, mid, 1_020),
+        (PointerPhase::Move, end, 1_040),
+        (PointerPhase::Up, end, 1_060),
+    ] {
+        m.tree.dispatch_pointer(
+            PointerSample::mouse(phase, at, EventTime::from_millis(ms))
+                .with_button(PointerButton::Primary)
+                .with_modifiers(modifiers),
+        );
+        layout(&mut m.tree);
+    }
+}
+
+#[test]
+fn a_sweep_from_the_background_starts_from_an_empty_selection() {
+    // Review #11a: Iced's background press deselects (`LibraryDeselect`,
+    // `app.rs:3343-3362`), then the rubber band adds (Shift) or toggles
+    // (Ctrl) against nothing.
+    for modifiers in [Modifiers::SHIFT, Modifiers::CTRL] {
+        let mut m = mounted(LibraryViewMode::SimpleList);
+        let rows = all_of_type(&m.tree, m.id, "SongRow");
+        let (old, first, third) = (
+            m.tree.bounds(rows[6]),
+            m.tree.bounds(rows[1]),
+            m.tree.bounds(rows[3]),
+        );
+        pointer_click(
+            &mut m.tree,
+            Point::new(old.x + 100.0, old.y + old.height / 2.0),
+            PointerButton::Primary,
+            500,
+        );
+        let before = m.vm.selection().get().selected;
+        assert_eq!(before.len(), 1);
+        let list = m.tree.bounds(m.id);
+        let start = Point::new(list.x + 3.0, first.y + 10.0);
+        let end = Point::new(list.x + 60.0, third.y + 10.0);
+        drag_with(&mut m, start, end, modifiers);
+        let selected = m.vm.selection().get().selected;
+        assert!(selected.len() >= 3, "{modifiers:?}: {selected:?}");
+        assert!(
+            before.is_disjoint(&selected),
+            "{modifiers:?}: the old selection is gone: {selected:?}"
+        );
+        assert!(m.services.ctx.shutdown());
+    }
+}
+
+#[test]
+fn a_press_on_a_row_does_not_deselect_it() {
+    let mut m = mounted(LibraryViewMode::SimpleList);
+    let row = m.tree.bounds(all_of_type(&m.tree, m.id, "SongRow")[2]);
+    let at = Point::new(row.x + 100.0, row.y + row.height / 2.0);
+    pointer_event(
+        &mut m.tree,
+        PointerPhase::Down,
+        at,
+        PointerButton::Primary,
+        1_000,
+    );
+    pointer_event(
+        &mut m.tree,
+        PointerPhase::Up,
+        at,
+        PointerButton::Primary,
+        1_005,
+    );
+    assert_eq!(m.vm.selection().get().selected.len(), 1);
+    assert!(m.services.ctx.shutdown());
+}
+
+#[test]
+fn a_ctrl_press_on_a_row_or_a_header_keeps_the_selection() {
+    // A tap with `modifiers` held, as `test_support::tap_at` makes one.
+    let press = |m: &mut Mounted, node: WidgetId, modifiers: Modifiers, _ms: u64| {
+        let b = m.tree.bounds(node);
+        let at = Point::new(b.x + 100.0, b.y + b.height / 2.0);
+        m.tree.dispatch_event(WidgetEvent::pointer_down(
+            at,
+            PointerButton::Primary,
+            modifiers,
+        ));
+        m.tree.dispatch_event(WidgetEvent::pointer_up(
+            at,
+            PointerButton::Primary,
+            modifiers,
+        ));
+        layout(&mut m.tree);
+    };
+    for (mode, suffix) in [
+        (LibraryViewMode::SimpleList, "SongRow"),
+        (LibraryViewMode::SimpleList, "HeaderRow"),
+        (LibraryViewMode::DetailedList, "SongRow"),
+    ] {
+        let mut m = mounted(mode);
+        let rows = all_of_type(&m.tree, m.id, suffix);
+        press(&mut m, rows[1], Modifiers::NONE, 1_000);
+        press(&mut m, rows[2], Modifiers::CTRL, 3_000);
+        let selected = m.vm.selection().get().selected;
+        assert_eq!(selected.len(), 2, "{mode:?} {suffix}: {selected:?}");
+        assert!(m.services.ctx.shutdown());
+    }
+}
