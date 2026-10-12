@@ -100,6 +100,7 @@ class App:
         self.session = None
         self.log = None
         self._shots = 0
+        self.hazards = {}
         self.start()
 
     def start(self):
@@ -272,6 +273,7 @@ class App:
                 png = base64.b64decode(c["data"])
                 path = self.probe.out / f"{name or 'shot%d' % int(time.time()*1000)}.png"
                 path.write_bytes(png)
+                self.hazards[path.stem] = hazard_pixels(path)
                 return path, hashlib.sha1(png).hexdigest()
         raise Failure("no image in screenshot")
 
@@ -350,6 +352,23 @@ def start(p, **kw):
     a = App(p, **kw)
     p.apps.append(a)
     return a
+
+
+_HAZARD = {(164, 133, 20), (131, 106, 14), (153, 124, 18), (145, 117, 16)}
+
+
+def hazard_pixels(path) -> int:
+    """Pixels of the debug inspector's overflow overlay (yellow hazard stripes painted where a container's
+    children spill past its bounds; on by default in debug builds, docs/inspector.md of teksilo)."""
+    from PIL import Image
+    return sum(1 for px in Image.open(path).convert("RGB").getdata() if px in _HAZARD)
+
+
+def no_hazards(probe, app, ignore=(), known_failure=None):
+    """Check that no screenshot of `app` shows the overflow overlay (except those named in `ignore`)."""
+    bad = {k: v for k, v in app.hazards.items() if v > 50 and k not in ignore}
+    probe.check(not bad, "no screenshot shows the debug overflow overlay (hazard stripes)" + (f": {bad}" if bad else ""),
+                known_failure=known_failure)
 
 
 def dialogs(app):
