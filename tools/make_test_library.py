@@ -4,7 +4,10 @@
 The samples are only read: every file is a new encoding (or a stream copy) written under the
 output directory, with its own tags and, for most albums, its own embedded cover.
 
-    tools/make_test_library.py --source ~/Musique --out ~/Devel/audoxidy-test-music
+    tools/make_test_library.py --out ~/Devel/audoxidy-test-music
+
+The samples default to the three clips in ``tools/test-samples/`` (3, 6 and 20 s MP3s, 44.1 kHz
+stereo), so the same libraries can be built on any machine; ``--source`` takes another directory.
 
 Two libraries are written:
 
@@ -261,7 +264,8 @@ def large_jobs(out: Path, samples: list[Path], count: int) -> list[tuple]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--source", type=Path, required=True, help="directory of audio samples (read only)")
+    parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parent / "test-samples",
+                        help="directory of audio samples, read only (default: tools/test-samples)")
     parser.add_argument("--out", type=Path, required=True, help="where diverse/ and large/ are written")
     parser.add_argument("--large", type=int, default=2280, help="albums in large/ (0 to skip)")
     parser.add_argument("--only", choices=["diverse", "large"], help="build one library only")
