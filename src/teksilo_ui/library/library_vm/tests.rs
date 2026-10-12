@@ -2005,3 +2005,51 @@ fn a_press_on_the_grids_background_empties_the_selection() {
     assert!(vm.selected_items().is_empty());
     assert!(services.ctx.shutdown());
 }
+
+#[test]
+fn a_sort_reorders_the_albums_a_filter_shows() {
+    // A silent Iced fix kept as a quirk fix: Iced sorts only `cached_albums`,
+    // the unfiltered list (`src/gui/app.rs:2819-2876`), so its filtered grid
+    // keeps its order; here the albums shown follow the sort.
+    let (services, vm) = loaded();
+    let snapshot = services.library_songs.snapshot().get();
+    // The genre with the most albums.
+    let genre = {
+        let mut albums: HashMap<String, HashSet<String>> = HashMap::new();
+        for s in snapshot.songs.iter() {
+            if let (Some(genre), Some(album)) = (&s.genre, &s.album) {
+                albums
+                    .entry(genre.to_string())
+                    .or_default()
+                    .insert(album.to_string());
+            }
+        }
+        albums
+            .into_iter()
+            .max_by_key(|(_, albums)| albums.len())
+            .map(|(genre, _)| genre)
+            .unwrap()
+    };
+    services
+        .library_songs
+        .update_params(|p| p.genre = Some(genre.clone()));
+    settle(&services);
+    let list = services.albums.list();
+    let titles = || -> Vec<String> {
+        (0..list.len())
+            .filter_map(|i| list.with_item(i, |c| c.title.to_lowercase()))
+            .collect()
+    };
+    let shown = titles();
+    assert!(shown.len() >= 3, "{genre}: {shown:?}");
+    let mut ascending = shown.clone();
+    ascending.sort();
+    let mut descending = ascending.clone();
+    descending.reverse();
+    assert_ne!(shown, ascending, "the canonical order is not the title's");
+    vm.set_sort(SortState::default().after_header_click(SortColumn::Album));
+    assert_eq!(titles(), ascending);
+    vm.set_sort(vm.sort().get().after_header_click(SortColumn::Album));
+    assert_eq!(titles(), descending);
+    assert!(services.ctx.shutdown());
+}
