@@ -218,14 +218,182 @@ fn the_view_model_shows_the_engines_equalizer_once_loaded() {
 
 #[test]
 fn a_late_reload_does_not_overwrite_a_change_made_meanwhile() {
-    let (ctx, _fakes) = AppContext::in_memory_with_fakes().unwrap();
+    let f = Fixture::new();
+    f.vm.reload();
+    // The reload is in flight; the user acts before it answers.
+    f.vm.set_preamp(4.0);
+    let _ = run_until(&f.services.runtime, Duration::from_millis(300), || false);
+    assert_eq!(f.vm.preamp().get(), 4.0, "the older answer was dropped");
+    f.finish();
+}
+
+/// The equalizer a previous run saved: on, 20 bands, +3 dB of preamp, every
+/// band at +4 dB, "Rock" selected.
+fn seed_saved_equalizer(ctx: &AppContext) {
+    ctx.db
+        .write(|db| {
+            let twenty = crate::logic::eq::encode_band_gains(&[4.0; 20]);
+            let thirty_one = crate::logic::eq::encode_band_gains(&[4.0; 31]);
+            db.set_setting(keys::EQ_ENABLED, "1")?;
+            db.set_setting(keys::EQ_BANDS_31, "0")?;
+            db.set_setting(keys::PREAMP_GAIN, "3.0")?;
+            db.set_setting(keys::EQ_BAND_GAINS_20, &twenty)?;
+            db.set_setting(keys::EQ_BAND_GAINS_31, &thirty_one)?;
+            db.set_setting(keys::EQ_SELECTED_PRESET, "Rock")?;
+            Ok(())
+        })
+        .recv_blocking()
+        .unwrap();
+}
+
+/// A view-model built as the App builds it: after the startup restore has
+/// started and while it is still queued (the engine worker is held busy
+/// until the returned sender is used). The saved equalizer is
+/// [`seed_saved_equalizer`]'s.
+fn built_during_the_restore() -> (
+    AppServices,
+    InMemoryFakes,
+    EqualizerViewModel,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (ctx, fakes) = AppContext::in_memory_with_fakes().unwrap();
+    screenshot_library()
+        .seed_on(&ctx.db)
+        .recv_blocking()
+        .unwrap();
+    seed_saved_equalizer(&ctx);
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let _busy = ctx.engine.run(move |_| {
+        let _ = held.recv_timeout(TIMEOUT);
+        Ok(())
+    });
     let runtime = AsyncRuntimeHandle::new();
-    let services = AppServices::new(&AppHandles::new(ctx), runtime.clone());
+    let services = AppServices::new(&AppHandles::new(ctx), runtime);
+    services
+        .session
+        .start_restore(&services.ctx, &services.runtime);
     let vm = EqualizerViewModel::new(&services);
-    // The constructor's reload is in flight; the user acts before it answers.
-    vm.set_preamp(4.0);
-    let _ = run_until(&runtime, Duration::from_millis(300), || false);
-    assert_eq!(vm.preamp().get(), 4.0, "the older answer was dropped");
+    (services, fakes, vm, release)
+}
+
+fn wait_on(services: &AppServices, done: impl Fn() -> bool) {
+    assert!(run_until(&services.runtime, TIMEOUT, done), "timed out");
+}
+
+fn raw_setting(services: &AppServices, key: &'static str) -> Option<String> {
+    services
+        .ctx
+        .db
+        .read(move |db| Ok(db.get_setting(key)))
+        .recv_blocking()
+        .unwrap()
+}
+
+#[test]
+fn the_equalizer_built_during_the_restore_shows_and_keeps_the_restored_settings() {
+    let (services, fakes, vm, release) = built_during_the_restore();
+    // Before the restore applies anything, the engine has its defaults.
+    let _ = run_until(&services.runtime, Duration::from_millis(200), || false);
+    release.send(()).unwrap();
+    let status = services.session.status();
+    wait_on(&services, || status.get().is_settled() && vm.is_loaded());
+
+    assert!(vm.enabled().get());
+    assert!(!vm.bands_31().get());
+    assert_eq!(vm.mode().get(), MODE_20);
+    assert_eq!(vm.preamp().get(), 3.0);
+    assert!((0..20).all(|i| vm.band_gain(i).get() == 4.0));
+    assert_eq!(vm.preset_name().get().as_deref(), Some("Rock"));
+
+    // The first change keeps everything else that was saved.
+    vm.set_band_gain(5, 1.0);
+    let mut expected = [4.0; 20];
+    expected[5] = 1.0;
+    let gains = crate::logic::eq::encode_band_gains(&expected);
+    wait_on(&services, || {
+        raw_setting(&services, keys::EQ_BAND_GAINS_20).as_deref() == Some(gains.as_str())
+    });
+    assert_eq!(
+        raw_setting(&services, keys::EQ_ENABLED).as_deref(),
+        Some("1")
+    );
+    assert_eq!(
+        raw_setting(&services, keys::EQ_BANDS_31).as_deref(),
+        Some("0")
+    );
+    assert_eq!(
+        raw_setting(&services, keys::PREAMP_GAIN).as_deref(),
+        Some("3.0")
+    );
+    assert_eq!(
+        raw_setting(&services, keys::EQ_SELECTED_PRESET).as_deref(),
+        Some("Rock")
+    );
+    assert!(fakes.player.eq_enabled());
+    assert_eq!(fakes.player.eq_band_count(), 20);
+    assert_eq!(fakes.player.preamp_gain(), 3.0);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn the_controls_do_nothing_before_the_restored_equalizer_is_read() {
+    let (services, fakes, vm, release) = built_during_the_restore();
+    let _ = run_until(&services.runtime, Duration::from_millis(200), || false);
+    assert!(!vm.is_loaded());
+    fakes.player.take_calls();
+    vm.set_band_gain(5, 1.0);
+    vm.set_preamp(-2.0);
+    vm.set_enabled(false);
+    assert!(
+        fakes.player.calls().is_empty(),
+        "the engine was not touched"
+    );
+    assert_eq!(vm.band_gain(5).get(), 0.0);
+    assert!(!vm.enabled().get());
+
+    release.send(()).unwrap();
+    wait_on(&services, || vm.is_loaded());
+    assert!(vm.enabled().get(), "the saved equalizer is on");
+    assert_eq!(vm.band_gain(5).get(), 4.0);
+    assert_eq!(vm.preamp().get(), 3.0);
+    assert_eq!(
+        raw_setting(&services, keys::PREAMP_GAIN).as_deref(),
+        Some("3.0")
+    );
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn the_load_dialogs_backup_is_the_restored_equalizer() {
+    let (services, _fakes, vm, release) = built_during_the_restore();
+    let _ = run_until(&services.runtime, Duration::from_millis(200), || false);
+    release.send(()).unwrap();
+    wait_on(&services, || vm.is_loaded());
+    let presets = services.eq_presets.version();
+    wait_on(&services, || presets.get() >= 1);
+
+    let load = vm.begin_load();
+    let list = services.eq_presets.list();
+    let default = (0..list.len())
+        .find(|&i| {
+            list.with_item(i, |e| e.preset.name == DEFAULT_PRESET_NAME)
+                .unwrap_or(false)
+        })
+        .unwrap();
+    load.select(default);
+    assert_eq!(vm.preamp().get(), 0.0);
+    load.cancel();
+    assert_eq!(vm.preamp().get(), 3.0);
+    assert!((0..20).all(|i| vm.band_gain(i).get() == 4.0));
+    assert_eq!(vm.preset_name().get().as_deref(), Some("Rock"));
+    // Quirk fix 60 saves what Cancel put back: the saved equalizer.
+    wait_on(&services, || {
+        raw_setting(&services, keys::EQ_SELECTED_PRESET).as_deref() == Some("Rock")
+    });
+    assert_eq!(
+        raw_setting(&services, keys::PREAMP_GAIN).as_deref(),
+        Some("3.0")
+    );
     assert!(services.ctx.shutdown());
 }
 
@@ -578,7 +746,14 @@ fn importing_applies_the_file_at_once_and_adds_it_to_the_list() {
 #[test]
 fn quirk_60_cancelling_after_an_import_saves_the_restored_state() {
     let mut f = Fixture::new();
-    let before = f.raw(keys::EQ_SELECTED_PRESET);
+    // A saved preset to come back to (not the empty value of no preset, which
+    // nothing would tell apart from a missing save).
+    let first = f.vm.begin_load();
+    first.select(f.row("Rock"));
+    first.accept();
+    f.setting_when(keys::EQ_SELECTED_PRESET, |v| v == Some("Rock"));
+    let before_preamp = f.raw(keys::PREAMP_GAIN);
+
     let preset = crate::audio::preset::EqPreset::new(
         "imported then cancelled",
         1.5,
@@ -596,12 +771,16 @@ fn quirk_60_cancelling_after_an_import_saves_the_restored_state() {
     f.press(move |ctx| session.import(source.clone(), ctx));
     let shown = f.vm.preset_name();
     f.wait(|| shown.get().as_deref() == Some("imported then cancelled"));
+    f.setting_when(keys::EQ_SELECTED_PRESET, |v| {
+        v == Some("imported then cancelled")
+    });
     load.cancel();
     let after = f.setting_when(keys::EQ_SELECTED_PRESET, |v| {
         v != Some("imported then cancelled")
     });
-    assert_eq!(after, before.filter(|v| !v.is_empty()).or(after.clone()));
-    assert_eq!(f.vm.preset_name().get(), None);
+    assert_eq!(after.as_deref(), Some("Rock"));
+    assert_eq!(f.raw(keys::PREAMP_GAIN), before_preamp);
+    assert_eq!(f.vm.preset_name().get().as_deref(), Some("Rock"));
     f.finish();
 }
 
@@ -651,6 +830,87 @@ fn importing_a_file_that_is_not_a_preset_changes_nothing() {
     std::thread::sleep(Duration::from_millis(100));
     f.wait(|| true);
     assert_eq!((f.vm.state(), f.names()), before);
+    f.finish();
+}
+
+#[test]
+fn an_imported_preset_with_fewer_bands_shows_zero_on_the_bands_it_lacks() {
+    let mut f = Fixture::new();
+    f.vm.set_band_gain(10, 5.0);
+    let path = temp_path("short.json");
+    let json = serde_json::json!({
+        "version": 1,
+        "name": "short",
+        "preamp_gain": 0.0,
+        "bands_20": [1.0, 2.0, 3.0],
+        "bands_31": null,
+    });
+    std::fs::write(&path, json.to_string()).unwrap();
+    let load = f.vm.begin_load();
+    let (session, source) = (load.clone(), path.clone());
+    f.press(move |ctx| session.import(source.clone(), ctx));
+    let shown = f.vm.preset_name();
+    f.wait(|| shown.get().as_deref() == Some("short"));
+    assert_eq!(f.vm.state().gains, vec![1.0, 2.0, 3.0]);
+    assert_eq!(f.vm.band_gain(2).get(), 3.0);
+    assert_eq!(
+        f.vm.band_gain(10).get(),
+        0.0,
+        "Iced shows 0 for a band the preset lacks"
+    );
+    f.finish();
+}
+
+/// The name of the last preset the engine was given.
+fn engine_preset(fakes: &InMemoryFakes) -> Option<String> {
+    fakes
+        .player
+        .calls()
+        .into_iter()
+        .rev()
+        .find_map(|call| match call {
+            PlayerCall::ApplyEqPreset(name) => Some(name),
+            _ => None,
+        })
+}
+
+#[test]
+fn a_preview_made_while_an_import_reply_is_on_its_way_never_splits_the_engine_and_the_tab() {
+    let mut f = Fixture::new();
+    let preset = crate::audio::preset::EqPreset::new(
+        "late import",
+        1.5,
+        Some(vec![2.0; 20]),
+        Some(vec![2.0; 31]),
+    );
+    let path = temp_path("late-import.aeqp");
+    std::fs::write(
+        &path,
+        crate::audio::preset::preset_to_json(&preset).unwrap(),
+    )
+    .unwrap();
+    let load = f.vm.begin_load();
+    let (session, source) = (load.clone(), path.clone());
+    f.press(move |ctx| session.import(source.clone(), ctx));
+    // The import's job has run on the database worker (a read queued behind
+    // it has answered), but its reply has not reached the view-model: the
+    // executor has not run. The user previews another row meanwhile.
+    f.services.ctx.db.read(|_| Ok(())).recv_blocking().unwrap();
+    load.select(f.row("Rock"));
+    let model = f.services.eq_presets.clone();
+    f.wait(|| model.entry("late import").is_some());
+    f.wait(|| true);
+
+    let shown = f.vm.preset_name().get();
+    assert_eq!(
+        engine_preset(&f.fakes),
+        shown,
+        "the engine plays what the tab shows"
+    );
+    assert_eq!(
+        f.fakes.player.eq_band(0).map(|band| band.1),
+        Some(f.vm.band_gain(0).get())
+    );
     f.finish();
 }
 
