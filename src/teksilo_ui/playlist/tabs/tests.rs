@@ -120,6 +120,19 @@ fn a_new_playlist_rebuilds_the_strip() {
 }
 
 #[test]
+fn a_pointer_click_on_the_chevron_opens_the_list() {
+    let env = restored();
+    overflowing(&env);
+    let (mut tree, _) = mounted(&env);
+    let b = tree.bounds(tree.find_by_label("All playlists").unwrap());
+    crate::teksilo_ui::test_support::tap_at(
+        &mut tree,
+        Point::new(b.x + b.width / 2.0, b.y + b.height / 2.0),
+    );
+    assert_eq!(tree.active_overlays().len(), 1, "the list opened");
+}
+
+#[test]
 fn the_chevron_opens_every_playlist_under_itself() {
     // Quirk fix 7: under the chevron, not at a fixed window position.
     let env = restored();

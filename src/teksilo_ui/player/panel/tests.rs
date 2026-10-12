@@ -619,6 +619,16 @@ fn the_menu_button_opens_the_menu_below_it() {
 }
 
 #[test]
+fn a_pointer_click_on_the_menu_button_opens_the_menu() {
+    let mut f = Fixture::new(0.0, 0.0, true);
+    let (x, y, w, h) = f.rect(f.named("Menú"));
+    crate::teksilo_ui::test_support::tap_at(&mut f.tree, Point::new(x + w / 2.0, y + h / 2.0));
+    let _ = f.tree.render();
+    assert_eq!(f.tree.active_overlays().len(), 1, "the menu opened");
+    f.finish();
+}
+
+#[test]
 fn the_menu_follows_the_button_when_the_panel_moves_or_has_an_inset() {
     let mut f = Fixture::new(120.0, 0.0, true);
     open_menu(&mut f);

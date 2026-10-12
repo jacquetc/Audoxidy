@@ -28,13 +28,13 @@ use std::path::Path;
 
 use teksilo::core::overlay::OverlayPlacement;
 use teksilo::prelude::*;
-use teksilo::widgets::{OverlayTrigger, PopoverCustom};
+use teksilo::widgets::{FixedSize, OverlayTrigger, PopoverCustom};
 
 use super::geometry::MENU_ICON_SIZE;
 use super::player_vm::PlayerViewModel;
 use crate::teksilo_ui::icons;
+use crate::teksilo_ui::widgets::PlayerMenu;
 use crate::teksilo_ui::widgets::menu::MenuEntry;
-use crate::teksilo_ui::widgets::{IconAction, PlayerMenu};
 
 /// Starts scanning the folder the user picked. A scan that cannot start is
 /// logged and shown as an error toast (quirk fix 8).
@@ -125,17 +125,27 @@ pub fn entries(vm: &PlayerViewModel) -> Vec<MenuEntry> {
 
 /// The 31 px `menu.svg` button (`player.rs:125`) with the popover it opens
 /// below it. Where the button sits in the row is the caller's concern.
+///
+/// The trigger wraps the bare icon, not an [`IconAction`]: a pressable inside
+/// the trigger would take the pointer's tap for itself, and only the keyboard
+/// and the assistive-technology click would reach the trigger.
+///
+/// [`IconAction`]: crate::teksilo_ui::widgets::IconAction
 pub fn button(vm: &PlayerViewModel) -> PopoverCustom {
-    let icon = IconAction::new(
-        icons::player::menu(),
-        MENU_ICON_SIZE,
-        tr!(player_menu_button()),
-    )
-    // An icon over the cover: Iced draws the SVG's own white.
-    .color(Color::WHITE);
+    // An Iced `action_icon_button` over the cover: the SVG's own white, a
+    // pointer cursor, nothing on hover.
+    let icon = FixedSize::new()
+        .width(MENU_ICON_SIZE)
+        .height(MENU_ICON_SIZE)
+        .child(
+            icons::player::menu()
+                .icon_size(MENU_ICON_SIZE)
+                .color(Color::WHITE),
+        )
+        .cursor(CursorIcon::Pointer);
     let open = vm.clone();
     let close = vm.clone();
-    PopoverCustom::new(OverlayTrigger::around(icon))
+    PopoverCustom::new(OverlayTrigger::around(icon).named(tr!(player_menu_button()).resolve_now()))
         .content(PlayerMenu::new(entries(vm), tr!(player_menu_label())))
         .bare()
         .placement(OverlayPlacement::Below)

@@ -453,6 +453,20 @@ fn typing_in_the_search_field_prunes_the_tree_and_escape_clears_it() {
 // ---- the menu ----
 
 #[test]
+fn a_pointer_click_on_the_selector_opens_the_menu() {
+    with_shipped_messages("en-US", || {
+        let (services, _vm, mut tree, panel) = mounted(true);
+        let b = tree.bounds(trigger(&tree, panel));
+        crate::teksilo_ui::test_support::tap_at(
+            &mut tree,
+            teksilo::canvas::Point::new(b.x + b.width / 2.0, b.y + b.height / 2.0),
+        );
+        assert_eq!(tree.active_overlays().len(), 1, "the menu opened");
+        assert!(services.ctx.shutdown());
+    });
+}
+
+#[test]
 fn the_selector_opens_a_172_pixel_menu_of_five_types_anchored_at_it() {
     with_shipped_messages("en-US", || {
         let (services, _vm, mut tree, panel) = mounted(true);
