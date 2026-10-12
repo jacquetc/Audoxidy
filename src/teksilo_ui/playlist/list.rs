@@ -502,7 +502,21 @@ impl Widget for PlaylistRow {
                 ctx.binding_registry(),
                 BindingLevel::RepaintOnly,
             );
+            // The row reports its selection to assistive technology: a change
+            // that no event marks (Ctrl+A, a search remapping the selection)
+            // must still reach the accessibility tree.
+            selected.bind_to(
+                ctx.self_id(),
+                ctx.binding_registry(),
+                BindingLevel::AccessibilityOnly,
+            );
         }
+        // Its description says whether it plays.
+        self.vm.playing_index().bind_to(
+            ctx.self_id(),
+            ctx.binding_registry(),
+            BindingLevel::AccessibilityOnly,
+        );
         let linear_idx = item.linear_idx();
         let click = self.vm.clone();
         // The assistive-technology click selects the row, as a click does.

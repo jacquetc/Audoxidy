@@ -53,6 +53,30 @@ fn right_click(tree: &mut WidgetTree, at: Point, ms: u64) {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn a_selection_made_without_an_event_reaches_the_accessibility_tree() {
+    // Ctrl+A selects through the view-model, with no event on a row: the
+    // rows must still tell assistive technology they are selected.
+    let env = restored();
+    let (mut tree, id, _) = mounted(&env);
+    let _ = tree.sync_accessibility();
+    let (row, _) = rows(&tree, id)[1];
+    env.vm.select_all();
+    layout(&mut tree);
+    let update = tree.sync_accessibility();
+    let node = teksilo::core::accessibility::widget_id_to_node_id(row);
+    let selected = update
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == node)
+        .map(|(_, node)| node.is_selected());
+    assert_eq!(
+        selected,
+        Some(Some(true)),
+        "the row's node is re-sent, selected"
+    );
+}
+
+#[test]
 fn a_press_lands_on_a_row_its_dot_or_the_background() {
     let env = restored();
     let rows = env.vm.rows().get();
