@@ -69,8 +69,7 @@ def body(p):
     close = a.find(role="Button", label="Cerrar")
     p.check(w == 1100.0, f"a 1100 px wide window is restored at that width ({w})")
     p.check(close["bounds"]["x"] + close["bounds"]["width"] <= w + 0.5,
-            f"its close button lies inside the window (right edge {close['bounds']['x'] + close['bounds']['width']:.0f} for a {w:.0f} px window)",
-            known_failure=MINWIDTH_FINDING)
+            f"its close button lies inside the window (right edge {close['bounds']['x'] + close['bounds']['width']:.0f} for a {w:.0f} px window)")
     # D. an oversized saved size
     BIG = SEED.replace("width = 1250", "width = 1500").replace("height = 790", "height = 900")
     a2 = start(p, window_state=BIG)
