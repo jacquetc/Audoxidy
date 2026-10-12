@@ -217,15 +217,20 @@ impl ListDataSource for AlbumSource {
     }
 }
 
-/// One line of a card's text.
+/// One line of a card's text, the text column's width: a line
+/// `smart_truncate`'s estimate lets run longer draws past it, unclipped, as
+/// Iced's text does past its 122 px column.
 fn card_line(text: String) -> FixedSize {
-    FixedSize::new().height(LINE_HEIGHT).child(
-        TextWidget::new(lit!(text))
-            .style(style::inter(TEXT_SIZE, FontWeight::MEDIUM))
-            .color(TextRole::Primary)
-            .single_line()
-            .a11y_hidden(),
-    )
+    FixedSize::new()
+        .width(INFO_WIDTH)
+        .height(LINE_HEIGHT)
+        .child(
+            TextWidget::new(lit!(text))
+                .style(style::inter(TEXT_SIZE, FontWeight::MEDIUM))
+                .color(TextRole::Primary)
+                .single_line()
+                .a11y_hidden(),
+        )
 }
 
 /// A grid card; see the module documentation.

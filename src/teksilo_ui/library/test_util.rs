@@ -123,3 +123,42 @@ pub fn resent_selected(tree: &mut WidgetTree, ids: &[WidgetId]) -> Vec<WidgetId>
         })
         .collect()
 }
+
+/// The stacks at or under `root` whose children spill past their bounds by
+/// more than half a pixel, as the inspector's overflow overlay finds them
+/// (`docs/inspector.md`, "Overflow overlay": `HStack` and `VStack` only):
+/// each with the overhanging child's type and bounds.
+pub fn overflowing_stacks(tree: &WidgetTree, root: WidgetId) -> Vec<String> {
+    let short = |id: WidgetId| {
+        let name = tree.widget_type_name(id).unwrap_or("?");
+        name.rsplit("::").next().unwrap_or(name).to_string()
+    };
+    let mut found = Vec::new();
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        let children = tree.children(id);
+        let kind = short(id);
+        if kind == "HStack" || kind == "VStack" {
+            let outer = tree.bounds(id);
+            for child in &children {
+                let inner = tree.bounds(*child);
+                // Nothing drawn (a hidden child is not laid out).
+                if inner.width <= 0.0 || inner.height <= 0.0 {
+                    continue;
+                }
+                let over = (outer.x - inner.x)
+                    .max(outer.y - inner.y)
+                    .max(inner.x + inner.width - (outer.x + outer.width))
+                    .max(inner.y + inner.height - (outer.y + outer.height));
+                if over > 0.5 {
+                    found.push(format!(
+                        "{kind} {outer:?} overflowed by {} {inner:?}",
+                        short(*child)
+                    ));
+                }
+            }
+        }
+        stack.extend(children);
+    }
+    found
+}

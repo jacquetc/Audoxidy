@@ -895,3 +895,75 @@ fn a_reveal_in_a_list_mode_gives_the_list_the_keyboard() {
     assert_eq!(m.tree.focused(), Some(list));
     assert!(m.services.ctx.shutdown());
 }
+
+// ---- F3: no stack overflows (the inspector's hazard stripes) ---------------
+
+/// The overflowing stacks of the panel, as the inspector's overlay finds them.
+fn overflows(m: &Mounted) -> Vec<String> {
+    crate::teksilo_ui::library::test_util::overflowing_stacks(&m.tree, m.id)
+}
+
+#[test]
+fn no_stack_overflows_in_any_mode() {
+    // The probes' p05: stripes over the Detailed song rows (their column
+    // beside the card was 0 px wide), over the "#" cells of every list and
+    // of the open album's songs, and over the sticky header.
+    for mode in [
+        LibraryViewMode::DetailedList,
+        LibraryViewMode::ThumbnailList,
+        LibraryViewMode::SimpleList,
+        LibraryViewMode::Grid,
+    ] {
+        let mut m = mounted();
+        m.vm.set_view_mode(mode);
+        m.relayout();
+        if mode == LibraryViewMode::Grid {
+            let card = longest_album(&m);
+            m.vm.toggle_album(&card);
+            m.relayout();
+        } else {
+            // Scrolled: the sticky artist header shows.
+            m.vm.navigate(
+                crate::logic::library_selection::LibraryNavDir::Down,
+                Modifiers::NONE,
+            );
+            for _ in 0..12 {
+                m.vm.navigate(
+                    crate::logic::library_selection::LibraryNavDir::Down,
+                    Modifiers::NONE,
+                );
+            }
+            m.relayout();
+        }
+        // A sorted column shows its arrow in the header.
+        m.vm.set_sort(
+            crate::logic::library_sort::SortState::default()
+                .after_header_click(crate::utils::SortColumn::Channels),
+        );
+        m.relayout();
+        let found = overflows(&m);
+        assert!(found.is_empty(), "{mode:?}: {found:#?}");
+        assert!(m.services.ctx.shutdown());
+    }
+}
+
+#[test]
+fn the_detailed_song_rows_get_their_width_beside_the_card() {
+    let mut m = mounted();
+    m.vm.set_view_mode(LibraryViewMode::DetailedList);
+    m.relayout();
+    let row = m.tree.bounds(all_of_type(&m.tree, m.id, "SongRow")[0]);
+    let block = m.tree.bounds(m.node("AlbumBlock"));
+    assert_eq!(
+        row.x,
+        block.x + crate::teksilo_ui::library::detailed_list::CARD_WIDTH
+    );
+    let header = m
+        .tree
+        .bounds(all_of_type(&m.tree, m.node("AlbumBlock"), "HeaderRow")[0]);
+    assert!(
+        (header.x + header.width - (block.x + block.width)).abs() < 0.5,
+        "the album header reaches the trailing edge: {header:?} in {block:?}"
+    );
+    assert!(m.services.ctx.shutdown());
+}

@@ -21,8 +21,9 @@
 //! The block follows the column header's horizontal offset as one piece
 //! ([`HShift`], quirk fix 36): the card stays under the "Album Card" column
 //! and the song cells under theirs, and since the shifted content is as wide
-//! as the visible width plus the offset, the album header's trailing end
-//! (its figures and chevron) stays at the list's trailing edge.
+//! as the visible width plus the offset, the album header, which fills the
+//! column beside the card, ends (its figures and chevron) at the list's
+//! trailing edge; the song rows keep their columns' width, cut at that edge.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -310,9 +311,16 @@ impl Widget for AlbumBlock {
         let mut right = VStack::new()
             .spacing(0.0)
             .alignment(HAlignment::Leading)
-            .child(self.header());
+            .child(Expand::horizontal().child(self.header()));
         if self.data.expanded {
-            right = right.child(self.songs());
+            // The rows are as wide as their columns, wider than the column
+            // beside the card when the window is narrow: they are laid out
+            // at their width and cut at the column's edge, which is the
+            // list's edge plus the shared offset (the block's `HShift`), as
+            // Iced's rows are cut at the list's. An unshifted `HShift` does
+            // that; a stack would have to hold more than its width.
+            right = right
+                .child(Expand::horizontal().child(HShift::new(Signal::new(0.0), self.songs())));
         }
         let leading: Box<dyn Widget> = if self.data.expanded {
             Box::new(self.card())
@@ -334,9 +342,11 @@ impl Widget for AlbumBlock {
                 .spacing(0.0)
                 .alignment(HAlignment::Leading)
                 .child(
-                    FixedSize::new()
-                        .height(self.data.height() - DETAILED_BLOCK_GAP)
-                        .child(HShift::new(self.vm.h_offset(), row)),
+                    Expand::horizontal().child(
+                        FixedSize::new()
+                            .height(self.data.height() - DETAILED_BLOCK_GAP)
+                            .child(HShift::new(self.vm.h_offset(), row)),
+                    ),
                 )
                 .child(
                     FixedSize::new()

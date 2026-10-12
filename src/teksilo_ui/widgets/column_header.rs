@@ -58,8 +58,8 @@ use teksilo::core::{Key, WidgetEvent};
 use teksilo::prelude::*;
 use teksilo::tokens::{FontWeight, HAlignment, VAlignment};
 use teksilo::widgets::{
-    FixedSize, HStack, IconWidget, Padding, RectWidget, ScrollArea, ScrollBarPolicy, Spacer,
-    TextWidget, VStack,
+    FixedSize, HStack, IconWidget, MaxSize, Padding, RectWidget, ScrollArea, ScrollBarPolicy,
+    Spacer, TextWidget, VStack,
 };
 
 use crate::logic::library_geometry::LibraryViewMode;
@@ -389,7 +389,22 @@ impl ColumnHeader {
                 .color(TextRole::Secondary)
                 .visible_when(shown)
         };
+        let sorted = up.or(&down);
         let (up, down) = (arrow(self.arrows.up, up), arrow(self.arrows.down, down));
+        // The label never takes more than its cell leaves it (after the
+        // shown arrow, and "#"'s trailing gap): a longer one is cut at that
+        // edge, as the Iced cell clips it, and the row of the cell never
+        // holds more than its width.
+        let trailing = if column == SortColumn::TrackNumber {
+            TRACK_TRAILING
+        } else {
+            0.0
+        };
+        let room = width.zip(&sorted).map(move |(width, sorted)| {
+            let arrow = if *sorted { ARROW_SIZE } else { 0.0 };
+            (width - LABEL_LEADING - trailing - arrow).max(0.0)
+        });
+        let label = MaxSize::width(f32::MAX).max_width(room).child(label);
         let content = if column == SortColumn::TrackNumber {
             HStack::new()
                 .spacing(0.0)
