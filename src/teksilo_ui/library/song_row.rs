@@ -452,6 +452,27 @@ mod tests {
     }
 
     #[test]
+    fn g7_a_selection_made_without_an_event_reaches_the_accessibility_tree() {
+        // Ctrl+A, a reveal or a search change the selection with no event on
+        // the row: the row's node must still be sent again, selected.
+        let selected = Signal::new(false);
+        let row = SongRow::new(
+            song(),
+            vec![SortColumn::Title],
+            Signal::new(default_widths()),
+        )
+        .selected(selected.clone());
+        let (mut tree, id) = mounted(row);
+        let _ = tree.sync_accessibility();
+        selected.set(true);
+        crate::teksilo_ui::test_support::layout(&mut tree);
+        assert_eq!(
+            crate::teksilo_ui::library::test_util::resent_selected(&mut tree, &[id]),
+            vec![id]
+        );
+    }
+
+    #[test]
     fn a_click_reports_its_modifiers_and_the_row_names_its_song() {
         let pressed = std::rc::Rc::new(std::cell::Cell::new(None));
         let sink = pressed.clone();
