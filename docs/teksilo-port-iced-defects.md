@@ -220,3 +220,4 @@ M3U and M3U8 differ only by extension. Durations are truncated with `as i32`.
 | --- | --- | --- |
 | D20 | In the Iced grid only, navigation y-positions use the unfiltered song count while rendering uses the filtered one | The Teksilo grid uses `GridView`'s own navigation |
 | D21 | `widgets::apply_marquee` is never called by the Iced UI | Kept in `logic::marquee` for completeness |
+| D30 | Keys reach the app while a dialog is open: the keyboard subscription (`src/gui/app.rs:5986-5998`) does not check `active_dialog`, so Enter in the playlist's delete dialog plays the focused playlist row and Delete deletes the library selection | The Teksilo dialogs are modal: the panels behind them get no key |

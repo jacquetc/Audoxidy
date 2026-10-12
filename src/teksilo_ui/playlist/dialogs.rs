@@ -15,9 +15,10 @@
 //!   dialog (list only) or the folder picker (portable), and the export runs
 //!   as a long operation that ends in a toast.
 //!
-//! The create and rename dialogs are the stock `InputDialog` and the delete
-//! confirmation a `MessageBox`, in the Audoxidy look
-//! (`widgets::dialog_frame`); the export dialog is the Iced column itself
+//! The create and rename dialogs are the stock `InputDialog` in the Audoxidy
+//! look, and the delete confirmation Iced's `standard_modal`
+//! (`widgets::dialog_frame::confirm_box`, a `DialogFrame` in which Enter does
+//! nothing, as Iced's dialog takes no key); the export dialog is the Iced column itself
 //! ([`DialogFrame`]). Escape cancels each of them (quirk fix 4).
 //!
 //! The file pickers (`PlaylistAddFiles`, `PlaylistAddFolder`,
