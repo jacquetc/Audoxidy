@@ -333,6 +333,48 @@ fn the_main_layout_stays_usable_beside_the_panel() {
 }
 
 #[test]
+fn a_drag_in_small_steps_follows_the_pointer_exactly() {
+    // The panel moves under the pointer as it is dragged: each move must be
+    // measured in the window, not in the header's own coordinates, which move
+    // with it (a live probe saw the panel travel half the pointer's way).
+    let mut f = fixture();
+    f.open(0);
+    let frame = f.bounds(f.frame());
+    let grab = Point::new(frame.x + 300.0, frame.y + 20.0);
+    pointer_event(
+        &mut f.tree,
+        PointerPhase::Down,
+        grab,
+        PointerButton::Primary,
+        0,
+    );
+    for step in 1..=10u64 {
+        let at = Point::new(grab.x + 10.0 * step as f32, grab.y + 6.0 * step as f32);
+        pointer_event(
+            &mut f.tree,
+            PointerPhase::Move,
+            at,
+            PointerButton::Primary,
+            20 * step,
+        );
+    }
+    pointer_event(
+        &mut f.tree,
+        PointerPhase::Up,
+        Point::new(grab.x + 100.0, grab.y + 60.0),
+        PointerButton::Primary,
+        240,
+    );
+    let moved = f.bounds(f.frame());
+    // Iced centres the first drag on a height of 474 (see the view-model).
+    assert_eq!(
+        (moved.x, moved.y),
+        (frame.x + 100.0, (VIEWPORT.1 - 474.0) / 2.0 + 60.0)
+    );
+    assert!(f.services.ctx.shutdown());
+}
+
+#[test]
 fn dragging_the_header_moves_the_panel_and_a_release_ends_it() {
     let mut f = fixture();
     f.open(0);

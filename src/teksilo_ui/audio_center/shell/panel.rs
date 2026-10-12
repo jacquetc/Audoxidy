@@ -228,8 +228,10 @@ fn close_button(vm: &AudioCenterViewModel) -> Pressable {
 /// The drag handle: the header's pointer contract. A primary press captures
 /// the pointer and starts the drag, moves while it is captured move the panel,
 /// the release or a cancel ends it (`DragStart`, `app.rs:4482`). The pointer
-/// is in window coordinates; in a right-to-left layout `x` is mirrored, since
-/// positions count from the leading edge.
+/// is read in window coordinates (`EventContext::pointer_position`): an event's
+/// own position is local to the header, which moves with the drag, so it would
+/// lose the panel's own movement on every step. In a right-to-left layout `x`
+/// is mirrored, since positions count from the leading edge.
 fn header(vm: &AudioCenterViewModel) -> impl Widget + use<> {
     let logo = Padding::new(LOGO_TOP, 0.0, 0.0, 0.0)
         .child(BrandLogo::new(LOGO_SIZE).two_tone(TextRole::Accent));
@@ -273,18 +275,20 @@ fn header(vm: &AudioCenterViewModel) -> impl Widget + use<> {
     let handle = RectWidget::new()
         .on_pointer_event(move |event, ctx| match event {
             WidgetEvent::PointerDown {
-                position,
                 button: PointerButton::Primary,
                 ..
             } => {
+                let Some(at) = ctx.pointer_position() else {
+                    return EventResponse::Ignored;
+                };
                 ctx.capture_pointer();
-                down.begin_drag((mirrored(position.x, ctx), position.y));
+                down.begin_drag((mirrored(at.x, ctx), at.y));
                 EventResponse::Handled
             }
-            WidgetEvent::PointerMove { position, .. }
-                if moved.is_dragging() && ctx.owns_pointer() =>
-            {
-                moved.drag_to((mirrored(position.x, ctx), position.y));
+            WidgetEvent::PointerMove { .. } if moved.is_dragging() && ctx.owns_pointer() => {
+                if let Some(at) = ctx.pointer_position() {
+                    moved.drag_to((mirrored(at.x, ctx), at.y));
+                }
                 EventResponse::Handled
             }
             WidgetEvent::PointerUp {
