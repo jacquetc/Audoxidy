@@ -318,3 +318,113 @@ fn a_memory_purge_drops_iceds_16_oldest_covers() {
     assert_eq!(live.library_songs(), songs);
     live.finish();
 }
+
+// ---- G1, G6: a filter change resets the library ------------------------------
+
+impl Live {
+    /// The first row of the library grid and the grid's top.
+    fn grid_first_row_and_top(&self) -> (f32, f32) {
+        let grid = self.find_type(self.regions.library, "LibraryGrid");
+        let tile = self.find_type(grid, "AlbumTile");
+        (self.tree.bounds(tile).y, self.tree.bounds(grid).y)
+    }
+
+    /// The filter tree's row of the node labelled `label` (the genre tree
+    /// fits the column, so every row is realized, in order).
+    fn tree_row(&self, label: &str) -> WidgetId {
+        let at = self
+            .views
+            .filters
+            .visible_items()
+            .iter()
+            .position(|row| row.label == label)
+            .unwrap();
+        let mut rows = Vec::new();
+        let mut stack = vec![self.regions.filters];
+        while let Some(id) = stack.pop() {
+            stack.extend(self.tree.children(id));
+            if self
+                .tree
+                .widget_type_name(id)
+                .is_some_and(|name| name.ends_with("TreeItemWrapper"))
+            {
+                rows.push(id);
+            }
+        }
+        rows.sort_by(|a, b| self.tree.bounds(*a).y.total_cmp(&self.tree.bounds(*b).y));
+        rows[at]
+    }
+}
+
+#[test]
+fn g1_g6_a_click_on_a_filter_node_brings_the_library_to_its_top_with_the_filters_figures() {
+    use crate::logic::library_groups::{compute_stats, selection_stats};
+    use crate::teksilo_ui::test_support::tap_at;
+    let mut live = Live::new();
+    // The library scrolled down, an album selected.
+    let (first, top) = live.grid_first_row_and_top();
+    assert_eq!(first, top);
+    let grid = live.find_type(live.regions.library, "LibraryGrid");
+    let at = live.tree.bounds(grid);
+    live.tree.dispatch_event(WidgetEvent::scroll_at(
+        teksilo::core::event::ScrollDelta::Pixels { x: 0.0, y: 300.0 },
+        Modifiers::NONE,
+        teksilo::canvas::Point::new(at.x + at.width / 2.0, at.y + at.height / 2.0),
+    ));
+    layout(&mut live.tree);
+    let (first, top) = live.grid_first_row_and_top();
+    assert!(first < top, "scrolled: {first} < {top}");
+    let library = live.views.library.clone();
+    let card = live
+        .views
+        .services
+        .albums
+        .list()
+        .with_item(0, |card| card.id.clone())
+        .unwrap();
+    library.grid_selection().select(card);
+    let selected = selection_stats(&library.selected_songs()).unwrap();
+    assert_eq!(library.stats().get(), selected);
+    let all = live
+        .views
+        .services
+        .library_songs
+        .snapshot()
+        .get()
+        .songs
+        .clone();
+    // A click on a genre, with the pointer.
+    let genre = live.views.filters.visible_items()[0].label.clone();
+    let row = live.tree_row(&genre);
+    let centre = live.tree.bounds(row);
+    tap_at(
+        &mut live.tree,
+        teksilo::canvas::Point::new(
+            centre.x + centre.width / 2.0,
+            centre.y + centre.height / 2.0,
+        ),
+    );
+    assert!(live.views.filters.selected_node().get().is_some());
+    layout(&mut live.tree);
+    let (first, top) = live.grid_first_row_and_top();
+    assert_eq!(first, top, "the library is back at its top");
+    assert_eq!(
+        library.stats().get(),
+        compute_stats(&all),
+        "the filter's figures while its songs are on their way"
+    );
+    let loading = live.views.services.library_songs.loading();
+    live.wait(|| !loading.get());
+    let songs = live
+        .views
+        .services
+        .library_songs
+        .snapshot()
+        .get()
+        .songs
+        .clone();
+    let expected =
+        selection_stats(&library.selected_songs()).unwrap_or_else(|| compute_stats(&songs));
+    assert_eq!(library.stats().get(), expected, "then the selection's");
+    live.finish();
+}

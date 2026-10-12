@@ -613,3 +613,122 @@ fn open_menu_es(tree: &mut WidgetTree, panel: WidgetId) {
     access_click(tree, selector);
     assert_eq!(tree.active_overlays().len(), 1);
 }
+
+/// [`mounted`] in a column `height` px tall, the genre tree loaded and every
+/// node expanded, so that the tree scrolls.
+fn short_and_expanded(height: f32) -> (AppServices, FiltersViewModel, WidgetTree, WidgetId) {
+    let services = in_memory_services();
+    let vm = FiltersViewModel::new(&services);
+    let mut tree = tree_with_events(&services.ctx);
+    let panel = tree.add(FiltersPanel::new(vm.clone()));
+    tree.add(
+        teksilo::widgets::VStack::new()
+            .spacing(0.0)
+            .alignment(HAlignment::Leading)
+            .child(FixedSize::new().height(height).child(panel))
+            .child(Spacer::new()),
+    );
+    layout(&mut tree);
+    load(&services, &mut tree, FilterType::Genre);
+    loop {
+        let closed: Vec<_> = vm
+            .visible_items()
+            .into_iter()
+            .filter(|row| row.has_children && !row.is_expanded)
+            .collect();
+        if closed.is_empty() {
+            break;
+        }
+        for row in closed {
+            vm.toggle_node(&row.id);
+        }
+    }
+    layout(&mut tree);
+    (services, vm, tree, panel)
+}
+
+/// The tree view.
+fn tree_view(tree: &WidgetTree, panel: WidgetId) -> WidgetId {
+    let mut stack = vec![panel];
+    while let Some(id) = stack.pop() {
+        if tree
+            .widget_type_name(id)
+            .is_some_and(|name| name.contains("TreeView<"))
+        {
+            return id;
+        }
+        stack.extend(tree.children(id));
+    }
+    panic!("no tree view")
+}
+
+/// Scrolls the tree down by `dy` with the wheel, over its middle.
+fn wheel_down(tree: &mut WidgetTree, panel: WidgetId, dy: f32) {
+    let view = tree_view(tree, panel);
+    let at = centre(tree.bounds(view));
+    tree.dispatch_event(WidgetEvent::scroll_at(
+        teksilo::core::event::ScrollDelta::Pixels { x: 0.0, y: dy },
+        teksilo::core::Modifiers::NONE,
+        at,
+    ));
+    layout(tree);
+}
+
+/// The top of the tree view and of its first realized row.
+fn tree_and_first_row_tops(tree: &WidgetTree, panel: WidgetId) -> (f32, f32) {
+    let view = tree_view(tree, panel);
+    (tree.bounds(view).y, tree.bounds(rows(tree, panel)[0]).y)
+}
+
+#[test]
+fn g1_a_letter_and_the_search_bring_the_scrolled_tree_back_to_its_top() {
+    // `SelectSubfilter` resets the tree's offset (`app.rs:4293`) and
+    // `FilterSearchChanged` scrolls it to the top (`:4379-4386`).
+    with_shipped_messages("en-US", || {
+        let (services, vm, mut tree, panel) = short_and_expanded(400.0);
+        assert!(vm.visible_items().len() as f32 * ROW_HEIGHT > 400.0);
+        wheel_down(&mut tree, panel, 100.0);
+        assert!(vm.tree_scroll().get() > 0.0, "the wheel moves the offset");
+        let (top, first) = tree_and_first_row_tops(&tree, panel);
+        assert!(first < top, "scrolled");
+        // A letter, with the pointer.
+        let letter = vm.subfilters().get()[0].clone();
+        let cell = named(&tree, panel, &letter);
+        let target = centre(tree.bounds(cell));
+        crate::teksilo_ui::test_support::tap_at(&mut tree, target);
+        assert_eq!(vm.subfilter().get(), Some(letter));
+        assert_eq!(vm.tree_scroll().get(), 0.0);
+        let (top, first) = tree_and_first_row_tops(&tree, panel);
+        assert_eq!(first, top, "back at the top");
+        // The search, typed.
+        crate::teksilo_ui::test_support::tap_at(&mut tree, target);
+        layout(&mut tree);
+        wheel_down(&mut tree, panel, 100.0);
+        assert!(vm.tree_scroll().get() > 0.0);
+        let field = first_of_type(&tree, panel, "TextInputField").unwrap();
+        tree.focus(field);
+        type_text(&mut tree, "o");
+        assert_eq!(vm.search().get(), "o");
+        assert_eq!(vm.tree_scroll().get(), 0.0);
+        let (top, first) = tree_and_first_row_tops(&tree, panel);
+        assert_eq!(first, top, "back at the top");
+        assert!(services.ctx.shutdown());
+    });
+}
+
+#[test]
+fn g1_choosing_a_type_brings_the_scrolled_tree_back_to_its_top() {
+    // `ChangeGeneralFilter` (`app.rs:4274-4282`), from the menu.
+    with_shipped_messages("en-US", || {
+        let (services, vm, mut tree, panel) = short_and_expanded(400.0);
+        wheel_down(&mut tree, panel, 100.0);
+        assert!(vm.tree_scroll().get() > 0.0);
+        open_menu(&mut tree, panel);
+        let year = tree.find_by_label("Year").unwrap();
+        let target = centre(tree.bounds(year));
+        crate::teksilo_ui::test_support::tap_at(&mut tree, target);
+        assert_eq!(vm.filter_type().get(), FilterType::Year);
+        assert_eq!(vm.tree_scroll().get(), 0.0);
+        assert!(services.ctx.shutdown());
+    });
+}

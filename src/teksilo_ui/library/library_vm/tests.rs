@@ -1310,3 +1310,123 @@ fn g4_a_search_or_a_filter_answer_keeps_the_selection() {
     );
     assert!(services.ctx.shutdown());
 }
+
+// ---- G1 and G6: a filter change -------------------------------------------
+
+#[test]
+fn g1_a_filter_change_brings_the_library_back_to_its_top() {
+    // `ChangeGeneralFilter`, `SelectSubfilter`, `SelectTreeNode` scroll the
+    // library to the top (`app.rs:4276-4282`, `:4313-4316`, `:4349-4354`).
+    let (services, vm) = loaded();
+    list_mode(&vm);
+    vm.click(song(bowie(&vm).songs[3].id), Modifiers::NONE, at(0));
+    assert!(vm.navigate(LibraryNavDir::Down, Modifiers::NONE));
+    assert!(matches!(
+        vm.scroll_request().get().map(|r| r.1),
+        Some(ScrollRequest::Reveal { .. })
+    ));
+    vm.on_filter_changed();
+    assert_eq!(
+        vm.scroll_request().get().map(|r| r.1),
+        Some(ScrollRequest::Top)
+    );
+    assert!(services.ctx.shutdown());
+}
+
+/// The column sets the library's filter to `artist`, then tells the library,
+/// as `FiltersViewModel::select_node` and the App do.
+fn filter_by_artist(services: &AppServices, vm: &LibraryViewModel, artist: &str) {
+    services
+        .library_songs
+        .update_params(|params| params.artist = Some(artist.to_string()));
+    vm.on_filter_changed();
+}
+
+#[test]
+fn g6_a_filter_change_shows_the_filters_figures_until_its_songs_arrive() {
+    // `selection_stats = None` "so that filter_stats has priority"
+    // (`app.rs:4265-4269`), until `LibraryFilteredLoaded` recomputes it over
+    // the new songs (`:3909-3912`); `selected_items` stays.
+    let (services, vm) = loaded();
+    list_mode(&vm);
+    let picked = bowie(&vm).songs[0].clone();
+    vm.click(song(picked.id), Modifiers::NONE, at(0));
+    assert_eq!(
+        vm.stats().get(),
+        compute_stats(std::slice::from_ref(&picked))
+    );
+    let shown = services.library_songs.snapshot().get().songs.clone();
+    filter_by_artist(&services, &vm, BOWIE);
+    assert_eq!(
+        vm.stats().get(),
+        compute_stats(&shown),
+        "the filter's figures"
+    );
+    assert_eq!(
+        vm.selection().get().selected,
+        [song(picked.id)].into_iter().collect(),
+        "the selection stays"
+    );
+    settle(&services);
+    assert_eq!(
+        vm.stats().get(),
+        compute_stats(std::slice::from_ref(&picked)),
+        "the selection's figures again, over the filter's songs"
+    );
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g6_a_filter_that_hides_the_selection_leaves_the_figures_to_its_songs() {
+    let (services, vm) = loaded();
+    list_mode(&vm);
+    let other = vm
+        .structure()
+        .get()
+        .songs
+        .iter()
+        .find(|s| crate::utils::get_effective_artist(s) != BOWIE)
+        .cloned()
+        .unwrap();
+    vm.click(song(other.id), Modifiers::NONE, at(0));
+    filter_by_artist(&services, &vm, BOWIE);
+    settle(&services);
+    let bowie_songs = services.library_songs.snapshot().get().songs.clone();
+    assert!(bowie_songs.iter().all(|s| s.id != other.id));
+    assert_eq!(vm.stats().get(), compute_stats(&bowie_songs));
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g6_a_selection_change_takes_the_figures_back_at_once() {
+    let (services, vm) = loaded();
+    list_mode(&vm);
+    let songs = bowie(&vm).songs.clone();
+    vm.click(song(songs[0].id), Modifiers::NONE, at(0));
+    filter_by_artist(&services, &vm, BOWIE);
+    vm.click(song(songs[1].id), Modifiers::NONE, at(1_000));
+    assert_eq!(
+        vm.stats().get(),
+        compute_stats(std::slice::from_ref(&songs[1]))
+    );
+    settle(&services);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g6_a_letter_that_queries_nothing_keeps_the_selections_figures() {
+    // A letter leaves the library's filters as they were: nothing is
+    // queried here (Iced queries the same songs again and recomputes the
+    // same figures).
+    let (services, vm) = loaded();
+    list_mode(&vm);
+    let picked = bowie(&vm).songs[0].clone();
+    vm.click(song(picked.id), Modifiers::NONE, at(0));
+    assert!(!services.library_songs.loading().get());
+    vm.on_filter_changed();
+    assert_eq!(
+        vm.stats().get(),
+        compute_stats(std::slice::from_ref(&picked))
+    );
+    assert!(services.ctx.shutdown());
+}

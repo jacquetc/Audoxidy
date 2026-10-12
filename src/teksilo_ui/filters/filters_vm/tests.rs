@@ -474,3 +474,66 @@ fn the_letters_follow_the_shown_type() {
     assert_eq!(years, services.filter_hierarchy.subfilters());
     assert!(services.ctx.shutdown());
 }
+
+// ---- G1: what scrolls back to the top ---------------------------------------
+
+/// The sequence number of the latest `library_reset`, 0 before any.
+fn resets(vm: &FiltersViewModel) -> u64 {
+    vm.library_reset().get().map_or(0, |(sequence, _)| sequence)
+}
+
+#[test]
+fn g1_a_type_a_letter_and_the_restore_icon_bring_the_tree_and_the_library_to_the_top() {
+    // `ChangeGeneralFilter` (`app.rs:4274-4282`) and `SelectSubfilter`
+    // (`:4293`, `:4313-4316`).
+    let (services, vm) = loaded(FilterType::Genre);
+    let letter = vm.subfilters().get()[0].clone();
+    let mut sent = resets(&vm);
+    for action in [
+        Box::new(|vm: &FiltersViewModel| vm.set_filter_type(FilterType::Artist))
+            as Box<dyn Fn(&FiltersViewModel)>,
+        Box::new(move |vm: &FiltersViewModel| vm.select_subfilter(Some(&letter))),
+        Box::new(|vm: &FiltersViewModel| vm.select_subfilter(None)),
+    ] {
+        vm.tree_scroll().set(96.0);
+        action(&vm);
+        assert_eq!(vm.tree_scroll().get(), 0.0, "the tree at its top");
+        assert_eq!(resets(&vm), sent + 1, "the library told once");
+        sent += 1;
+    }
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g1_a_node_brings_the_library_to_the_top_and_leaves_the_tree() {
+    // `SelectTreeNode` (`app.rs:4349-4354`) scrolls the library only.
+    let (services, vm) = loaded(FilterType::Genre);
+    let rock = id_of(&vm, "Rock");
+    vm.tree_scroll().set(96.0);
+    let before = resets(&vm);
+    vm.select_node(&rock);
+    assert_eq!(vm.tree_scroll().get(), 96.0);
+    assert_eq!(resets(&vm), before + 1);
+    assert!(
+        services.library_songs.loading().get(),
+        "the library's filters are set before the library is told"
+    );
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g1_the_search_brings_the_tree_to_the_top_and_leaves_the_library() {
+    // `FilterSearchChanged` (`app.rs:4379-4386`).
+    let (services, vm) = loaded(FilterType::Genre);
+    vm.tree_scroll().set(96.0);
+    let before = resets(&vm);
+    vm.set_search("ro");
+    assert_eq!(vm.tree_scroll().get(), 0.0);
+    assert_eq!(resets(&vm), before);
+    // Neither does the reveal's reset of the highlight move anything.
+    vm.tree_scroll().set(96.0);
+    vm.clear_highlight();
+    assert_eq!(vm.tree_scroll().get(), 96.0);
+    assert_eq!(resets(&vm), before);
+    assert!(services.ctx.shutdown());
+}

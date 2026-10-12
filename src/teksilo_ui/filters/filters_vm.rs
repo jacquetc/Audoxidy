@@ -23,6 +23,17 @@
 //!   the library's search text is left as it is;
 //! - the **expansion** is the tree source's (`ToggleTreeNode`).
 //!
+//! **Scrolling (G1).** Choosing a type, a letter or the restore icon, and
+//! typing in the search, bring the tree back to its top
+//! ([`tree_scroll`](FiltersViewModel::tree_scroll); `src/gui/app.rs:4274-4282`,
+//! `:4293`, `:4379-4386`). Choosing a type, a letter, the restore icon or a
+//! node also brings the library back to its top and hands its figures to the
+//! filter until the filter's songs arrive (`:4265-4282`, `:4296-4316`,
+//! `:4330-4354`): the column says so on
+//! [`library_reset`](FiltersViewModel::library_reset), which the App passes to
+//! the library (`LibraryViewModel::on_filter_changed`), since the two
+//! view-models do not know each other.
+//!
 //! The view is the pruned tree (`apply_view`, `:104`): the letter and the
 //! search applied to the full tree of the shown type, recomputed whenever one
 //! of them, the type or the index changes. The Iced panel draws nothing under
@@ -38,7 +49,7 @@ use teksilo::prelude::{BuildContext, Signal};
 
 use super::tree_source::FilterTreeSource;
 use crate::logic::filter_index::{self, FilterType, VisibleTreeItem};
-use crate::teksilo_ui::app::services::AppServices;
+use crate::teksilo_ui::app::services::{AppServices, Request};
 use crate::teksilo_ui::models::{FilterHierarchyModel, LibrarySongsModel};
 
 /// What the pruned view was last computed from, so an unchanged request is
@@ -61,6 +72,8 @@ struct Inner {
     selection: KeyedSelectionModel<String>,
     source: FilterTreeSource,
     applied: RefCell<Option<Applied>>,
+    tree_scroll: Signal<f32>,
+    library_reset: Request<()>,
 }
 
 /// The filter column's view-model. UI thread only; clones share one state.
@@ -95,6 +108,8 @@ impl FiltersViewModel {
                 selection: KeyedSelectionModel::new(SelectionMode::Single),
                 source: FilterTreeSource::new(),
                 applied: RefCell::new(None),
+                tree_scroll: Signal::new(0.0),
+                library_reset: Request::default(),
             }),
         };
         vm.refresh();
@@ -107,7 +122,7 @@ impl FiltersViewModel {
         let vm = self.clone();
         ctx.effect(&self.inner.hierarchy.version(), move |_| vm.refresh());
         let vm = self.clone();
-        ctx.effect(&self.inner.search, move |_| vm.refresh());
+        ctx.effect(&self.inner.search, move |_| vm.on_search_changed());
         self.refresh();
     }
 
@@ -156,6 +171,20 @@ impl FiltersViewModel {
         self.inner.source.rows()
     }
 
+    /// The tree's vertical scroll offset; the tree view scrolls by it, and the
+    /// column's actions write 0 to it (G1).
+    pub fn tree_scroll(&self) -> Signal<f32> {
+        self.inner.tree_scroll.clone()
+    }
+
+    /// Sent each time a type, a letter, the restore icon or a node is
+    /// chosen, after the library's filters are set: the library goes back to
+    /// its top and gives its figures to the filter (G1, G6). The App passes
+    /// it to `LibraryViewModel::on_filter_changed`.
+    pub fn library_reset(&self) -> Signal<Option<(u64, ())>> {
+        self.inner.library_reset.latest()
+    }
+
     /// Whether an index build is running (the index is empty until the first
     /// one completes).
     pub fn is_building(&self) -> bool {
@@ -165,7 +194,9 @@ impl FiltersViewModel {
     // ---- actions ----
 
     /// `ChangeGeneralFilter`: shows `filter_type` with no letter, no selected
-    /// node and everything collapsed, and clears the library's filters.
+    /// node and everything collapsed at the tree's top, and clears the
+    /// library's filters; the library goes back to its top
+    /// (`src/gui/app.rs:4276-4282`).
     pub fn set_filter_type(&self, filter_type: FilterType) {
         let inner = &self.inner;
         inner.subfilter.set(None);
@@ -175,12 +206,15 @@ impl FiltersViewModel {
         inner.hierarchy.set_filter_type(filter_type);
         self.clear_library_filters();
         self.refresh();
+        inner.tree_scroll.set(0.0);
+        inner.library_reset.send(());
     }
 
     /// `SelectSubfilter`: `letter` becomes the letter, or clears it when it
     /// already is (`None`, the restore icon, clears it too). The selected node
     /// is dropped; when no letter remains the library's filters are cleared,
-    /// otherwise they stay as they were.
+    /// otherwise they stay as they were. The tree and the library go back to
+    /// their top (`src/gui/app.rs:4293`, `:4313-4316`).
     pub fn select_subfilter(&self, letter: Option<&str>) {
         let inner = &self.inner;
         let next = filter_index::next_subfilter(inner.subfilter.get().as_deref(), letter);
@@ -191,6 +225,8 @@ impl FiltersViewModel {
             self.clear_library_filters();
         }
         self.refresh();
+        inner.tree_scroll.set(0.0);
+        inner.library_reset.send(());
     }
 
     /// Clears the letter and the selected node and leaves the library's
@@ -207,8 +243,9 @@ impl FiltersViewModel {
     }
 
     /// `SelectTreeNode`: `id` becomes the selected node and the library is
-    /// filtered by it (`filters_for_node`). A folder node filters nothing, as
-    /// in Iced.
+    /// filtered by it (`filters_for_node`), back at its top
+    /// (`src/gui/app.rs:4349-4354`); the tree stays where it is. A folder
+    /// node filters nothing, as in Iced.
     pub fn select_node(&self, id: &str) {
         let inner = &self.inner;
         inner.selected_node.set(Some(id.to_string()));
@@ -226,6 +263,7 @@ impl FiltersViewModel {
             params.year = filters.year;
             params.folder_id = None;
         });
+        inner.library_reset.send(());
     }
 
     /// `ToggleTreeNode`: expands or collapses `id`.
@@ -233,11 +271,18 @@ impl FiltersViewModel {
         self.inner.source.toggle(id);
     }
 
-    /// `FilterSearchChanged`: prunes the tree by `text`; the library is left
-    /// alone.
+    /// `FilterSearchChanged`: prunes the tree by `text` and brings it back to
+    /// its top (`src/gui/app.rs:4379-4386`); the library is left alone.
     pub fn set_search(&self, text: &str) {
         self.inner.search.set(text.to_string());
+        self.on_search_changed();
+    }
+
+    /// The search text changed (the field edits the signal; the panel's
+    /// effect calls this): the pruned tree, at its top.
+    fn on_search_changed(&self) {
         self.refresh();
+        self.inner.tree_scroll.set(0.0);
     }
 
     /// Recomputes the pruned tree and the letters from the index, the shown

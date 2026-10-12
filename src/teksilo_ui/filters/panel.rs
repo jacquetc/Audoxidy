@@ -32,6 +32,9 @@
 //! - the **search field** (`:556-570`): 180 px in a 40 px `COLOR_CONTRAST`
 //!   bar, "Buscar...". The search prunes the tree; Escape clears it.
 //!
+//! A new type, letter or search brings the tree back to its top (G1): it
+//! scrolls by the view-model's [`tree_scroll`](FiltersViewModel::tree_scroll).
+//!
 //! While the index builds (and the type's tree is empty) the Iced column
 //! shows the selector and the search field and nothing between them; so does
 //! this one.
@@ -538,9 +541,12 @@ fn tree(vm: &FiltersViewModel) -> impl Widget + use<> {
     )
     .item_height(ROW_HEIGHT)
     // Iced's bars are 8 px overlays that take no width from the rows, and the
-    // wheel does not glide (`standard_scrollable`, `widgets.rs:1648`).
+    // wheel does not glide (`standard_scrollable`, `widgets.rs:1648`); with no
+    // glide a plain signal carries the offset, which the column's actions
+    // reset (G1).
     .scroll_bar_style(ScrollBarMode::Overlay)
     .smooth_scrolling(false)
+    .scroll_signal(vm.tree_scroll())
     .row_click_expands(false)
     .activate_on(ActivateOn::SingleClick)
     .on_activate(move |index, _| {

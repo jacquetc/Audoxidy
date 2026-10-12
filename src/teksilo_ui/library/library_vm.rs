@@ -299,6 +299,9 @@ struct Inner {
     /// Set by a library change (a scan, a delete): the next snapshot is a
     /// refresh, which clears the selection (G4).
     refresh_pending: Cell<bool>,
+    /// Set by a filter change while its songs are on their way: the status
+    /// bar shows the filter's figures, not the selection's (G6).
+    filter_figures: Cell<bool>,
     deletes: RefCell<HashSet<OpId>>,
     observers: RefCell<Vec<ObserverHandle>>,
 }
@@ -364,6 +367,7 @@ impl LibraryViewModel {
             pending_reveal: RefCell::new(None),
             reveal_cleared: Request::default(),
             refresh_pending: Cell::new(false),
+            filter_figures: Cell::new(false),
             deletes: RefCell::new(HashSet::new()),
             observers: RefCell::new(Vec::new()),
         });
@@ -403,7 +407,15 @@ impl LibraryViewModel {
         }));
         handles.push(inner.selection.observe({
             let weak = weak.clone();
-            move |_| with_vm(&weak, LibraryViewModel::refresh_stats)
+            move |_| with_vm(&weak, LibraryViewModel::on_selection_changed)
+        }));
+        handles.push(inner.services.library_songs.loading().observe({
+            let weak = weak.clone();
+            move |loading: &bool| {
+                if !*loading {
+                    with_vm(&weak, LibraryViewModel::on_answer);
+                }
+            }
         }));
         handles.push(inner.services.library_stats.stats().observe({
             let weak = weak.clone();
@@ -655,10 +667,17 @@ impl LibraryViewModel {
         selected_songs(&self.selected_items(), &structure.data(), &snapshot.songs)
     }
 
-    /// Recomputes the status bar's figures.
+    /// Recomputes the status bar's figures: the selection's, unless a filter
+    /// change gave them to the filter until its songs arrive (G6), then the
+    /// songs', then the totals.
     pub fn refresh_stats(&self) {
         let inner = &self.inner;
-        let stats = selection_stats(&self.selected_songs()).unwrap_or_else(|| {
+        let selection = if inner.filter_figures.get() {
+            None
+        } else {
+            selection_stats(&self.selected_songs())
+        };
+        let stats = selection.unwrap_or_else(|| {
             if inner.services.library_songs.version().get() > 0 {
                 compute_stats(&inner.services.library_songs.snapshot().get().songs)
             } else {
@@ -666,6 +685,48 @@ impl LibraryViewModel {
             }
         });
         inner.stats.set_if_changed(stats);
+    }
+
+    /// The selection changed: its figures show again (Iced's
+    /// `update_selection_stats`, which every selection gesture calls).
+    fn on_selection_changed(&self) {
+        self.inner.filter_figures.set(false);
+        self.refresh_stats();
+    }
+
+    /// The library model answered (or failed): the selection's figures,
+    /// over the new songs, show again, as Iced's `LibraryFilteredLoaded`
+    /// recomputes them (`src/gui/app.rs:3909-3912`).
+    fn on_answer(&self) {
+        if self.inner.filter_figures.replace(false) {
+            self.refresh_stats();
+        }
+    }
+
+    /// The filter column changed what the library shows: a type, a letter,
+    /// the restore icon or a node was chosen (`ChangeGeneralFilter`,
+    /// `SelectSubfilter`, `SelectTreeNode`, `src/gui/app.rs:4245-4354`). The
+    /// App calls it on `FiltersViewModel::library_reset`.
+    ///
+    /// - G1: the view goes back to its top (`:4276-4282`, `:4313-4316`,
+    ///   `:4349-4354`).
+    /// - G6: Iced sets `selection_stats` to `None` "so that `filter_stats`
+    ///   has priority" (`:4265-4269`, `:4296-4299`, `:4330-4334`) and keeps
+    ///   `selected_items`; the search it starts answers with
+    ///   `LibraryFilteredLoaded`, which recomputes the selection's figures
+    ///   over the new songs (`:3909-3912`). So while the filter's songs are on
+    ///   their way the bar shows the filter's figures (those of the songs
+    ///   shown), and once they arrive the selection's again, or the new
+    ///   songs' when none of the selection is left. A letter that leaves the
+    ///   library's filters as they were queries nothing here (Iced queries
+    ///   the same songs again), so the selection's figures stay.
+    pub fn on_filter_changed(&self) {
+        let inner = &self.inner;
+        inner.scroll.send(ScrollRequest::Top);
+        if inner.services.library_songs.loading().get() {
+            inner.filter_figures.set(true);
+            self.refresh_stats();
+        }
     }
 
     // -----------------------------------------------------------------
@@ -967,6 +1028,7 @@ impl LibraryViewModel {
 
     /// Writes the grid selection without treating it as a user gesture.
     fn write_grid_selection(&self, f: impl FnOnce(&KeyedSelectionModel<String>)) {
+        self.inner.filter_figures.set(false);
         self.inner.writing_grid.set(true);
         f(&self.inner.grid_selection);
         self.inner.writing_grid.set(false);
@@ -1011,6 +1073,7 @@ impl LibraryViewModel {
                 .selection
                 .set_if_changed(LibrarySelection::default());
         }
+        self.inner.filter_figures.set(false);
         self.refresh_stats();
     }
 
