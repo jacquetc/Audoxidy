@@ -1,9 +1,6 @@
 # Audoxidy (Teksilo UI): The application shell: window, title bar, source pills.
 # Source locale: `tr!` validates keys against these files.
 
-## Window
-app-window-title = Audoxidy
-
 ## Title bar
 titlebar-source-library = Library
 # The streaming pills are brand names, shown as is.
