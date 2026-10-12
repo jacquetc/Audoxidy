@@ -433,3 +433,45 @@ fn vm_first_song(vm: &LibraryViewModel, id: &str) -> std::sync::Arc<crate::db::d
     crate::logic::library_sort::sort_songs(&mut songs, sort.column, sort.ascending);
     songs.remove(0)
 }
+
+#[test]
+fn g3_the_rubber_bands_rectangles_are_where_the_grid_draws_its_cards_and_songs() {
+    use crate::logic::library_selection::{GridShape, GridSpot};
+    let (services, vm, mut tree, id, sizing) = mounted(REGION.0);
+    let columns = columns(&sizing);
+    let card = services
+        .albums
+        .list()
+        .with_item(1, |c| c.id.clone())
+        .unwrap();
+    vm.toggle_album(&card);
+    settle_layout(&mut tree);
+    let songs = vm.expanded_songs().get().len();
+    let shape = GridShape {
+        cards: services.albums.list().len(),
+        per_row: columns,
+        open: Some(1),
+        songs,
+    };
+    let grid = tree.bounds(id);
+    let tiles = all_of_type(&tree, id, "AlbumTile");
+    for index in [0, 1, columns - 1, columns, columns + 1] {
+        let tile = tree.bounds(tiles[index]);
+        let rect = spot_rect(GridSpot::Card(index), shape, grid.width);
+        assert_eq!(
+            (rect.x, rect.y, rect.width, rect.height),
+            (tile.x - grid.x, tile.y - grid.y, CARD_WIDTH, ROW_HEIGHT),
+            "card {index}"
+        );
+    }
+    let band = all_of_type(&tree, id, "GridDetail")[0];
+    let rows = all_of_type(&tree, band, "SongRow");
+    for (row, node) in rows.iter().enumerate().take(3) {
+        let bounds = tree.bounds(*node);
+        let rect = spot_rect(GridSpot::Song(row), shape, grid.width);
+        assert_eq!(rect.y, bounds.y - grid.y, "song {row}");
+        assert_eq!(rect.height, bounds.height);
+        assert_eq!((rect.x, rect.width), (0.0, grid.width), "the grid's width");
+    }
+    assert!(services.ctx.shutdown());
+}

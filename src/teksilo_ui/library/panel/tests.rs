@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use teksilo::core::WidgetTree;
+use teksilo::core::{PointerButton, PointerPhase, WidgetTree};
 use teksilo::widgets::Spacer;
 
 use super::*;
@@ -363,8 +363,7 @@ fn alt_down_in_the_grid_opens_the_selected_album_under_its_row_of_cards() {
         .with_item(0, |c| c.id.clone())
         .unwrap();
     m.vm.grid_selection().select(card.clone());
-    let grid = m.node("LibraryGrid");
-    let target = m.tree.children(grid)[0];
+    let target = m.find("GridView<");
     key_down_with(&mut m.tree, target, Key::ArrowDown, Modifiers::ALT);
     assert_eq!(m.vm.expanded_album().get(), Some(card));
     m.relayout();
@@ -449,4 +448,201 @@ fn big_counts_are_written_as_iced_writes_them() {
             "27797 Canciones | 2280 Álbumes | 1043 Artistas | 00:00 | 0.00 MB"
         );
     });
+}
+
+// ---- G2: the grid's keys walk the open album's songs, with the keyboard ----
+
+/// [`mounted`], the panel `height` px tall.
+fn mounted_tall(height: f32) -> Mounted {
+    let (services, vm) = loaded();
+    let mut tree = tree_for(&services);
+    let id = mount_at(&mut tree, LibraryPanel::new(vm.clone()), REGION.0, height);
+    settle_layout(&mut tree);
+    Mounted {
+        services,
+        vm,
+        tree,
+        id,
+    }
+}
+
+impl Mounted {
+    /// The first node whose type name holds `part`.
+    fn find(&self, part: &str) -> WidgetId {
+        let mut stack = vec![self.id];
+        while let Some(id) = stack.pop() {
+            if self
+                .tree
+                .widget_type_name(id)
+                .is_some_and(|name| name.contains(part))
+            {
+                return id;
+            }
+            let mut children = self.tree.children(id);
+            children.reverse();
+            stack.extend(children);
+        }
+        panic!("no {part}")
+    }
+
+    /// The band's song row reported selected, alone.
+    fn selected_band_row(&self) -> WidgetId {
+        let band = self.node("GridDetail");
+        let rows: Vec<WidgetId> = all_of_type(&self.tree, band, "SongRow")
+            .into_iter()
+            .filter(|row| self.tree.accessibility_node(*row).is_selected())
+            .collect();
+        assert_eq!(rows.len(), 1, "one selected row");
+        rows[0]
+    }
+
+    /// Whether `id` is `ancestor` or under it.
+    fn is_within(&self, id: WidgetId, ancestor: WidgetId) -> bool {
+        all_of_type(&self.tree, ancestor, "").contains(&id)
+    }
+}
+
+/// The id of the album with the most songs.
+fn longest_album(m: &Mounted) -> String {
+    let list = m.services.albums.list();
+    let snapshot = m.services.library_songs.snapshot().get();
+    (0..list.len())
+        .filter_map(|i| list.with_item(i, |c| c.id.clone()))
+        .max_by_key(|id| {
+            crate::teksilo_ui::library::library_vm::album_songs_in_memory(
+                id,
+                &snapshot.songs,
+                &snapshot.albums,
+            )
+            .map_or(0, |songs| songs.len())
+        })
+        .unwrap()
+}
+
+/// `key` to whatever has the keyboard.
+fn press_key(m: &mut Mounted, key: Key, modifiers: Modifiers) {
+    m.tree.dispatch_event(WidgetEvent::KeyDown {
+        key,
+        modifiers,
+        text: None,
+    });
+    m.relayout();
+}
+
+#[test]
+fn g2_down_takes_the_keyboard_into_the_open_albums_songs_and_up_brings_it_back() {
+    // Iced's walk (`library.rs:808-872`), with the grid's focus: the band
+    // takes the keyboard, the current song stays in view.
+    let mut m = mounted_tall(420.0);
+    let card = longest_album(&m);
+    m.vm.toggle_album(&card);
+    m.relayout();
+    let songs: Vec<i64> = m.vm.expanded_songs().get().iter().map(|s| s.id).collect();
+    assert!(songs.len() >= 8, "an album taller than the view");
+    let grid = m.find("GridView<");
+    key_down(&mut m.tree, grid, Key::ArrowDown);
+    m.relayout();
+    let band = m.node("GridDetail");
+    assert_eq!(m.tree.focused(), Some(band), "the band has the keyboard");
+    let song = |id: i64| crate::logic::library_selection::LibraryListItem::Song(id);
+    assert_eq!(m.vm.selection().get().focused, Some(song(songs[0])));
+    let view = m.tree.bounds(m.node("LibraryGrid"));
+    for (row, id) in songs.iter().enumerate().skip(1) {
+        press_key(&mut m, Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(m.vm.selection().get().focused, Some(song(*id)));
+        let current = m.tree.bounds(m.selected_band_row());
+        assert!(
+            current.y >= view.y - 0.5 && current.y + current.height <= view.y + view.height + 0.5,
+            "song {row} in view: {current:?} in {view:?}"
+        );
+    }
+    assert_eq!(m.tree.focused(), Some(band));
+    for _ in 1..songs.len() {
+        press_key(&mut m, Key::ArrowUp, Modifiers::NONE);
+    }
+    assert_eq!(m.vm.selection().get().focused, Some(song(songs[0])));
+    press_key(&mut m, Key::ArrowUp, Modifiers::NONE);
+    let focused = m.tree.focused().unwrap();
+    assert_ne!(focused, band);
+    assert!(
+        m.is_within(focused, grid),
+        "the grid has the keyboard again"
+    );
+    assert_eq!(m.vm.grid_selection().selected_keys(), vec![card.clone()]);
+    assert!(m.vm.selection().get().selected.is_empty());
+    assert_eq!(m.vm.expanded_album().get(), Some(card), "still open");
+    assert!(m.services.ctx.shutdown());
+}
+
+#[test]
+fn g2_a_click_on_a_band_song_gives_the_band_the_keyboard() {
+    let mut m = mounted();
+    let card = longest_album(&m);
+    m.vm.toggle_album(&card);
+    m.relayout();
+    let band = m.node("GridDetail");
+    let row = all_of_type(&m.tree, band, "SongRow")[1];
+    let at = m.tree.bounds(row);
+    crate::teksilo_ui::test_support::tap_at(
+        &mut m.tree,
+        teksilo::canvas::Point::new(at.x + 100.0, at.y + at.height / 2.0),
+    );
+    assert_eq!(m.tree.focused(), Some(band));
+    let songs: Vec<i64> = m.vm.expanded_songs().get().iter().map(|s| s.id).collect();
+    press_key(&mut m, Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(
+        m.vm.selection().get().focused,
+        Some(crate::logic::library_selection::LibraryListItem::Song(
+            songs[2]
+        ))
+    );
+    assert!(m.services.ctx.shutdown());
+}
+
+// ---- G3: the grid's rubber band sweeps the band's songs too ---------------
+
+#[test]
+fn g3_a_drag_from_a_card_down_over_the_band_selects_the_card_and_the_songs() {
+    let mut m = mounted();
+    let list = m.services.albums.list();
+    let card = list.with_item(0, |c| c.id.clone()).unwrap();
+    let second = list.with_item(1, |c| c.id.clone()).unwrap();
+    m.vm.toggle_album(&card);
+    m.relayout();
+    let tiles = all_of_type(&m.tree, m.id, "AlbumTile");
+    let tile = m.tree.bounds(tiles[1]);
+    let band = m.node("GridDetail");
+    let rows = all_of_type(&m.tree, band, "SongRow");
+    let second_row = m.tree.bounds(rows[1]);
+    let start = teksilo::canvas::Point::new(tile.x + 60.0, tile.y + 200.0);
+    let end = teksilo::canvas::Point::new(tile.x + 90.0, second_row.y + 10.0);
+    let phases = [
+        (PointerPhase::Down, start, 1_000),
+        (
+            PointerPhase::Move,
+            teksilo::canvas::Point::new(start.x + 10.0, start.y + 20.0),
+            1_020,
+        ),
+        (PointerPhase::Move, end, 1_040),
+        (PointerPhase::Up, end, 1_060),
+    ];
+    for (phase, at, ms) in phases {
+        crate::teksilo_ui::test_support::pointer_event(
+            &mut m.tree,
+            phase,
+            at,
+            PointerButton::Primary,
+            ms,
+        );
+    }
+    let songs: Vec<i64> = m.vm.expanded_songs().get().iter().map(|s| s.id).collect();
+    assert_eq!(m.vm.grid_selection().selected_keys(), vec![second]);
+    assert_eq!(
+        m.vm.selection().get().selected,
+        songs[..2]
+            .iter()
+            .map(|id| crate::logic::library_selection::LibraryListItem::Song(*id))
+            .collect()
+    );
+    assert!(m.services.ctx.shutdown());
 }

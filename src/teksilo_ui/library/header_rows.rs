@@ -362,17 +362,17 @@ mod tests {
         (tree, id, selects, toggles)
     }
 
-    fn mounted_with(
-        height: f32,
-        selected: Signal<bool>,
-        playing: bool,
-    ) -> (
+    /// A mounted header: the tree, the header, its select and toggle counts,
+    /// and its selection.
+    type MountedHeader = (
         WidgetTree,
         WidgetId,
         Rc<Cell<u32>>,
         Rc<Cell<u32>>,
         Signal<bool>,
-    ) {
+    );
+
+    fn mounted_with(height: f32, selected: Signal<bool>, playing: bool) -> MountedHeader {
         let (selects, toggles) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
         let (s, t) = (selects.clone(), toggles.clone());
         let header = HeaderRow::artist(

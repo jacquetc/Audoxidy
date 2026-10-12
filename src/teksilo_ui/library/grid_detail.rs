@@ -23,7 +23,12 @@
 //! - the rows scroll sideways with the column header, by the shared offset
 //!   (quirk fix 36), and a sideways wheel over them moves it;
 //! - a click selects a song (Ctrl toggles, Shift extends), as `SelectSong`
-//!   does in Grid mode.
+//!   does in Grid mode, and gives the keyboard to the band;
+//! - the band takes the keyboard (G2): it is a focus stop the grid's ↓ from
+//!   the open card enters, and where the library's keys walk the songs
+//!   (`LibraryViewModel::grid_key`). Its current song is the one the
+//!   selection focuses, and that row, not the whole band, is what a focus
+//!   change scrolls into view ([`Widget::focus_reveal_rect`]).
 //!
 //! The rows are the album's songs the search keeps, matched without regard
 //! to case like the rest of the search (quirk fix 53,
@@ -38,6 +43,7 @@ use teksilo::core::accesskit::Role;
 use teksilo::core::binding::BindingLevel;
 use teksilo::core::event::{ScrollDelta, WidgetEvent};
 use teksilo::core::widget::WidgetPlacement;
+use teksilo::core::widget_builder::HandlerSet;
 use teksilo::data::ListModel;
 use teksilo::prelude::*;
 use teksilo::tokens::HAlignment;
@@ -119,9 +125,9 @@ pub struct BandPlacement {
     pub low_resource: bool,
     /// The tile whose band has been laid out with its songs, if any.
     pub ready: Rc<Cell<Option<usize>>>,
-    /// A song row to put at the top once the band of its tile is laid out:
-    /// `(tile, row)`.
-    pub pending_reveal: Rc<Cell<Option<(usize, usize)>>>,
+    /// A song row to reveal once the band of its tile is laid out:
+    /// `(tile, row, force_top)`.
+    pub pending_reveal: Rc<Cell<Option<(usize, usize, bool)>>>,
 }
 
 impl std::fmt::Debug for BandPlacement {
@@ -146,34 +152,38 @@ impl BandPlacement {
         Some((tile / columns + 1) as f32 * grid::ROW_HEIGHT + PADDING_TOP)
     }
 
-    /// Puts the song row `row` of the open band at the top, as Iced's reveal
-    /// does (`get_scroll_task(true)`, `src/gui/app.rs:3319`; songs in Grid
-    /// mode take no sticky-header margin).
-    pub fn reveal_row(&self, row: usize) {
+    /// Reveals the song row `row` of the open band: at the top when
+    /// `force_top`, as Iced's reveal does (`get_scroll_task(true)`,
+    /// `src/gui/app.rs:3319`), else only as far as needed, as after a key
+    /// (`get_scroll_task(false)`, `:3213`). Songs in Grid mode take no
+    /// sticky-header margin.
+    pub fn reveal_row(&self, row: usize, force_top: bool) {
         let Some(first) = self.first_row_y() else {
             return;
         };
+        let viewport = self.viewport.get();
+        let known = (viewport > 0.0).then(|| (self.scroll_y.get(), viewport));
         if let Some(offset) = scroll_offset_to_reveal(
             first + row as f32 * ROW_HEIGHT,
             ROW_HEIGHT,
-            None,
+            Some(&LibraryListItem::Song(0)),
             LibraryViewMode::Grid,
-            true,
-            None,
+            force_top,
+            known,
         ) {
             self.scroll_y.set(offset);
         }
     }
 
-    /// Reveals the song row `row` of the band under `tile`: now when that
-    /// band is laid out, else once it is. Revealing it before would let the
-    /// grid's scroll anchoring move the view by the height of a band that
-    /// opens above it.
-    pub fn request_reveal(&self, tile: usize, row: usize) {
+    /// Reveals the song row `row` of the band under `tile` (see
+    /// [`reveal_row`](Self::reveal_row)): now when that band is laid out,
+    /// else once it is. Revealing it before would let the grid's scroll
+    /// anchoring move the view by the height of a band that opens above it.
+    pub fn request_reveal(&self, tile: usize, row: usize, force_top: bool) {
         if self.ready.get() == Some(tile) && self.expanded.get() == Some(tile) {
-            self.reveal_row(row);
+            self.reveal_row(row, force_top);
         } else {
-            self.pending_reveal.set(Some((tile, row)));
+            self.pending_reveal.set(Some((tile, row, force_top)));
         }
     }
 
@@ -184,11 +194,11 @@ impl BandPlacement {
         }
         let tile = self.expanded.get();
         self.ready.set(tile);
-        if let Some((wanted, row)) = self.pending_reveal.get()
+        if let Some((wanted, row, force_top)) = self.pending_reveal.get()
             && Some(wanted) == tile
         {
             self.pending_reveal.set(None);
-            self.reveal_row(row);
+            self.reveal_row(row, force_top);
         }
     }
 
@@ -321,11 +331,21 @@ impl GridDetail {
         Self { state, ..self }
     }
 
-    /// Gives the keyboard to the widget in `focus` when a row is pressed (the
-    /// grid, so the panel's keys keep working).
-    pub fn focus_on_press(mut self, focus: Rc<Cell<Option<WidgetId>>>) -> Self {
+    /// Writes the band's id to `focus` when it is built: the view moves the
+    /// keyboard into the band through it (G2). A press on a row gives the
+    /// keyboard to the band whether or not this is called.
+    pub fn focus_target(mut self, focus: Rc<Cell<Option<WidgetId>>>) -> Self {
         self.focus = focus;
         self
+    }
+
+    /// The row of the band's current song (the song the selection focuses),
+    /// if the band shows it.
+    fn current_row(&self) -> Option<usize> {
+        let LibraryListItem::Song(id) = self.state.vm.selection().get().focused? else {
+            return None;
+        };
+        self.state.songs.borrow().iter().position(|s| s.id == id)
     }
 
     /// The rows realized now.
@@ -376,6 +396,10 @@ impl Widget for GridDetail {
     fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
         let state = self.state.clone();
         let vm = state.vm.clone();
+        // The band is a focus stop (G2): the grid's ↓ from the open card
+        // enters it, and the library's keys walk its songs.
+        ctx.apply_self_handlers(HandlerSet::new().focusable(true));
+        self.focus.set(Some(ctx.self_id()));
         state.count.bind_to(
             ctx.self_id(),
             ctx.binding_registry(),
@@ -438,6 +462,18 @@ impl Widget for GridDetail {
         );
         self.root = Some(root);
         vec![root]
+    }
+
+    fn focus_reveal_rect(&self, bounds: Rect) -> Option<Rect> {
+        // The current song's row, not the whole band, which can be taller
+        // than the grid.
+        let row = self.current_row()?;
+        Some(Rect::new(
+            bounds.x,
+            bounds.y + PADDING_TOP + row as f32 * ROW_HEIGHT,
+            bounds.width,
+            ROW_HEIGHT,
+        ))
     }
 
     fn layout_response(&self, proposal: SizeProposal, ctx: &LayoutContext) -> LayoutResponse {

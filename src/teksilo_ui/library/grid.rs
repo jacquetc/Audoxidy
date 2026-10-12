@@ -19,9 +19,9 @@
 //!   apart; the first three cut to fit 122 px as Iced estimates it) beside
 //!   the 30 px chevron. The card is `COLOR_CONTRAST` with a 10 px radius while
 //!   its album is selected or open;
-//! - a click selects the card (Ctrl toggles, Shift extends, a drag on the
-//!   background sweeps a selection: `GridView`'s own), a double click or the
-//!   chevron opens or closes the album: its songs open inside the grid,
+//! - a click selects the card (Ctrl toggles, Shift extends: `GridView`'s
+//!   own), a double click or the chevron opens or closes the album: its songs
+//!   open inside the grid,
 //!   directly under the album's row of cards, and push the rows below down
 //!   (`GridView::detail_row`, the band of [`GridDetail`]), as Iced shows them
 //!   (`library.rs:1653-1719`). The open album is the view-model's
@@ -33,14 +33,25 @@
 //!   album open, as Iced keeps `expanded_album`; it shows again with the
 //!   card;
 //! - with no album, "La biblioteca está vacía." (or "No se encontraron
-//!   álbumes." while a search is typed), centred, Inter Medium, secondary.
+//!   álbumes." while a search is typed), centred, Inter Medium, secondary;
+//! - the keys (G2): the arrows between cards are the grid's own navigation;
+//!   ↓ from a card of the open album's row enters its songs, which ↑ and ↓
+//!   walk, and ↑ from the first song returns to the open card
+//!   (`LibraryViewModel::grid_key`, through the panel's keys). The band is a
+//!   focus stop ([`GridDetail`]), whose id [`LibraryGrid::band_focus`]
+//!   shares with the panel;
+//! - the rubber band (G3): a drag anywhere in the grid sweeps a band, drawn
+//!   as the list modes draw theirs ([`Marquee`]), that selects on release
+//!   the cards and the open album's songs it crosses
+//!   (`LibraryViewModel::select_grid_marquee`, over [`spot_rect`]), as
+//!   Iced's sweeps the grid's items; `GridView`'s own sweep, which selects
+//!   tiles only and never the band, is off.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
 use teksilo::canvas::EdgeInsets;
 use teksilo::core::signal::ObserverHandle;
-use teksilo::core::styles::{GridMarqueeRecipe, GridViewStyle};
 use teksilo::core::widget::WidgetPlacement;
 use teksilo::data::{DataChange, ListDataSource, ListModel};
 use teksilo::prelude::*;
@@ -50,8 +61,12 @@ use teksilo::widgets::{
     TextWidget, TileContext, VStack, ZStack,
 };
 
-use super::grid_detail::{BandPlacement, GridDetail};
+use super::grid_detail::{self, BandPlacement, GridDetail};
 use super::library_vm::{LibraryViewModel, ScrollRequest, grid_columns};
+use super::marquee::{Marquee, MarqueeController};
+use super::song_row;
+use crate::logic::library_geometry::ContentRect;
+use crate::logic::library_selection::{GridShape, GridSpot};
 use crate::teksilo_ui::icons;
 use crate::teksilo_ui::models::AlbumCard;
 use crate::teksilo_ui::style;
@@ -102,6 +117,48 @@ pub fn smart_truncate(text: &str, size: f32, available: f32) -> String {
     } else {
         let max_chars = (available.max(0.0) / char_width).floor() as usize;
         truncate_text(text, max_chars)
+    }
+}
+
+/// The content-space rectangle of `spot` in a grid `width` px wide shaped
+/// as `shape` (what the rubber band hits, G3): a card is 182 × 252 at the
+/// leading edge of its cell (the cells share the width after the 5 px leading
+/// inset, 5 px apart), in 252 px rows, the rows under the open album's row
+/// pushed down by its band; a song of the band spans the width, 32 px high,
+/// under the band's 32 px of padding. Iced places its cards at a fixed
+/// 187 px pitch (`src/gui/library.rs:686-706`); these are where the Teksilo
+/// grid draws them.
+pub fn spot_rect(spot: GridSpot, shape: GridShape, width: f32) -> ContentRect {
+    let columns = shape.per_row.max(1);
+    let open_row = shape
+        .open
+        .filter(|_| shape.songs > 0)
+        .map(|open| open / columns);
+    match spot {
+        GridSpot::Card(card) => {
+            let (row, column) = (card / columns, card % columns);
+            let gaps = (columns - 1) as f32 * COLUMN_SPACING;
+            let cell = ((width - LEADING_INSET - gaps) / columns as f32).max(0.0);
+            let band = match open_row {
+                Some(open) if row > open => grid_detail::band_height(shape.songs),
+                _ => 0.0,
+            };
+            ContentRect::new(
+                LEADING_INSET + column as f32 * (cell + COLUMN_SPACING),
+                row as f32 * ROW_HEIGHT + band,
+                CARD_WIDTH,
+                ROW_HEIGHT,
+            )
+        }
+        GridSpot::Song(song) => {
+            let top = open_row.map_or(0.0, |open| (open + 1) as f32 * ROW_HEIGHT);
+            ContentRect::new(
+                0.0,
+                top + grid_detail::PADDING_TOP + song as f32 * song_row::ROW_HEIGHT,
+                width,
+                song_row::ROW_HEIGHT,
+            )
+        }
     }
 }
 
@@ -157,21 +214,6 @@ impl ListDataSource for AlbumSource {
 
     fn observe_changes(&self, f: impl Fn(&DataChange) + 'static) -> ObserverHandle {
         self.list.observe_changes(f)
-    }
-}
-
-/// The grid's decoration: the Iced marquee (the accent at 30 % with a 1 px
-/// accent outline, `library.rs:1989-1994`).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LibraryGridStyle;
-
-impl GridViewStyle for LibraryGridStyle {
-    fn marquee(&self) -> GridMarqueeRecipe {
-        GridMarqueeRecipe {
-            role: BorderRole::Accent,
-            fill_alpha: 0.3,
-            stroke_width: 1.0,
-        }
     }
 }
 
@@ -382,7 +424,10 @@ pub struct LibraryGrid {
     syncing: Rc<Cell<bool>>,
     scroll_y: Option<Signal<f32>>,
     height: Signal<f32>,
-    grid: Rc<Cell<Option<WidgetId>>>,
+    /// The grid's (width, height), for the rubber band.
+    viewport: Rc<Cell<(f32, f32)>>,
+    /// The band's id once built: the panel moves the keyboard into it.
+    band: Rc<Cell<Option<WidgetId>>>,
     root: Option<WidgetId>,
 }
 
@@ -405,9 +450,18 @@ impl LibraryGrid {
             syncing: Rc::new(Cell::new(false)),
             scroll_y: None,
             height: Signal::new(0.0),
-            grid: Rc::new(Cell::new(None)),
+            viewport: Rc::new(Cell::new((0.0, 0.0))),
+            band: Rc::new(Cell::new(None)),
             root: None,
         }
+    }
+
+    /// Shares the cell the band writes its id to (see
+    /// [`GridDetail::focus_target`]): the panel moves the keyboard into the
+    /// band through it (G2).
+    pub fn band_focus(mut self, band: Rc<Cell<Option<WidgetId>>>) -> Self {
+        self.band = band;
+        self
     }
 
     /// The sizing the grid uses (its column count follows the width).
@@ -516,7 +570,9 @@ impl Widget for LibraryGrid {
         .content_inset(EdgeInsets::new(0.0, 0.0, 0.0, LEADING_INSET))
         .scroll_bar_style(ScrollBarMode::Overlay)
         .smooth_scrolling(false)
-        .style(LibraryGridStyle)
+        // The rubber band is the grid's own (G3, below), which also sweeps
+        // the open album's songs.
+        .marquee_selection(false)
         .expanded_index(self.expanded.clone())
         .tile_a11y_label(move |index| {
             label_list
@@ -544,17 +600,28 @@ impl Widget for LibraryGrid {
         }
         let reveal = placement.clone();
         let band_vm = vm.clone();
-        let focus = self.grid.clone();
+        let band = self.band.clone();
         let grid = grid.detail_row(move |_tile| {
             Some(Box::new(
                 GridDetail::new(band_vm.clone())
                     .placed(placement.clone())
-                    .focus_on_press(focus.clone()),
+                    .focus_target(band.clone()),
             ) as Box<dyn Widget>)
         });
         let grid = ctx.add(grid.access_label(tr!(library_grid())));
-        self.grid.set(Some(grid));
         self.sync_open_album(ctx, &list);
+        // The keys' walk needs the cards to a row.
+        let columns = |sizing: &GridSizing| match sizing {
+            GridSizing::FixedColumnCount { count, .. } => *count,
+            _ => 1,
+        };
+        vm.set_grid_per_row(columns(&self.sizing.get()));
+        {
+            let vm = vm.clone();
+            ctx.effect(&self.sizing, move |sizing| {
+                vm.set_grid_per_row(columns(sizing))
+            });
+        }
 
         // Back to the top on a new search (`app.rs:2810`), and reveal a tile
         // or a song of the open album the view-model asks for (a reveal by
@@ -578,17 +645,46 @@ impl Widget for LibraryGrid {
                         scroll_y.set((top + ROW_HEIGHT - viewport).max(0.0));
                     }
                 }
-                // The song at the top (its span, `app.rs:6242-6258`, then
-                // `get_scroll_task(true)`, `:3319`): under its tile's row and
-                // the band's padding (Iced counts 30 px of it, and draws 32).
-                Some((_, ScrollRequest::GridSong { tile, row })) => {
-                    reveal.request_reveal(*tile, *row);
+                // A song of the band (its span, `app.rs:6242-6258`, then
+                // `get_scroll_task`, `:3319`, `:3213`): under its tile's row
+                // and the band's padding (Iced counts 30 px of it, and draws
+                // 32), at the top for a reveal, as far as needed for a key.
+                Some((
+                    _,
+                    ScrollRequest::GridSong {
+                        tile,
+                        row,
+                        force_top,
+                    },
+                )) => {
+                    reveal.request_reveal(*tile, *row, *force_top);
                 }
                 _ => {}
             }
         });
-        self.root = Some(grid);
-        vec![grid]
+
+        // The rubber band (G3).
+        let select_vm = vm.clone();
+        let marquee = MarqueeController::with_select(
+            self.scroll_y.clone().unwrap_or_else(|| Signal::new(0.0)),
+            self.viewport.clone(),
+            move |rect, width, modifiers| {
+                select_vm.select_grid_marquee(rect, modifiers, |spot, shape| {
+                    spot_rect(spot, shape, width)
+                });
+            },
+        );
+        let (pointer, cancel) = (marquee.clone(), marquee.clone());
+        let root = ctx.add(
+            ZStack::new()
+                .alignment(teksilo::tokens::Alignment::TOP_LEADING)
+                .child(grid)
+                .child(Marquee::new(marquee))
+                .on_pointer_event(move |event, ctx| pointer.on_pointer(event, ctx))
+                .on_pointer_cancel(move |_, _, _| cancel.cancel()),
+        );
+        self.root = Some(root);
+        vec![root]
     }
 
     fn layout_response(&self, proposal: SizeProposal, ctx: &LayoutContext) -> LayoutResponse {
@@ -610,6 +706,7 @@ impl Widget for LibraryGrid {
             child.size = bounds.size();
         }
         self.height.set_if_changed(bounds.height);
+        self.viewport.set((bounds.width, bounds.height));
         // The column count follows the width the grid is given; written from
         // layout behind an equality guard, as the framework's own responsive
         // widgets do (it never changes the grid's width, so it cannot loop).

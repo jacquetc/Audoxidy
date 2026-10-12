@@ -1103,22 +1103,25 @@ fn alt_down_opens_and_alt_up_closes_the_selected_tile_and_up_closes_the_open_one
     let id = first_card(&services);
     vm.grid_selection().select(id.clone());
     assert_eq!(vm.grid_anchor(), Some(id.clone()));
-    assert!(
-        !vm.grid_key(&Key::ArrowUp, Modifiers::ALT),
-        "nothing to close"
+    let key = |key: Key, modifiers: Modifiers| vm.grid_key(&key, modifiers, false);
+    assert_eq!(
+        key(Key::ArrowUp, Modifiers::ALT),
+        GridKey::Unused,
+        "nothing to close: a step up, the grid's"
     );
-    assert!(vm.grid_key(&Key::ArrowDown, Modifiers::ALT));
+    assert_eq!(key(Key::ArrowDown, Modifiers::ALT), GridKey::Used);
     assert_eq!(vm.expanded_album().get(), Some(id.clone()));
-    assert!(
-        !vm.grid_key(&Key::ArrowDown, Modifiers::ALT),
-        "already open"
-    );
-    assert!(vm.grid_key(&Key::ArrowUp, Modifiers::ALT));
+    assert_eq!(key(Key::ArrowUp, Modifiers::ALT), GridKey::Used);
     assert_eq!(vm.expanded_album().get(), None);
     vm.toggle_album(&id);
-    assert!(vm.grid_key(&Key::ArrowUp, Modifiers::NONE));
+    assert_eq!(key(Key::ArrowUp, Modifiers::NONE), GridKey::Used);
     assert_eq!(vm.expanded_album().get(), None);
-    assert!(!vm.grid_key(&Key::ArrowLeft, Modifiers::ALT));
+    assert_eq!(key(Key::ArrowLeft, Modifiers::ALT), GridKey::Unused);
+    // Alt+↓ on the open album walks into its songs, as Iced's
+    // `handle_key_nav` does once the toggle does not apply.
+    vm.toggle_album(&id);
+    assert_eq!(key(Key::ArrowDown, Modifiers::ALT), GridKey::EnteredBand);
+    assert_eq!(vm.expanded_album().get(), Some(id));
     assert!(services.ctx.shutdown());
 }
 
@@ -1179,7 +1182,11 @@ fn a_reveal_in_the_grid_opens_the_album_and_selects_the_song() {
     assert_eq!(vm.grid_selection().count(), 0);
     assert_eq!(
         vm.scroll_request().get().map(|r| r.1),
-        Some(ScrollRequest::GridSong { tile, row: 1 })
+        Some(ScrollRequest::GridSong {
+            tile,
+            row: 1,
+            force_top: true
+        })
     );
     assert!(services.ctx.shutdown());
 }
@@ -1428,5 +1435,344 @@ fn g6_a_letter_that_queries_nothing_keeps_the_selections_figures() {
         vm.stats().get(),
         compute_stats(std::slice::from_ref(&picked))
     );
+    assert!(services.ctx.shutdown());
+}
+
+// ---- G2: the grid's keys walk the open album's songs ----------------------
+
+/// The grid, four cards to a row, its longest album open (its card
+/// selected, so the keys start from it).
+struct GridOpen {
+    services: AppServices,
+    vm: LibraryViewModel,
+    /// The cards, in the grid's order.
+    cards: Vec<String>,
+    /// The open album's songs, as the band shows them.
+    songs: Vec<i64>,
+    /// The open card.
+    open: usize,
+    /// Another card of the open card's row.
+    same_row: usize,
+    /// A card of another row.
+    other_row: usize,
+}
+
+fn grid_open() -> GridOpen {
+    let (services, vm) = loaded();
+    vm.set_grid_per_row(4);
+    let list = services.albums.list();
+    let cards: Vec<String> = (0..list.len())
+        .filter_map(|i| list.with_item(i, |c| c.id.clone()))
+        .collect();
+    let snapshot = services.library_songs.snapshot().get();
+    let open = (0..cards.len())
+        .max_by_key(|&i| {
+            album_songs_in_memory(&cards[i], &snapshot.songs, &snapshot.albums)
+                .map_or(0, |songs| songs.len())
+        })
+        .unwrap();
+    vm.toggle_album(&cards[open]);
+    let songs: Vec<i64> = vm.expanded_songs().get().iter().map(|s| s.id).collect();
+    assert!(songs.len() >= 4, "a long enough album: {}", songs.len());
+    let row = open / 4 * 4;
+    let same_row = (row..row + 4)
+        .find(|&i| i != open && i < cards.len())
+        .unwrap();
+    let other_row = if row == 0 { 4 } else { 0 };
+    assert!(other_row < cards.len());
+    GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        same_row,
+        other_row,
+    }
+}
+
+fn grid_keys(vm: &LibraryViewModel) -> HashSet<String> {
+    vm.grid_selection().selected_keys().into_iter().collect()
+}
+
+fn walk(vm: &LibraryViewModel, key: Key, modifiers: Modifiers) -> GridKey {
+    vm.grid_key(&key, modifiers, false)
+}
+
+#[test]
+fn g2_down_from_the_open_card_enters_its_songs_and_up_from_the_first_returns() {
+    // `handle_key_nav`, Grid branch (`library.rs:808-872`).
+    let GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        ..
+    } = grid_open();
+    assert_eq!(
+        walk(&vm, Key::ArrowDown, Modifiers::NONE),
+        GridKey::EnteredBand
+    );
+    let selection = vm.selection().get();
+    assert_eq!(selection.selected, [song(songs[0])].into_iter().collect());
+    assert_eq!(selection.focused, Some(song(songs[0])));
+    assert!(grid_keys(&vm).is_empty(), "the card is no longer selected");
+    assert_eq!(
+        vm.scroll_request().get().map(|r| r.1),
+        Some(ScrollRequest::GridSong {
+            tile: open,
+            row: 0,
+            force_top: false
+        })
+    );
+    assert_eq!(walk(&vm, Key::ArrowDown, Modifiers::NONE), GridKey::Used);
+    assert_eq!(vm.selection().get().focused, Some(song(songs[1])));
+    assert_eq!(
+        vm.scroll_request().get().map(|r| r.1),
+        Some(ScrollRequest::GridSong {
+            tile: open,
+            row: 1,
+            force_top: false
+        })
+    );
+    assert_eq!(walk(&vm, Key::ArrowUp, Modifiers::NONE), GridKey::Used);
+    assert_eq!(vm.selection().get().focused, Some(song(songs[0])));
+    assert_eq!(walk(&vm, Key::ArrowUp, Modifiers::NONE), GridKey::LeftBand);
+    assert_eq!(grid_keys(&vm), [cards[open].clone()].into_iter().collect());
+    assert!(vm.selection().get().selected.is_empty());
+    assert_eq!(vm.grid_anchor(), Some(cards[open].clone()));
+    assert_eq!(
+        vm.scroll_request().get().map(|r| r.1),
+        Some(ScrollRequest::GridTile(open))
+    );
+    // On the open card again, ↑ closes it (`app.rs:3187-3200`).
+    assert_eq!(walk(&vm, Key::ArrowUp, Modifiers::NONE), GridKey::Used);
+    assert_eq!(vm.expanded_album().get(), None);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g2_down_from_any_card_of_the_open_row_enters_the_band_and_other_steps_are_the_grids() {
+    let GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        same_row,
+        other_row,
+    } = grid_open();
+    vm.grid_selection().select(cards[same_row].clone());
+    assert_eq!(vm.expanded_album().get(), Some(cards[open].clone()));
+    assert_eq!(
+        walk(&vm, Key::ArrowDown, Modifiers::NONE),
+        GridKey::EnteredBand
+    );
+    assert_eq!(vm.selection().get().focused, Some(song(songs[0])));
+    // From another row, a step between cards: the grid's own.
+    vm.grid_selection().select(cards[other_row].clone());
+    for key in [
+        Key::ArrowDown,
+        Key::ArrowUp,
+        Key::ArrowLeft,
+        Key::ArrowRight,
+    ] {
+        assert_eq!(walk(&vm, key, Modifiers::NONE), GridKey::Unused, "{key:?}");
+    }
+    // Sideways from the open row: the grid's own too.
+    vm.grid_selection().select(cards[same_row].clone());
+    assert_eq!(walk(&vm, Key::ArrowRight, Modifiers::NONE), GridKey::Unused);
+    assert_eq!(walk(&vm, Key::ArrowLeft, Modifiers::NONE), GridKey::Unused);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g2_down_stops_at_the_last_song_and_left_and_right_stay() {
+    let GridOpen {
+        services,
+        vm,
+        songs,
+        ..
+    } = grid_open();
+    let last = *songs.last().unwrap();
+    vm.click(song(last), Modifiers::NONE, at(0));
+    assert_eq!(walk(&vm, Key::ArrowDown, Modifiers::NONE), GridKey::Used);
+    assert_eq!(vm.selection().get().focused, Some(song(last)));
+    vm.click(song(songs[1]), Modifiers::NONE, at(1_000));
+    vm.click(song(songs[2]), ctrl(), at(2_000));
+    for key in [Key::ArrowLeft, Key::ArrowRight] {
+        assert_eq!(walk(&vm, key, Modifiers::NONE), GridKey::Used);
+        let selection = vm.selection().get();
+        assert_eq!(selection.focused, Some(song(songs[2])), "{key:?}");
+        // Iced's `navigate` to the same song selects it alone.
+        assert_eq!(selection.selected, [song(songs[2])].into_iter().collect());
+    }
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g2_shift_extends_the_selection_over_the_songs_from_the_pivot() {
+    let GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        ..
+    } = grid_open();
+    assert_eq!(
+        walk(&vm, Key::ArrowDown, Modifiers::NONE),
+        GridKey::EnteredBand
+    );
+    walk(&vm, Key::ArrowDown, Modifiers::SHIFT);
+    walk(&vm, Key::ArrowDown, Modifiers::SHIFT);
+    let selection = vm.selection().get();
+    assert_eq!(
+        selection.selected,
+        songs[..3].iter().map(|id| song(*id)).collect()
+    );
+    assert_eq!(selection.pivot, Some(song(songs[0])));
+    assert_eq!(selection.focused, Some(song(songs[2])));
+    // Up past the first song, still extending: the range runs from the song
+    // to the open card over Iced's order, the cards after it in its row
+    // included, and the card, an end of it, brings all its songs.
+    walk(&vm, Key::ArrowUp, Modifiers::SHIFT);
+    walk(&vm, Key::ArrowUp, Modifiers::SHIFT);
+    assert_eq!(walk(&vm, Key::ArrowUp, Modifiers::SHIFT), GridKey::LeftBand);
+    let row_end = (open / 4 * 4 + 4).min(cards.len());
+    assert_eq!(
+        grid_keys(&vm),
+        cards[open..row_end].iter().cloned().collect()
+    );
+    assert_eq!(
+        vm.selection().get().selected,
+        songs.iter().map(|id| song(*id)).collect()
+    );
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g2_a_clicked_song_is_where_the_walk_starts_and_a_ctrl_click_on_a_card_ends_it() {
+    let GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        other_row,
+        ..
+    } = grid_open();
+    vm.click(song(songs[1]), Modifiers::NONE, at(0));
+    assert_eq!(walk(&vm, Key::ArrowDown, Modifiers::NONE), GridKey::Used);
+    assert_eq!(vm.selection().get().focused, Some(song(songs[2])));
+    // The open card and a song Ctrl-picked with it, then a Ctrl-click on a
+    // card of another row: the songs stay selected, and the walk starts
+    // from that card (Iced's `focused_item`), a step the grid takes.
+    vm.grid_selection().select(cards[open].clone());
+    vm.click(song(songs[1]), ctrl(), at(1_000));
+    assert_eq!(vm.selection().get().focused, Some(song(songs[1])));
+    vm.grid_selection().toggle(cards[other_row].clone());
+    assert!(vm.selection().get().selected.contains(&song(songs[1])));
+    assert_eq!(walk(&vm, Key::ArrowDown, Modifiers::NONE), GridKey::Unused);
+    assert_eq!(vm.selection().get().focused, None);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g2_a_shift_click_ranges_over_the_card_and_the_songs_as_iced_does() {
+    // `handle_click` ranges over `get_visible_items`, cards and songs.
+    let GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        ..
+    } = grid_open();
+    assert_eq!(
+        walk(&vm, Key::ArrowDown, Modifiers::NONE),
+        GridKey::EnteredBand
+    );
+    assert_eq!(walk(&vm, Key::ArrowUp, Modifiers::NONE), GridKey::LeftBand);
+    // The pivot is the open card now: the range runs from it to the song,
+    // the cards after it in its row included.
+    vm.click(song(songs[1]), Modifiers::SHIFT, at(0));
+    let row_end = (open / 4 * 4 + 4).min(cards.len());
+    assert_eq!(
+        grid_keys(&vm),
+        cards[open..row_end].iter().cloned().collect()
+    );
+    assert!(vm.selection().get().selected.contains(&song(songs[1])));
+    assert!(services.ctx.shutdown());
+}
+
+// ---- G3: the grid's rubber band ---------------------------------------------
+
+#[test]
+fn g3_a_sweep_selects_the_cards_and_the_band_songs_it_crosses() {
+    let GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        ..
+    } = grid_open();
+    // A hand-made layout: 90 × 100 cards in rows of four, 100 px apart, the
+    // band's songs 10 px rows under the open card's row.
+    let band_row = open / 4;
+    let rect_of = |spot: GridSpot, _shape: GridShape| match spot {
+        GridSpot::Card(i) => ContentRect::new(
+            (i % 4) as f32 * 100.0,
+            (i / 4) as f32 * 100.0 + if i / 4 > band_row { 1000.0 } else { 0.0 },
+            90.0,
+            100.0,
+        ),
+        GridSpot::Song(row) => ContentRect::new(
+            0.0,
+            (band_row + 1) as f32 * 100.0 + row as f32 * 10.0,
+            400.0,
+            10.0,
+        ),
+    };
+    let top = band_row as f32 * 100.0;
+    let (first, second) = (band_row * 4, band_row * 4 + 1);
+    // From inside the row's second card down over the first two songs.
+    vm.select_grid_marquee(
+        ContentRect::new(150.0, top + 50.0, 20.0, 65.0),
+        Modifiers::NONE,
+        rect_of,
+    );
+    assert_eq!(
+        grid_keys(&vm),
+        [cards[second].clone()].into_iter().collect()
+    );
+    assert_eq!(
+        vm.selection().get().selected,
+        [song(songs[0]), song(songs[1])].into_iter().collect()
+    );
+    // Shift adds, Ctrl toggles.
+    vm.select_grid_marquee(
+        ContentRect::new(50.0, top + 50.0, 20.0, 10.0),
+        Modifiers::SHIFT,
+        rect_of,
+    );
+    assert_eq!(
+        grid_keys(&vm),
+        [cards[first].clone(), cards[second].clone()]
+            .into_iter()
+            .collect()
+    );
+    vm.select_grid_marquee(
+        ContentRect::new(150.0, top + 105.0, 20.0, 2.0),
+        ctrl(),
+        rect_of,
+    );
+    assert_eq!(
+        vm.selection().get().selected,
+        [song(songs[1])].into_iter().collect()
+    );
+    assert_eq!(grid_keys(&vm).len(), 2, "the cards it does not cross stay");
     assert!(services.ctx.shutdown());
 }

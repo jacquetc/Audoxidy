@@ -587,6 +587,131 @@ pub fn apply_bulk_toggle_fixed(
     true
 }
 
+/// A place in the album grid's keyboard walk: a card, or a song of the band
+/// open under the open album's row of cards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridSpot {
+    /// The card at this index of the grid.
+    Card(usize),
+    /// The song at this row of the open album's band.
+    Song(usize),
+}
+
+/// The shape of the album grid the walk moves over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridShape {
+    /// How many cards the grid holds.
+    pub cards: usize,
+    /// Cards to a row (0 counts as 1).
+    pub per_row: usize,
+    /// The index of the open album's card, if an album is open.
+    pub open: Option<usize>,
+    /// How many songs the open album's band shows.
+    pub songs: usize,
+}
+
+impl GridShape {
+    fn per_row(&self) -> usize {
+        self.per_row.max(1)
+    }
+
+    /// The open card, when its band shows songs.
+    fn band_card(&self) -> Option<usize> {
+        self.open
+            .filter(|&open| open < self.cards && self.songs > 0)
+    }
+
+    /// The position of the band's first song among the grid's items
+    /// ([`grid_items`]): after the last card of the open album's row. `None`
+    /// when no band shows songs.
+    pub fn band_start(&self) -> Option<usize> {
+        let open = self.band_card()?;
+        let per_row = self.per_row();
+        Some(((open / per_row + 1) * per_row).min(self.cards))
+    }
+
+    /// The position of `spot` among the grid's items, if it is one of them.
+    pub fn index_of(&self, spot: GridSpot) -> Option<usize> {
+        match (spot, self.band_start()) {
+            (GridSpot::Card(card), _) if card >= self.cards => None,
+            (GridSpot::Card(card), Some(start)) if card >= start => Some(card + self.songs),
+            (GridSpot::Card(card), _) => Some(card),
+            (GridSpot::Song(row), Some(start)) if row < self.songs => Some(start + row),
+            (GridSpot::Song(_), _) => None,
+        }
+    }
+}
+
+/// The album grid's items in Iced's order (`get_visible_items`, Grid branch,
+/// `src/gui/library.rs:677-737`): the cards (`cards`, their composite ids),
+/// with the songs of the open album's band (`songs`, their ids) after the
+/// last card of its row. Without a band showing songs, the cards alone.
+pub fn grid_items(cards: &[String], songs: &[i64], shape: GridShape) -> Vec<LibraryListItem> {
+    let start = shape.band_start().unwrap_or(cards.len());
+    let mut items = Vec::with_capacity(cards.len() + songs.len());
+    items.extend(
+        cards[..start.min(cards.len())]
+            .iter()
+            .cloned()
+            .map(LibraryListItem::Album),
+    );
+    if shape.band_start().is_some() {
+        items.extend(songs.iter().copied().map(LibraryListItem::Song));
+    }
+    items.extend(
+        cards[start.min(cards.len())..]
+            .iter()
+            .cloned()
+            .map(LibraryListItem::Album),
+    );
+    items
+}
+
+/// Where an arrow key moves in the album grid, from `from`: Iced's walk over
+/// the grid's items (`handle_key_nav`, Grid branch, `src/gui/library.rs:808-872`).
+///
+/// - From a song: Up moves to the song above, and from the first song to the
+///   open album's card; Down moves to the song below and stops at the last;
+///   Left and Right stay.
+/// - From a card: Down enters the band at its first song when the band is
+///   under the card's row (from any card of that row), else moves a row down
+///   (to the last card when there is no card below); Up moves a row up (to
+///   the first card from the first row); Left and Right move one card,
+///   within the grid's ends.
+///
+/// Iced does this arithmetic on the flat list of [`grid_items`], so the
+/// band's songs count as items between the cards: Up from a card of the row
+/// under the band lands on a song, or on a card shifted by the band's length;
+/// Right from the last card of the open row enters the band, and Left from
+/// the first card under it lands on the last song; Down from a card above a
+/// short last row that holds the open album enters the band. Here a step
+/// between cards counts cards only, and only Down from the open row enters
+/// the band.
+pub fn grid_nav_target(from: GridSpot, dir: LibraryNavDir, shape: GridShape) -> GridSpot {
+    let last_card = shape.cards.saturating_sub(1);
+    let per_row = shape.per_row();
+    match from {
+        GridSpot::Song(row) => match (dir, shape.band_card()) {
+            (LibraryNavDir::Up, Some(open)) if row == 0 => GridSpot::Card(open),
+            (LibraryNavDir::Up, _) => GridSpot::Song(row.saturating_sub(1)),
+            (LibraryNavDir::Down, _) => {
+                GridSpot::Song((row + 1).min(shape.songs.saturating_sub(1)))
+            }
+            _ => GridSpot::Song(row),
+        },
+        GridSpot::Card(card) => match dir {
+            LibraryNavDir::Down => match shape.band_card() {
+                Some(open) if open / per_row == card / per_row => GridSpot::Song(0),
+                _ => GridSpot::Card((card + per_row).min(last_card)),
+            },
+            LibraryNavDir::Up => GridSpot::Card(card.saturating_sub(per_row)),
+            LibraryNavDir::Left => GridSpot::Card(card.saturating_sub(1)),
+            LibraryNavDir::Right => GridSpot::Card((card + 1).min(last_card)),
+            LibraryNavDir::None => GridSpot::Card(card),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1370,6 +1495,145 @@ mod tests {
         assert_eq!(
             artist_to_toggle_fixed(Some("X"), None, LibraryNavDir::Left, &groups, &s),
             Some("X".to_string())
+        );
+    }
+
+    // ---- the grid's walk ----
+
+    /// Eleven cards, four to a row, the album at `open` open over `songs`
+    /// songs.
+    fn shape(open: Option<usize>, songs: usize) -> GridShape {
+        GridShape {
+            cards: 11,
+            per_row: 4,
+            open,
+            songs,
+        }
+    }
+
+    #[test]
+    fn the_grid_items_put_the_open_albums_songs_after_its_row() {
+        let cards: Vec<String> = (0..11).map(|i| format!("a{i}")).collect();
+        let items = grid_items(&cards, &[100, 101], shape(Some(5), 2));
+        let names: Vec<String> = items
+            .iter()
+            .map(|item| match item {
+                LibraryListItem::Album(id) => id.clone(),
+                LibraryListItem::Song(id) => id.to_string(),
+                LibraryListItem::Artist(name) => name.clone(),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "100", "101", "a8", "a9", "a10"
+            ]
+        );
+        let grid = shape(Some(5), 2);
+        assert_eq!(grid.band_start(), Some(8));
+        assert_eq!(grid.index_of(GridSpot::Card(7)), Some(7));
+        assert_eq!(grid.index_of(GridSpot::Card(8)), Some(10));
+        assert_eq!(grid.index_of(GridSpot::Song(1)), Some(9));
+        assert_eq!(grid.index_of(GridSpot::Song(2)), None);
+        // The open album on the short last row: its songs end the items.
+        let last = shape(Some(9), 2);
+        assert_eq!(last.band_start(), Some(11));
+        assert_eq!(grid_items(&cards, &[100, 101], last).len(), 13);
+        // No band without songs, or without an open album.
+        assert_eq!(grid_items(&cards, &[], shape(Some(5), 0)).len(), 11);
+        assert_eq!(shape(None, 3).band_start(), None);
+        assert_eq!(shape(None, 3).index_of(GridSpot::Song(0)), None);
+    }
+
+    #[test]
+    fn down_from_any_card_of_the_open_row_enters_the_band_at_its_first_song() {
+        let grid = shape(Some(5), 3);
+        for card in 4..8 {
+            assert_eq!(
+                grid_nav_target(GridSpot::Card(card), LibraryNavDir::Down, grid),
+                GridSpot::Song(0),
+                "card {card}"
+            );
+        }
+        // Another row moves down a row, over the band.
+        assert_eq!(
+            grid_nav_target(GridSpot::Card(1), LibraryNavDir::Down, grid),
+            GridSpot::Card(5)
+        );
+        assert_eq!(
+            grid_nav_target(GridSpot::Card(9), LibraryNavDir::Down, grid),
+            GridSpot::Card(10),
+            "the last card when no card is below"
+        );
+        // No band: a row down.
+        assert_eq!(
+            grid_nav_target(GridSpot::Card(5), LibraryNavDir::Down, shape(Some(5), 0)),
+            GridSpot::Card(9)
+        );
+    }
+
+    #[test]
+    fn the_songs_walk_down_to_the_last_and_up_to_the_open_card() {
+        let grid = shape(Some(5), 3);
+        let step = |from, dir| grid_nav_target(from, dir, grid);
+        assert_eq!(
+            step(GridSpot::Song(0), LibraryNavDir::Down),
+            GridSpot::Song(1)
+        );
+        assert_eq!(
+            step(GridSpot::Song(2), LibraryNavDir::Down),
+            GridSpot::Song(2)
+        );
+        assert_eq!(
+            step(GridSpot::Song(2), LibraryNavDir::Up),
+            GridSpot::Song(1)
+        );
+        assert_eq!(
+            step(GridSpot::Song(0), LibraryNavDir::Up),
+            GridSpot::Card(5)
+        );
+        assert_eq!(
+            step(GridSpot::Song(1), LibraryNavDir::Left),
+            GridSpot::Song(1)
+        );
+        assert_eq!(
+            step(GridSpot::Song(1), LibraryNavDir::Right),
+            GridSpot::Song(1)
+        );
+    }
+
+    #[test]
+    fn the_cards_step_by_one_and_by_a_row_and_never_sideways_into_the_band() {
+        let grid = shape(Some(5), 3);
+        let step = |from, dir| grid_nav_target(from, dir, grid);
+        assert_eq!(
+            step(GridSpot::Card(9), LibraryNavDir::Up),
+            GridSpot::Card(5)
+        );
+        assert_eq!(
+            step(GridSpot::Card(2), LibraryNavDir::Up),
+            GridSpot::Card(0)
+        );
+        assert_eq!(
+            step(GridSpot::Card(7), LibraryNavDir::Right),
+            GridSpot::Card(8)
+        );
+        assert_eq!(
+            step(GridSpot::Card(8), LibraryNavDir::Left),
+            GridSpot::Card(7)
+        );
+        assert_eq!(
+            step(GridSpot::Card(0), LibraryNavDir::Left),
+            GridSpot::Card(0)
+        );
+        assert_eq!(
+            step(GridSpot::Card(10), LibraryNavDir::Right),
+            GridSpot::Card(10)
+        );
+        // Above a short last row holding the open album: a row down.
+        assert_eq!(
+            grid_nav_target(GridSpot::Card(7), LibraryNavDir::Down, shape(Some(9), 2)),
+            GridSpot::Card(10)
         );
     }
 }

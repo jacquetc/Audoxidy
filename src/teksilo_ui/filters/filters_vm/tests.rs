@@ -488,18 +488,18 @@ fn g1_a_type_a_letter_and_the_restore_icon_bring_the_tree_and_the_library_to_the
     // (`:4293`, `:4313-4316`).
     let (services, vm) = loaded(FilterType::Genre);
     let letter = vm.subfilters().get()[0].clone();
-    let mut sent = resets(&vm);
-    for action in [
+    let actions = [
         Box::new(|vm: &FiltersViewModel| vm.set_filter_type(FilterType::Artist))
             as Box<dyn Fn(&FiltersViewModel)>,
         Box::new(move |vm: &FiltersViewModel| vm.select_subfilter(Some(&letter))),
         Box::new(|vm: &FiltersViewModel| vm.select_subfilter(None)),
-    ] {
+    ];
+    for action in actions {
         vm.tree_scroll().set(96.0);
+        let before = resets(&vm);
         action(&vm);
         assert_eq!(vm.tree_scroll().get(), 0.0, "the tree at its top");
-        assert_eq!(resets(&vm), sent + 1, "the library told once");
-        sent += 1;
+        assert_eq!(resets(&vm), before + 1, "the library told once");
     }
     assert!(services.ctx.shutdown());
 }
