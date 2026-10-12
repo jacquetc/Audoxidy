@@ -44,6 +44,18 @@ jobs:
       - name: Clippy gate
         run: python3 tools/clippy_gate.py ${{ matrix.set }}
 
+  # The Teksilo port's documents and catalogues: every Iced stub site is
+  # documented, and the es-ES / en-US catalogues match each other and the
+  # Iced UI's literals.
+  port-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stub markers
+        run: python3 tools/check_stubs.py
+      - name: Locale catalogues
+        run: python3 tools/check_locales.py
+
   rustfmt:
     runs-on: ubuntu-latest
     steps:
