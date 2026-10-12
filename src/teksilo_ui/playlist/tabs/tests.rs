@@ -295,3 +295,46 @@ fn a_switch_from_the_overflow_list_reaches_the_tabs_accessibility() {
         "re-sent, not selected"
     );
 }
+
+#[test]
+fn a_new_playlist_comes_into_view_after_a_tab_was_clicked() {
+    // Probe F5a: a clicked tab keeps the focus; the rebuild for a new
+    // playlist moved it to the first tab, which the strip brought back
+    // into view, undoing the switch's scroll.
+    let env = restored();
+    let (mut tree, root) = mounted(&env);
+    let bowie = tab_bounds(&tree, root, "David Bowie");
+    crate::teksilo_ui::test_support::tap_at(&mut tree, bowie.center());
+    layout(&mut tree);
+    for name in [
+        "Mi lista",
+        "Con boton",
+        "Lista de relleno 0",
+        "Lista de relleno 1",
+        "Lista de relleno 2",
+    ] {
+        let id = playlist::create_playlist(&env.services.ctx, name, Vec::new())
+            .recv_blocking()
+            .unwrap();
+        // The tabs reload and the switch arrives; the app loop runs the
+        // strip's post-mount actions before it lays the new strip out.
+        env.reload_tabs();
+        env.vm.switch_playlist(id, false);
+        env.wait(|| env.vm.active_playlist().get() == Some(id));
+        tree.run_mount_actions(&mut teksilo::core::window::NoopWindowOps);
+        layout(&mut tree);
+        tree.run_mount_actions(&mut teksilo::core::window::NoopWindowOps);
+        layout(&mut tree);
+        let _ = tree.render();
+        layout(&mut tree);
+        let tab = tab_bounds(&tree, root, name);
+        let right = match tree.find_by_label("All playlists") {
+            Some(chevron) => tree.bounds(chevron).x,
+            None => tree.bounds(root).width,
+        };
+        assert!(
+            tab.x >= 0.0 && tab.x + tab.width <= right,
+            "{name} is in view: {tab:?}"
+        );
+    }
+}
