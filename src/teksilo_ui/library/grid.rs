@@ -428,6 +428,9 @@ pub struct LibraryGrid {
     viewport: Rc<Cell<(f32, f32)>>,
     /// The band's id once built: the panel moves the keyboard into it.
     band: Rc<Cell<Option<WidgetId>>>,
+    /// The `GridView`'s id once built: the panel's keys act while it has the
+    /// keyboard.
+    view: Rc<Cell<Option<WidgetId>>>,
     root: Option<WidgetId>,
 }
 
@@ -452,8 +455,17 @@ impl LibraryGrid {
             height: Signal::new(0.0),
             viewport: Rc::new(Cell::new((0.0, 0.0))),
             band: Rc::new(Cell::new(None)),
+            view: Rc::new(Cell::new(None)),
             root: None,
         }
+    }
+
+    /// Shares the cell the `GridView` writes its id to when built: the panel
+    /// takes its keys while the grid has the keyboard, and moves the keyboard
+    /// to it (a reveal).
+    pub fn view_focus(mut self, view: Rc<Cell<Option<WidgetId>>>) -> Self {
+        self.view = view;
+        self
     }
 
     /// Shares the cell the band writes its id to (see
@@ -609,6 +621,7 @@ impl Widget for LibraryGrid {
             ) as Box<dyn Widget>)
         });
         let grid = ctx.add(grid.access_label(tr!(library_grid())));
+        self.view.set(Some(grid));
         self.sync_open_album(ctx, &list);
         // The keys' walk needs the cards to a row.
         let columns = |sizing: &GridSizing| match sizing {

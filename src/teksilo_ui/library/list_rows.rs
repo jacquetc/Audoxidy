@@ -336,6 +336,14 @@ impl LibraryList {
         self.list.clone()
     }
 
+    /// Shares the cell the `ListView` writes its id to when built: the panel
+    /// takes its keys while the list has the keyboard, and moves the keyboard
+    /// to it (a reveal).
+    pub fn list_focus(mut self, list: Rc<Cell<Option<WidgetId>>>) -> Self {
+        self.list = list;
+        self
+    }
+
     /// The empty list's message (`widgets.rs:2589-2600`).
     fn empty_message(shown: Signal<bool>) -> impl Widget + 'static {
         Center::new()

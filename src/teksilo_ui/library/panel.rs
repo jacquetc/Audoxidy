@@ -13,10 +13,14 @@
 //!   of cards), or one of the three lists ([`LibraryList`]);
 //! - the bottom bar ([`BottomBar`]).
 //!
-//! Keys (quirk fix 2): the panel takes Enter (play the selection: append it
-//! to the active playlist), Delete (confirm, then delete) and the arrows in a
-//! preview handler, before the list or the grid sees them, unless a text
-//! field has the focus. In the list modes ↑ and ↓ move the selection (Shift
+//! Keys (quirk fix 2): while the list, the grid or the grid's band has the
+//! keyboard, the panel takes Enter (play the selection: append it to the
+//! active playlist), Delete (confirm, then delete) and the arrows in a
+//! preview handler, before the list or the grid sees them. A control of the
+//! panel that has the keyboard (an action of the bottom bar, the search
+//! field, a sort header or a grip of the column header, a chevron, the meter
+//! slot) keeps its own keys: Iced's controls take no key, and its
+//! library keys act wherever the library has the focus. In the list modes ↑ and ↓ move the selection (Shift
 //! extends it) and ← and → collapse and expand; in the grid Alt+↑ / Alt+↓ and
 //! ↑ on the open album close and open it, ↓ from a card of the open album's
 //! row enters its songs (the keyboard goes into the band), ↑ and ↓ walk them
@@ -64,8 +68,21 @@ pub fn nav_dir(key: &Key) -> Option<LibraryNavDir> {
     }
 }
 
-/// The panel's keys (see the module documentation), for a key that does not
-/// come from a text field; `band` holds the grid band's id once it is built.
+/// Whether the panel's keys apply with `focused` holding the keyboard: the
+/// list or the grid (`view`), or the grid's band. A control inside the panel
+/// (an action of the bottom bar, the search field, a sort header or a grip of
+/// the column header, a chevron, the meter slot) keeps its own keys.
+pub fn has_the_keys(
+    focused: Option<WidgetId>,
+    view: &Cell<Option<WidgetId>>,
+    band: &Cell<Option<WidgetId>>,
+) -> bool {
+    focused.is_some() && (focused == view.get() || focused == band.get())
+}
+
+/// The panel's keys (see the module documentation), while the list, the
+/// grid or the band has the keyboard ([`has_the_keys`]); `band` holds the
+/// grid band's id once it is built.
 pub fn handle_key(
     vm: &LibraryViewModel,
     band: &Cell<Option<WidgetId>>,
@@ -196,6 +213,8 @@ impl Widget for ModeHeader {
 struct ModeBody {
     vm: LibraryViewModel,
     band: Rc<Cell<Option<WidgetId>>>,
+    /// The id of the list or the grid that has the panel's keys.
+    view: Rc<Cell<Option<WidgetId>>>,
     root: Option<WidgetId>,
 }
 
@@ -213,10 +232,15 @@ impl Widget for ModeBody {
         let root = match vm.view_mode().get() {
             LibraryViewMode::Grid => {
                 self.band.set(None);
-                ctx.add(LibraryGrid::new(vm).band_focus(self.band.clone()))
+                ctx.add(
+                    LibraryGrid::new(vm)
+                        .band_focus(self.band.clone())
+                        .view_focus(self.view.clone()),
+                )
             }
             mode => ctx.add(
-                Padding::new(0.0, 0.0, 0.0, CONTENT_LEADING).child(LibraryList::new(vm, mode)),
+                Padding::new(0.0, 0.0, 0.0, CONTENT_LEADING)
+                    .child(LibraryList::new(vm, mode).list_focus(self.view.clone())),
             ),
         };
         self.root = Some(root);
@@ -281,10 +305,11 @@ impl Widget for LibraryPanel {
     fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
         let vm = self.vm.clone();
         vm.wire(ctx);
-        let surfaces = ctx.text_surfaces();
         let key_vm = vm.clone();
         let band = Rc::new(Cell::new(None));
         let key_band = band.clone();
+        let view = Rc::new(Cell::new(None));
+        let key_view = view.clone();
         let header_width = Rc::new(Cell::new(0.0));
         let root = ctx.add(
             Panel::new()
@@ -303,6 +328,7 @@ impl Widget for LibraryPanel {
                         .child(Expand::new().child(ModeBody {
                             vm: vm.clone(),
                             band,
+                            view,
                             root: None,
                         }))
                         .child(Expand::horizontal().child(BottomBar::new(vm, self.meter.take()))),
@@ -311,7 +337,7 @@ impl Widget for LibraryPanel {
                 .access_label(tr!(library_panel()))
                 .on_key_preview(move |event, ctx| match event {
                     WidgetEvent::KeyDown { key, modifiers, .. }
-                        if !surfaces.focused_is_text_surface() =>
+                        if has_the_keys(ctx.focused(), &key_view, &key_band) =>
                     {
                         handle_key(&key_vm, &key_band, key, *modifiers, ctx)
                     }

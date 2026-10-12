@@ -338,8 +338,26 @@ fn quirk_2_the_arrows_move_the_library_selection() {
 }
 
 #[test]
-fn quirk_2_the_search_field_keeps_enter_delete_and_the_arrows() {
+fn quirk_2_the_search_field_keeps_enter_delete_space_and_the_arrows() {
     let (mut m, _list) = simple_with_a_selection();
+    m.services
+        .session
+        .start_restore(&m.services.ctx, &m.services.runtime);
+    let active = m.services.active_playlist.id();
+    assert!(run_until(&m.services.runtime, TIMEOUT, || active
+        .get()
+        .is_some()));
+    let id = active.get().unwrap();
+    let song = m.vm.selected_songs()[0].id;
+    let holds = |m: &Mounted| {
+        playlist::load_playlist(&m.services.ctx, id)
+            .recv_blocking()
+            .unwrap()
+            .groups
+            .iter()
+            .any(|g| g.songs.iter().any(|s| s.song_id == song))
+    };
+    assert!(!holds(&m));
     let field = m
         .tree
         .find_by_role(teksilo::core::accesskit::Role::TextInput)
@@ -348,8 +366,19 @@ fn quirk_2_the_search_field_keeps_enter_delete_and_the_arrows() {
     key_down(&mut m.tree, field, Key::Delete);
     key_down(&mut m.tree, field, Key::ArrowDown);
     key_down(&mut m.tree, field, Key::Enter);
-    assert!(drain_dialog_titles(&mut m.tree).is_empty());
-    assert_eq!(m.vm.selection().get(), selection);
+    crate::teksilo_ui::test_support::type_text(&mut m.tree, " ");
+    assert!(drain_dialog_titles(&mut m.tree).is_empty(), "Delete");
+    assert_eq!(m.vm.selection().get(), selection, "the arrows");
+    assert_eq!(m.vm.search().get(), " ", "Space types a space");
+    // Enter on the list appends the selection within a few ticks
+    // (`quirk_2_enter_on_the_list_appends_the_selection_to_the_active_playlist`);
+    // from the field it appends nothing.
+    assert!(
+        !run_until(&m.services.runtime, Duration::from_millis(500), || holds(
+            &m
+        )),
+        "Enter"
+    );
     assert!(m.services.ctx.shutdown());
 }
 
@@ -644,5 +673,106 @@ fn g3_a_drag_from_a_card_down_over_the_band_selects_the_card_and_the_songs() {
             .map(|id| crate::logic::library_selection::LibraryListItem::Song(*id))
             .collect()
     );
+    assert!(m.services.ctx.shutdown());
+}
+
+// ---- review #3: the panel's keys leave its controls theirs -----------------
+
+/// [`simple_with_a_selection`]: a song selected, so Enter and Delete would
+/// act on the library.
+fn with_a_selection() -> Mounted {
+    simple_with_a_selection().0
+}
+
+#[test]
+fn enter_and_space_press_a_focused_action_of_the_bottom_bar() {
+    let mut m = with_a_selection();
+    let button = m.named("Change the view");
+    key_down(&mut m.tree, button, Key::Enter);
+    m.relayout();
+    assert_eq!(m.vm.view_mode().get(), LibraryViewMode::Grid, "Enter");
+    let button = m.named("Change the view");
+    key_down(&mut m.tree, button, Key::Space);
+    m.relayout();
+    assert_eq!(
+        m.vm.view_mode().get(),
+        LibraryViewMode::DetailedList,
+        "Space"
+    );
+    assert!(m.services.ctx.shutdown());
+}
+
+#[test]
+fn delete_on_a_focused_action_asks_nothing() {
+    let mut m = with_a_selection();
+    let button = m.named("Play the selection");
+    key_down(&mut m.tree, button, Key::Delete);
+    assert!(drain_dialog_titles(&mut m.tree).is_empty());
+    assert!(m.services.ctx.shutdown());
+}
+
+#[test]
+fn the_arrows_resize_a_focused_column_grip() {
+    let mut m = with_a_selection();
+    m.vm.set_view_mode(LibraryViewMode::DetailedList);
+    m.relayout();
+    let selection = m.vm.selection().get();
+    let grip = m.node("ColumnGrip");
+    let before = m.vm.column_widths().get();
+    key_down(&mut m.tree, grip, Key::ArrowRight);
+    let after = m.vm.column_widths().get();
+    assert_ne!(after, before, "→ widens the column");
+    key_down(&mut m.tree, grip, Key::ArrowLeft);
+    assert_eq!(m.vm.column_widths().get(), before, "← narrows it back");
+    assert_eq!(m.vm.selection().get(), selection, "the rows did not move");
+    assert!(m.services.ctx.shutdown());
+}
+
+#[test]
+fn enter_on_the_meter_slot_opens_its_popup() {
+    // `meter/slot.rs`: Enter or Space on the slot opens the popup.
+    let (services, vm) = loaded();
+    let meter = crate::teksilo_ui::meter::MeterViewModel::new(&services);
+    meter.enabled().set(true);
+    let mut tree = tree_for(&services);
+    let id = mount_at(
+        &mut tree,
+        LibraryPanel::new(vm.clone()).meter_slot(crate::teksilo_ui::meter::MeterSlot::new(meter)),
+        998.0,
+        REGION.1,
+    );
+    settle_layout(&mut tree);
+    vm.set_view_mode(LibraryViewMode::SimpleList);
+    settle_layout(&mut tree);
+    let song = vm.structure().get().songs[0].id;
+    vm.click(
+        crate::logic::library_selection::LibraryListItem::Song(song),
+        Modifiers::NONE,
+        std::time::Instant::now(),
+    );
+    let slot = find_by_name(&tree, id, "VU meter settings")[0];
+    key_down(&mut tree, slot, Key::Enter);
+    let _ = tree.render();
+    assert_eq!(tree.active_overlays().len(), 1, "the popup opened");
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn the_keys_still_act_on_the_list_and_the_grid() {
+    let (mut m, list) = simple_with_a_selection();
+    key_down(&mut m.tree, list, Key::Delete);
+    assert_eq!(drain_dialog_titles(&mut m.tree).len(), 1, "the list");
+    m.vm.set_view_mode(LibraryViewMode::Grid);
+    m.relayout();
+    let card = m
+        .services
+        .albums
+        .list()
+        .with_item(0, |c| c.id.clone())
+        .unwrap();
+    m.vm.grid_selection().select(card);
+    let grid = m.find("GridView<");
+    key_down(&mut m.tree, grid, Key::Delete);
+    assert_eq!(drain_dialog_titles(&mut m.tree).len(), 1, "the grid");
     assert!(m.services.ctx.shutdown());
 }
