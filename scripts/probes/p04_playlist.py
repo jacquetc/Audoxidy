@@ -106,8 +106,7 @@ def body(p):
         a.key("Enter")
         a.settle(0.8)
     act = a.find(role="Tab", pred=lambda n: n.get("selected") and 395 <= n["bounds"]["y"] < 445)
-    p.check(act and in_strip(act), f"after creating lists the active tab is in view ({act and act['label']} at x={act and act['bounds']['x']:.0f})",
-            known_failure=SCROLL_FINDING)
+    p.check(act and in_strip(act), f"after creating lists the active tab is in view ({act and act['label']} at x={act and act['bounds']['x']:.0f})")
     chev = a.find(role="Button", label="Todas las listas")
     p.check(chev is not None, "a chevron 'Todas las listas' appears once the tabs overflow")
     if chev:
@@ -121,7 +120,7 @@ def body(p):
         a.settle(1.0)
         p.check(not a.find(role="Menu") and a.find(role="Label", pred=lambda n: "No hay canciones" in field_text(n) or n.get("value") == "No hay canciones en esta lista"),
                 "picking one from the list switches to it (the empty Oxidy Drift shows its placeholder) and closes the menu")
-        p.check(selected_tab(a) == "Oxidy Drift", "...and its tab is the selected one in the accessibility tree", known_failure=STALE_FINDING)
+        p.check(selected_tab(a) == "Oxidy Drift", "...and its tab is the selected one in the accessibility tree")
         a.click(a.find(role="Tab", label="Oxidy Drift"))
         a.settle(0.6)
         p.check(selected_tab(a) == "Oxidy Drift", "...(a direct click on the tab does select it)")
@@ -221,7 +220,7 @@ def body(p):
     a.click(it)
     a.settle(1.0)
     n_ptr = drift_rows()
-    p.check(n_ptr == 1, f"a pointer click on a submenu item sends the song ({n_ptr} song rows in Oxidy Drift)", known_failure=SUBMENU_FINDING)
+    p.check(n_ptr == 1, f"a pointer click on a submenu item sends the song ({n_ptr} song rows in Oxidy Drift)")
     if a.find(role="Menu"):
         a.key("Escape")
         a.key("Escape")
@@ -235,7 +234,7 @@ def body(p):
     # ---- search
     reveal(a, "David Bowie")
     total = len(song_rows(a))
-    box = a.find(role="TextInput", label="Buscar...", pred=lambda n: n["bounds"]["x"] < 100)
+    box = a.find(role="TextInput", label="Buscar en la lista", pred=lambda n: n["bounds"]["x"] < 100)
     a.click(box)
     a.type(box, "Panic")
     a.settle(1.0)

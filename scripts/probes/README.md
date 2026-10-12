@@ -58,7 +58,7 @@ that the app's log has no warning.
 
 * No tool reports the mouse cursor (`p11_cursors`).
 * No tool reports whether the window is minimized, nor its position (Wayland: a client cannot be moved).
-* `TreeItem` rows of the filter tree carry no text, so the probes pick them by order.
+* The filter tree's `TreeItem` rows are named by their labels (Wave F fix), so a probe can pick a row by its label.
 * Screenshots are physical pixels: on a scaled display (1.2 here) the probes convert (`App.scale`).
 * The mocks' fake engine never writes meter levels and gives bands beyond the 20th the name "Banda de 0 Hz".
 * The display the machine has when the probes run decides the maximized size; the probes read it, never assume it.

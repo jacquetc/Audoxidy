@@ -41,6 +41,8 @@ Line numbers refer to the code before Wave A (commit `288477a`). Decisions were 
 | D24 | Startup applies the stream settings before the PipeWire clock | **fix (Teksilo)**: the Teksilo restore sets the clock first, like Apply |
 | D25 | Restored compressor intensity and reverb room size wait for a stream rebuild | **fix (Teksilo)**: the Teksilo startup restore applies their derived parameters |
 | D26 | Each shuffle save/load moves one pending song into the history | **fix (both)**, in `src/db` with a regression test |
+| D28 | A preload the next song no longer is still plays at the end of a track | **fix (Teksilo)**: quirk fix 69 |
+| D29 | A slider shorter than its handle panics (latent) | **fix (Teksilo)**: the Teksilo EQ slider |
 | D27 | The M3U import silently drops lines that are not UTF-8 | **fix (both)**: UTF-8 with a Latin-1 fallback, with tests |
 | **No decision needed** | | |
 | D20 | Iced grid navigation y-positions use the unfiltered song count | not applicable |
@@ -197,6 +199,13 @@ M3U and M3U8 differ only by extension. Durations are truncated with `as i32`.
 - **Defect:** the file was read line by line as UTF-8, and `filter_map(|l| l.ok())` dropped every line that was not valid UTF-8 without a word. A Latin-1 `.m3u` (the traditional encoding, and what the Teksilo UI writes since quirk fix #25) lost every entry with a non-ASCII path.
 - **Found by:** Wave B2b, as the import side of D19.
 - **Fixed:** for both UIs, the file is decoded by `decode_playlist_text`: UTF-8 (a BOM is skipped), else Latin-1, which cannot fail. Pinned by `db::scanner::playlist_text_tests::*`, including `import_m3u_reads_a_latin1_playlist_with_accented_paths`.
+
+### D28. A preload the next song no longer is still plays at the end of a track
+
+- **Where:** the `Tick` preload path (`src/gui/app.rs:1371-1448`) with the decoder's promotion at end of file (`src/audio/decoder.rs:2460-2500`).
+- **Defect:** the next song is preloaded once per track and the preload is never dropped (`AudioManager::clear_preload` is never called). When the next song changes or disappears afterwards (Repeat Off on the last song under Repeat All, shuffle toggled, the next song disabled or hidden by a search), the engine plays the preloaded song at the end of the track while the playlist stays on the ended one: a wrong playing marker, and Next does nothing.
+- **Found by:** the Wave F adversarial review.
+- **Fixed:** in the Teksilo UI only (quirk fix 69), the user's decision.
 
 ### D29. A slider shorter than its handle panics (latent)
 

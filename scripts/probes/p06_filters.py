@@ -53,8 +53,7 @@ def body(p):
     a = start(p)
     ALL = "194 Canciones | 49 Álbumes | 30 Artistas | 13:47:47 | 5.74 GB"
     p.check(tree_top(a) and grid_top(a) and status(a) == ALL, "at start the tree and the library are at their top and unfiltered")
-    p.check(all(not n.get("label") for n in titems(a)), "the tree's rows are unnamed in the accessibility tree", known_failure=NAMELESS_FINDING) \
-        if False else p.check(all(n.get("label") for n in titems(a)), "every tree row has an accessible name", known_failure=NAMELESS_FINDING)
+    p.check(all(n.get("label") for n in titems(a)), "every tree row has an accessible name")
 
     # ---- the selector
     a.click(a.find(role="Button", label="Tipo de filtro"))

@@ -82,6 +82,11 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 66 | A letter brings the filter tree to its top |
 | 67 | The window reopens where it was |
 | 68 | The equalizer tab waits for the restored equalizer |
+| 69 | A preload the playlist no longer wants is dropped |
+| 70 | A library refresh keeps the search and the filters |
+| 71 | A sort reorders the albums a filter shows |
+| 72 | The title marquee starts over on a new title and rests while paused |
+| 73 | Only the player's own events wake its controls |
 
 ---
 
@@ -134,7 +139,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
   - dialog. In the EQ preset Load dialog, Escape restores the previewed state, as Cancel does;
   - the Audio Center panel.
 - **Why:** standard desktop behaviour, and needed for keyboard users.
-- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{escape_closes_the_menu_without_acting, a_click_outside_closes_the_menu}`, the filter menu by `teksilo_ui::filters::panel::tests::escape_closes_the_menu_without_choosing`, the search fields by fix 35's tests; the playlist menus by `teksilo_ui::playlist::list::tests::escape_closes_the_row_menu` and `teksilo_ui::playlist::tabs::tests::{the_chevron_opens_every_playlist_under_itself, a_right_click_on_a_tab_opens_its_menu_and_on_the_strip_the_bar_menu}`; the Audio Center by `teksilo_ui::audio_center::shell::panel::tests::{escape_closes_the_panel, escape_from_a_control_inside_a_tab_closes_the_panel_too, escape_does_nothing_while_the_panel_is_closed, the_close_button_takes_the_focus_when_the_panel_opens}`, `teksilo_ui::audio_center::config::config_tab::tests::escape_closes_an_open_pick_list_before_it_closes_the_panel` and `teksilo_ui::audio_center::volume_mix::volume_mix_tab::tests::escape_cancels_an_open_field_before_it_closes_the_panel` (the innermost overlay closes first), the equalizer dialogs by `teksilo_ui::audio_center::equalizer::load_dialog::tests::escape_and_a_press_outside_restore_the_backup` and `teksilo_ui::audio_center::equalizer::save_dialog::tests::cancelar_and_a_press_outside_close_without_saving`; the meter popup by `teksilo_ui::meter::tests::{escape_closes_the_popup, a_click_outside_closes_the_popup}`.
+- **Pinned by:** the player menu by `teksilo_ui::player::panel::tests::{escape_closes_the_menu_without_acting, a_click_outside_closes_the_menu}`, the filter menu by `teksilo_ui::filters::panel::tests::escape_closes_the_menu_without_choosing`, the search fields by fix 35's tests; the playlist menus by `teksilo_ui::playlist::list::tests::escape_closes_the_row_menu` and `teksilo_ui::playlist::tabs::tests::{the_chevron_opens_every_playlist_under_itself, a_right_click_on_a_tab_opens_its_menu_and_on_the_strip_the_bar_menu}`; the Audio Center by `teksilo_ui::audio_center::shell::panel::tests::{escape_closes_the_panel, escape_from_a_control_inside_a_tab_closes_the_panel_too, escape_does_nothing_while_the_panel_is_closed, the_close_button_takes_the_focus_when_the_panel_opens}`, `teksilo_ui::audio_center::config::config_tab::tests::escape_closes_an_open_pick_list_before_it_closes_the_panel` and `teksilo_ui::audio_center::volume_mix::volume_mix_tab::tests::escape_cancels_an_open_field_before_it_closes_the_panel` (the innermost overlay closes first), the equalizer dialogs by `teksilo_ui::audio_center::equalizer::load_dialog::tests::escape_and_a_press_outside_restore_the_backup` and `teksilo_ui::audio_center::equalizer::save_dialog::tests::cancelar_and_a_press_outside_close_without_saving`; the meter popup by `teksilo_ui::meter::tests::{escape_closes_the_popup, a_click_outside_closes_the_popup}`; the playlist dialogs by `teksilo_ui::playlist::dialogs::tests::{quirk_4_escape_closes_the_create_dialog_without_creating, quirk_4_escape_closes_the_rename_dialog_without_renaming, quirk_4_escape_closes_the_delete_confirmation_without_deleting, quirk_4_escape_closes_the_export_dialog_without_asking_where}`.
 
 ## 5. No blocking work on the UI thread
 
@@ -159,7 +164,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:** a single restore runs off the UI thread and announces itself with a
   `Session::Restored` event. The UI sends no playback command before that event.
 - **Why:** the double restore reloaded the file and re-seeked it.
-- **Pinned by:** `frontend::session::tests::quirk_6_the_restore_runs_the_settings_then_the_track_once_and_publishes_restored` (one restore, settings before the track, one `Session::Restored`, later calls refused), `frontend::session::tests::a_settings_restore_first_blocks_the_session_restore`, `frontend::commands::engine_settings::tests::the_restore_applies_each_setting_once_and_runs_once_per_context` and `frontend::app_context::tests::the_startup_restore_is_claimed_once_across_clones`; on the UI side, `teksilo_ui::app::session::tests::the_restore_runs_once` and `teksilo_ui::app::tests::building_the_root_restores_the_session_once` (the root starts the restore once and `SessionState::status` gates playback until it settles).
+- **Pinned by:** `frontend::session::tests::quirk_6_the_restore_runs_the_settings_then_the_track_once_and_publishes_restored` (one restore, settings before the track, one `Session::Restored`, later calls refused), `frontend::session::tests::a_settings_restore_first_blocks_the_session_restore`, `frontend::commands::engine_settings::tests::the_restore_applies_each_setting_once_and_runs_once_per_context` and `frontend::app_context::tests::the_startup_restore_is_claimed_once_across_clones`; on the UI side, `teksilo_ui::app::session::tests::the_restore_runs_once` and `teksilo_ui::app::tests::building_the_root_restores_the_session_once` (the root starts the restore once and `SessionState::status` gates playback until it settles); what the restore delays is applied once it settles (a search typed meanwhile, a flagged end of track) by `teksilo_ui::playlist::playlist_vm::tests::{a_search_typed_before_the_restore_applies_once_it_settles, an_end_of_track_before_the_restore_settles_is_handled_once_it_does}`.
 
 ## 7. Popups open at their trigger
 
@@ -220,8 +225,9 @@ Unfinished Iced features (stubs) are not listed here; they are in
   playlist search filters the groups (`src/gui/playlist.rs:215`, `src/gui/app.rs:3001-3009`), so
   the playing marker can land on the wrong row.
 - **Teksilo:** the playing song is tracked by its song id, and rows are matched by id.
+- **Repeat One** replays the playing song found by its id, even when a search hides it, and preloads it; Iced replays the row of its stale index (`src/gui/playlist.rs:1252-1265`). A song removed from the playlist stops playback: there is nothing to replay.
 - **Why:** with an index, the marker drifted to the wrong row whenever a search filtered the list.
-- **Pinned by:** the cursor side by `frontend::commands::playback::tests::quirk_11_the_playing_song_is_tracked_by_id_under_a_search` (`PlaybackCursor` keeps the playing song by id and finds its row in the search result); the playing marker by `teksilo_ui::playlist::playlist_vm::tests::the_playing_row_is_found_by_song_id_under_a_search`; the view side by `teksilo_ui::playlist::playlist_vm::tests::the_playing_row_is_found_by_song_id_under_a_search`.
+- **Pinned by:** the cursor side by `frontend::commands::playback::tests::quirk_11_the_playing_song_is_tracked_by_id_under_a_search` (`PlaybackCursor` keeps the playing song by id and finds its row in the search result); the playing marker by `teksilo_ui::playlist::playlist_vm::tests::the_playing_row_is_found_by_song_id_under_a_search`; the view side by `teksilo_ui::playlist::playlist_vm::tests::the_playing_row_is_found_by_song_id_under_a_search`; Repeat One by `frontend::commands::playback::tests::quirk_11_repeat_one_replays_the_playing_song_a_search_hides`.
 
 ## 12. Changing a playlist's content does not reload the playing track
 
@@ -244,7 +250,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Teksilo:** while playing, the position is saved every `behavior.auto_save_interval_secs`
   (20 s by default, from `config.ron`), plus on every event where Iced saves.
 - **Why:** after a crash, the restored position could be far behind.
-- **Pinned by:** `frontend::monitor::tests::autosave_is_due_every_interval_while_playing` and `frontend::monitor::tests::no_autosave_is_due_while_paused_and_resuming_restarts_the_interval` (the monitor side); the command side by `frontend::commands::playlist::tests::quirk_13_persisting_stores_the_player_position_state_and_modes` and `frontend::session::tests::quirk_13_persist_now_on_autosave_resolves_once_the_state_is_stored`; the playlist view-model's persist-on-`AutosaveDue` test is added by the playlist wave; the view side by `teksilo_ui::playlist::playlist_vm::tests::the_autosave_persists_the_position`.
+- **Pinned by:** `frontend::monitor::tests::autosave_is_due_every_interval_while_playing` and `frontend::monitor::tests::no_autosave_is_due_while_paused_and_resuming_restarts_the_interval` (the monitor side); the command side by `frontend::commands::playlist::tests::quirk_13_persisting_stores_the_player_position_state_and_modes` and `frontend::session::tests::quirk_13_persist_now_on_autosave_resolves_once_the_state_is_stored`; the view-model side by `teksilo_ui::playlist::playlist_vm::tests::the_autosave_persists_the_position` (through the `AutosaveDue` event alone).
 
 ## 14. Hidden built-in EQ presets stay hidden across restarts
 
@@ -486,9 +492,10 @@ Unfinished Iced features (stubs) are not listed here; they are in
   song there.
 - **Teksilo:** after a load (playing a song, Next, Previous, the end of a track), the playback
   commands save position 0 for the new song. Every other save still takes the engine's position.
+- When the engine skips the load because the same track plays on (Next under Repeat One, a single enabled song under Repeat All), the track's own position is saved, not 0.
 - **Why:** after a crash or a restart before the next save, the restored song started at a
   position taken from another song.
-- **Pinned by:** `frontend::commands::playback::tests::quirk_29_a_track_change_saves_position_zero_before_the_engine_applies_the_load`.
+- **Pinned by:** `frontend::commands::playback::tests::quirk_29_a_track_change_saves_position_zero_before_the_engine_applies_the_load`; also `frontend::commands::playback::tests::{quirk_29_playing_a_song_saves_position_zero_before_the_engine_applies_the_load, quirk_29_previous_saves_position_zero_before_the_engine_applies_the_load, quirk_29_the_end_of_a_track_saves_position_zero_before_the_engine_applies_the_load, quirk_29_next_under_repeat_one_keeps_the_position_of_the_track_that_plays_on}`.
 
 ## 30. The restore opens the first playlist when the saved one is gone
 
@@ -982,3 +989,56 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Why:** reading the engine before the restore showed its defaults, and the first change then
   stored them over the saved equalizer, for both UIs (found by the Wave F review).
 - **Pinned by:** `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::{the_equalizer_built_during_the_restore_shows_and_keeps_the_restored_settings, the_controls_do_nothing_before_the_restored_equalizer_is_read, the_load_dialogs_backup_is_the_restored_equalizer}`.
+
+## 69. A preload the playlist no longer wants is dropped
+
+- **Iced:** the `Tick` path preloads the next song once per track in its last 15 s and never drops
+  the preload (`src/gui/app.rs:1371-1448`); the decoder promotes any pending preload at the end of
+  the file (`src/audio/decoder.rs:2460-2500`). When the next song changes or disappears after the
+  preload (Repeat switched off on the last song, shuffle toggled, the next song disabled or hidden
+  by a search), the engine plays the preloaded song while the playlist stays on the ended one: a
+  wrong playing marker, and Next does nothing (Iced defect D28).
+- **Teksilo:** `frontend::commands::playback::drop_stale_preload` purges a pending preload that is no
+  longer the cursor's next song, from `maybe_preload`, `toggle_repeat`, `toggle_shuffle` and every
+  change of the playback cursor; the next position event preloads the new next song. (A preload the
+  engine already promoted before the change is not undone.)
+- **Why:** the user's decision (2026-10-12): the end of a track must play what the playlist chose.
+- **Pinned by:** `frontend::commands::playback::tests::{d28_turning_repeat_off_on_the_last_song_drops_the_preload_of_the_first, d28_a_disabled_next_song_gives_its_preload_to_the_new_next_one}` and `teksilo_ui::playlist::playlist_vm::tests::d28_a_preload_the_next_song_no_longer_is_is_dropped_at_once`.
+
+## 70. A library refresh keeps the search and the filters
+
+- **Iced:** when a scan has changed the library, the refresh loads every song
+  (`get_all_songs`, `src/gui/app.rs:1345-1362`) and `InternalLibraryRefreshed` (`:3921`) shows them
+  all, while the search field keeps its text and the filter column its highlight.
+- **Teksilo:** the reload runs the active search and filters again
+  (`teksilo_ui::models::LibrarySongsModel::reload`).
+- **Why:** the user's decision (2026-10-12, a silent fix the review found): what the library shows
+  must match the search and the filters it shows.
+- **Pinned by:** `teksilo_ui::models::library_songs_model::tests::a_library_change_reloads_under_the_active_search`.
+
+## 71. A sort reorders the albums a filter shows
+
+- **Iced:** `LibrarySortChanged` (`src/gui/app.rs:2819-2876`) sorts `cached_albums`, the unfiltered
+  list; with a filter or a search active, the grid shows `filtered_albums` in its old order.
+- **Teksilo:** the grid's albums follow the sort whatever filter or search is active.
+- **Why:** the user's decision (2026-10-12, a silent fix the review found).
+- **Pinned by:** `teksilo_ui::library::library_vm::tests::a_sort_reorders_the_albums_a_filter_shows`.
+
+## 72. The title marquee starts over on a new title and rests while paused
+
+- **Iced:** the marquee's window comes from the global `tick_count` (`src/gui/app.rs:1665-1686`), so a
+  new title starts wherever the count is, and `UITick` also runs while paused when the controls are
+  awake (`:5911-5917`), so the title scrolls under a moving mouse while nothing plays.
+- **Teksilo:** a new title starts from its beginning, and the marquee scrolls only while the track
+  plays; pausing keeps its place (`player/title_marquee.rs`).
+- **Why:** the user's decision (2026-10-12): keep the Teksilo behaviour.
+- **Pinned by:** `teksilo_ui::player::player_vm::tests::{a_new_title_starts_the_marquee_from_the_beginning, the_marquee_stops_when_the_track_pauses_and_keeps_its_place}`.
+
+## 73. Only the player's own events wake its controls
+
+- **Iced:** any mouse movement anywhere in the window wakes the player's controls (`PlayerMouseMoved`
+  from the window's subscription, `src/gui/app.rs:5973`), and so do the media keys.
+- **Teksilo:** a movement over the player panel and the player's own actions (its zones, the seek
+  bar, the wheel) wake them; a movement elsewhere in the window and the media keys do not.
+- **Why:** the user's decision (2026-10-12): keep the Teksilo behaviour.
+- **Pinned by:** `teksilo_ui::player::player_vm::tests::{the_controls_are_active_for_1500_ms_after_a_mouse_move, a_transport_action_hides_the_bubble_and_wakes_the_controls}`.
