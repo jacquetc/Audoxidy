@@ -348,7 +348,9 @@ mod tests {
     use teksilo::core::WidgetTree;
 
     use super::*;
-    use crate::teksilo_ui::library::test_util::{all_of_type, mount_at, plain, settle_layout};
+    use crate::teksilo_ui::library::test_util::{
+        all_of_type, mount_at, plain, resent_selected, settle_layout,
+    };
     use crate::teksilo_ui::test_support::{access_click, find_by_name, with_shipped_messages};
 
     fn mounted(
@@ -356,6 +358,21 @@ mod tests {
         selected: bool,
         playing: bool,
     ) -> (WidgetTree, WidgetId, Rc<Cell<u32>>, Rc<Cell<u32>>) {
+        let (tree, id, selects, toggles, _) = mounted_with(height, Signal::new(selected), playing);
+        (tree, id, selects, toggles)
+    }
+
+    /// A mounted header: the tree, the header, its select and toggle counts,
+    /// and its selection.
+    type MountedHeader = (
+        WidgetTree,
+        WidgetId,
+        Rc<Cell<u32>>,
+        Rc<Cell<u32>>,
+        Signal<bool>,
+    );
+
+    fn mounted_with(height: f32, selected: Signal<bool>, playing: bool) -> MountedHeader {
         let (selects, toggles) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
         let (s, t) = (selects.clone(), toggles.clone());
         let header = HeaderRow::artist(
@@ -365,7 +382,7 @@ mod tests {
             220,
             3_600.0,
             height,
-            Signal::new(selected),
+            selected.clone(),
             Signal::new(playing),
             Rc::new(move |_m: Modifiers, _c: &mut EventContext| s.set(s.get() + 1)),
             Rc::new(move |_c: &mut EventContext| t.set(t.get() + 1)),
@@ -374,7 +391,20 @@ mod tests {
         tree.set_theme(style::audoxidy_dark());
         let id = mount_at(&mut tree, header, 700.0, height);
         settle_layout(&mut tree);
-        (tree, id, selects, toggles)
+        (tree, id, selects, toggles, selected)
+    }
+
+    #[test]
+    fn g7_a_selection_made_without_an_event_reaches_the_accessibility_tree() {
+        // Ctrl+A, a reveal or a search change the selection with no event on
+        // the row: the row's node must still be sent again, selected. The
+        // header holds the playing track, so its " •" shows either way and
+        // only the selection changes.
+        let (mut tree, id, _, _, selected) = mounted_with(32.0, Signal::new(false), true);
+        let _ = tree.sync_accessibility();
+        selected.set(true);
+        crate::teksilo_ui::test_support::layout(&mut tree);
+        assert_eq!(resent_selected(&mut tree, &[id]), vec![id]);
     }
 
     #[test]

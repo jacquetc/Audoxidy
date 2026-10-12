@@ -106,3 +106,20 @@ pub fn plain(text: &str) -> String {
         .filter(|c| !matches!(c, '\u{2068}' | '\u{2069}'))
         .collect()
 }
+
+/// The nodes among `ids` that the next accessibility update re-sends as
+/// selected. Sync once before the change, so that only what changed since
+/// is sent.
+pub fn resent_selected(tree: &mut WidgetTree, ids: &[WidgetId]) -> Vec<WidgetId> {
+    let update = tree.sync_accessibility();
+    ids.iter()
+        .copied()
+        .filter(|id| {
+            let wanted = teksilo::core::accessibility::widget_id_to_node_id(*id);
+            update
+                .nodes
+                .iter()
+                .any(|(node, data)| *node == wanted && data.is_selected() == Some(true))
+        })
+        .collect()
+}

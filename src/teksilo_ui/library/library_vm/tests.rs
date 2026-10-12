@@ -121,6 +121,37 @@ fn changing_the_view_mode_closes_the_grid_detail_and_resets_the_offset() {
     assert!(services.ctx.shutdown());
 }
 
+#[cfg(not(feature = "teksilo-mocks"))]
+#[test]
+fn g5_a_view_mode_change_retries_the_covers_that_failed() {
+    // Iced's `ChangeLibraryViewMode` clears its negative cover cache
+    // (`app.rs:3367`): a cover a scan wrote since shows in the new mode.
+    let (services, vm) = loaded();
+    let dir = std::env::temp_dir().join(format!("audoxidy-g5-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("late.png");
+    let path = file.to_string_lossy().into_owned();
+    let covers = services.covers.clone();
+    let idle =
+        |covers: &crate::teksilo_ui::shared::cover_store::CoverStore| covers.in_flight() == 0;
+    let cover = covers.request(&path);
+    assert!(run_until(&services.runtime, TIMEOUT, || idle(&covers)));
+    assert!(cover.get().is_none(), "no file yet");
+    image::RgbaImage::from_pixel(10, 10, image::Rgba([1, 2, 3, 255]))
+        .save(&file)
+        .unwrap();
+    let _ = covers.request(&path);
+    assert!(run_until(&services.runtime, TIMEOUT, || idle(&covers)));
+    assert!(cover.get().is_none(), "the failure is remembered");
+    vm.set_view_mode(LibraryViewMode::DetailedList);
+    let _ = covers.request(&path);
+    assert!(run_until(&services.runtime, TIMEOUT, || cover
+        .get()
+        .is_some()));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(services.ctx.shutdown());
+}
+
 #[test]
 fn the_column_widths_start_at_the_iced_defaults_and_store_a_resize() {
     let (services, vm) = loaded();
@@ -1072,22 +1103,25 @@ fn alt_down_opens_and_alt_up_closes_the_selected_tile_and_up_closes_the_open_one
     let id = first_card(&services);
     vm.grid_selection().select(id.clone());
     assert_eq!(vm.grid_anchor(), Some(id.clone()));
-    assert!(
-        !vm.grid_key(&Key::ArrowUp, Modifiers::ALT),
-        "nothing to close"
+    let key = |key: Key, modifiers: Modifiers| vm.grid_key(&key, modifiers, false);
+    assert_eq!(
+        key(Key::ArrowUp, Modifiers::ALT),
+        GridKey::Unused,
+        "nothing to close: a step up, the grid's"
     );
-    assert!(vm.grid_key(&Key::ArrowDown, Modifiers::ALT));
+    assert_eq!(key(Key::ArrowDown, Modifiers::ALT), GridKey::Used);
     assert_eq!(vm.expanded_album().get(), Some(id.clone()));
-    assert!(
-        !vm.grid_key(&Key::ArrowDown, Modifiers::ALT),
-        "already open"
-    );
-    assert!(vm.grid_key(&Key::ArrowUp, Modifiers::ALT));
+    assert_eq!(key(Key::ArrowUp, Modifiers::ALT), GridKey::Used);
     assert_eq!(vm.expanded_album().get(), None);
     vm.toggle_album(&id);
-    assert!(vm.grid_key(&Key::ArrowUp, Modifiers::NONE));
+    assert_eq!(key(Key::ArrowUp, Modifiers::NONE), GridKey::Used);
     assert_eq!(vm.expanded_album().get(), None);
-    assert!(!vm.grid_key(&Key::ArrowLeft, Modifiers::ALT));
+    assert_eq!(key(Key::ArrowLeft, Modifiers::ALT), GridKey::Unused);
+    // Alt+↓ on the open album walks into its songs, as Iced's
+    // `handle_key_nav` does once the toggle does not apply.
+    vm.toggle_album(&id);
+    assert_eq!(key(Key::ArrowDown, Modifiers::ALT), GridKey::EnteredBand);
+    assert_eq!(vm.expanded_album().get(), Some(id));
     assert!(services.ctx.shutdown());
 }
 
@@ -1148,7 +1182,11 @@ fn a_reveal_in_the_grid_opens_the_album_and_selects_the_song() {
     assert_eq!(vm.grid_selection().count(), 0);
     assert_eq!(
         vm.scroll_request().get().map(|r| r.1),
-        Some(ScrollRequest::GridSong { tile, row: 1 })
+        Some(ScrollRequest::GridSong {
+            tile,
+            row: 1,
+            force_top: true
+        })
     );
     assert!(services.ctx.shutdown());
 }
@@ -1174,5 +1212,567 @@ fn quirk_36_the_shared_offset_stays_within_the_overflowing_content() {
     assert_eq!(vm.h_offset().get(), content - 700.0);
     vm.clamp_h_offset(content);
     assert_eq!(vm.h_offset().get(), 0.0, "a viewport the content fits in");
+    assert!(services.ctx.shutdown());
+}
+
+// ---- G4: a refresh clears the selection, a search does not ---------------
+
+/// A widget whose build wires a view-model to the facade's events, as the
+/// panel's build does.
+#[derive(Debug)]
+struct Wired(LibraryViewModel);
+
+impl Widget for Wired {
+    fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
+        self.0.wire(ctx);
+        Vec::new()
+    }
+
+    fn layout_response(&self, proposal: SizeProposal, _ctx: &LayoutContext) -> LayoutResponse {
+        proposal.resolve(0.0, 0.0).into()
+    }
+}
+
+/// The loaded view-model, wired through a tree whose events `pump` delivers.
+fn wired() -> (
+    AppServices,
+    LibraryViewModel,
+    WidgetTree,
+    crate::teksilo_ui::test_support::EventPump,
+) {
+    let (services, vm) = loaded();
+    let (mut tree, _runtime, pump) = crate::teksilo_ui::test_support::tree_with_pump(&services.ctx);
+    tree.add(Wired(vm.clone()));
+    crate::teksilo_ui::test_support::layout(&mut tree);
+    (services, vm, tree, pump)
+}
+
+/// The library changed (a scan, a delete): the event, then the reload the
+/// library model makes on it.
+fn library_changed(
+    services: &AppServices,
+    tree: &WidgetTree,
+    pump: &crate::teksilo_ui::test_support::EventPump,
+) {
+    services.ctx.hub.publish(Event::Library(
+        crate::frontend::events::LibraryEvent::Changed,
+    ));
+    assert!(run_until(&services.runtime, TIMEOUT, || pump.deliver(tree) > 0));
+    services.library_songs.reload();
+    settle(services);
+}
+
+#[test]
+fn g4_a_library_refresh_clears_the_selection_and_keeps_the_focus() {
+    // `InternalLibraryRefreshed` empties `selected_items` (`app.rs:3944`).
+    let (services, vm, tree, pump) = wired();
+    list_mode(&vm);
+    vm.grid_selection().select(first_card(&services));
+    let picked = bowie(&vm).songs[0].id;
+    vm.click(song(picked), Modifiers::NONE, at(0));
+    assert!(!vm.selection().get().selected.is_empty());
+    assert!(!vm.grid_selection().selected_keys().is_empty());
+    library_changed(&services, &tree, &pump);
+    assert!(vm.selection().get().selected.is_empty());
+    assert!(vm.grid_selection().selected_keys().is_empty());
+    assert_eq!(vm.selection().get().focused, Some(song(picked)));
+    assert_eq!(
+        vm.stats().get().songs,
+        vm.structure().get().songs.len() as u64
+    );
+    // Only that refresh: a selection made afterwards stays.
+    vm.click(song(picked), Modifiers::NONE, at(1_000));
+    services.library_songs.reload();
+    settle(&services);
+    assert_eq!(
+        vm.selection().get().selected,
+        [song(picked)].into_iter().collect()
+    );
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g4_a_search_or_a_filter_answer_keeps_the_selection() {
+    // `LibraryFilteredLoaded` (`app.rs:3909`) leaves `selected_items` alone.
+    let (services, vm, _tree, _pump) = wired();
+    list_mode(&vm);
+    let picked = bowie(&vm).songs[0].clone();
+    vm.click(song(picked.id), Modifiers::NONE, at(0));
+    let title = picked.title.as_deref().unwrap_or_default().to_string();
+    vm.search().set(title);
+    settle(&services);
+    assert!(vm.structure().get().songs.iter().any(|s| s.id == picked.id));
+    assert_eq!(
+        vm.selection().get().selected,
+        [song(picked.id)].into_iter().collect()
+    );
+    vm.search().set(String::new());
+    services
+        .library_songs
+        .update_params(|params| params.artist = Some(BOWIE.to_string()));
+    settle(&services);
+    assert_eq!(
+        vm.selection().get().selected,
+        [song(picked.id)].into_iter().collect()
+    );
+    assert!(services.ctx.shutdown());
+}
+
+// ---- G1 and G6: a filter change -------------------------------------------
+
+#[test]
+fn g1_a_filter_change_brings_the_library_back_to_its_top() {
+    // `ChangeGeneralFilter`, `SelectSubfilter`, `SelectTreeNode` scroll the
+    // library to the top (`app.rs:4276-4282`, `:4313-4316`, `:4349-4354`).
+    let (services, vm) = loaded();
+    list_mode(&vm);
+    vm.click(song(bowie(&vm).songs[3].id), Modifiers::NONE, at(0));
+    assert!(vm.navigate(LibraryNavDir::Down, Modifiers::NONE));
+    assert!(matches!(
+        vm.scroll_request().get().map(|r| r.1),
+        Some(ScrollRequest::Reveal { .. })
+    ));
+    vm.on_filter_changed();
+    assert_eq!(
+        vm.scroll_request().get().map(|r| r.1),
+        Some(ScrollRequest::Top)
+    );
+    assert!(services.ctx.shutdown());
+}
+
+/// The column sets the library's filter to `artist`, then tells the library,
+/// as `FiltersViewModel::select_node` and the App do.
+fn filter_by_artist(services: &AppServices, vm: &LibraryViewModel, artist: &str) {
+    services
+        .library_songs
+        .update_params(|params| params.artist = Some(artist.to_string()));
+    vm.on_filter_changed();
+}
+
+#[test]
+fn g6_a_filter_change_shows_the_filters_figures_until_its_songs_arrive() {
+    // `selection_stats = None` "so that filter_stats has priority"
+    // (`app.rs:4265-4269`), until `LibraryFilteredLoaded` recomputes it over
+    // the new songs (`:3909-3912`); `selected_items` stays.
+    let (services, vm) = loaded();
+    list_mode(&vm);
+    let picked = bowie(&vm).songs[0].clone();
+    vm.click(song(picked.id), Modifiers::NONE, at(0));
+    assert_eq!(
+        vm.stats().get(),
+        compute_stats(std::slice::from_ref(&picked))
+    );
+    let shown = services.library_songs.snapshot().get().songs.clone();
+    filter_by_artist(&services, &vm, BOWIE);
+    assert_eq!(
+        vm.stats().get(),
+        compute_stats(&shown),
+        "the filter's figures"
+    );
+    assert_eq!(
+        vm.selection().get().selected,
+        [song(picked.id)].into_iter().collect(),
+        "the selection stays"
+    );
+    settle(&services);
+    assert_eq!(
+        vm.stats().get(),
+        compute_stats(std::slice::from_ref(&picked)),
+        "the selection's figures again, over the filter's songs"
+    );
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g6_a_filter_that_hides_the_selection_leaves_the_figures_to_its_songs() {
+    let (services, vm) = loaded();
+    list_mode(&vm);
+    let other = vm
+        .structure()
+        .get()
+        .songs
+        .iter()
+        .find(|s| crate::utils::get_effective_artist(s) != BOWIE)
+        .cloned()
+        .unwrap();
+    vm.click(song(other.id), Modifiers::NONE, at(0));
+    filter_by_artist(&services, &vm, BOWIE);
+    settle(&services);
+    let bowie_songs = services.library_songs.snapshot().get().songs.clone();
+    assert!(bowie_songs.iter().all(|s| s.id != other.id));
+    assert_eq!(vm.stats().get(), compute_stats(&bowie_songs));
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g6_a_selection_change_takes_the_figures_back_at_once() {
+    let (services, vm) = loaded();
+    list_mode(&vm);
+    let songs = bowie(&vm).songs.clone();
+    vm.click(song(songs[0].id), Modifiers::NONE, at(0));
+    filter_by_artist(&services, &vm, BOWIE);
+    vm.click(song(songs[1].id), Modifiers::NONE, at(1_000));
+    assert_eq!(
+        vm.stats().get(),
+        compute_stats(std::slice::from_ref(&songs[1]))
+    );
+    settle(&services);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g6_a_letter_that_queries_nothing_keeps_the_selections_figures() {
+    // A letter leaves the library's filters as they were: nothing is
+    // queried here (Iced queries the same songs again and recomputes the
+    // same figures).
+    let (services, vm) = loaded();
+    list_mode(&vm);
+    let picked = bowie(&vm).songs[0].clone();
+    vm.click(song(picked.id), Modifiers::NONE, at(0));
+    assert!(!services.library_songs.loading().get());
+    vm.on_filter_changed();
+    assert_eq!(
+        vm.stats().get(),
+        compute_stats(std::slice::from_ref(&picked))
+    );
+    assert!(services.ctx.shutdown());
+}
+
+// ---- G2: the grid's keys walk the open album's songs ----------------------
+
+/// The grid, four cards to a row, its longest album open (its card
+/// selected, so the keys start from it).
+struct GridOpen {
+    services: AppServices,
+    vm: LibraryViewModel,
+    /// The cards, in the grid's order.
+    cards: Vec<String>,
+    /// The open album's songs, as the band shows them.
+    songs: Vec<i64>,
+    /// The open card.
+    open: usize,
+    /// Another card of the open card's row.
+    same_row: usize,
+    /// A card of another row.
+    other_row: usize,
+}
+
+fn grid_open() -> GridOpen {
+    let (services, vm) = loaded();
+    vm.set_grid_per_row(4);
+    let list = services.albums.list();
+    let cards: Vec<String> = (0..list.len())
+        .filter_map(|i| list.with_item(i, |c| c.id.clone()))
+        .collect();
+    let snapshot = services.library_songs.snapshot().get();
+    let open = (0..cards.len())
+        .max_by_key(|&i| {
+            album_songs_in_memory(&cards[i], &snapshot.songs, &snapshot.albums)
+                .map_or(0, |songs| songs.len())
+        })
+        .unwrap();
+    vm.toggle_album(&cards[open]);
+    let songs: Vec<i64> = vm.expanded_songs().get().iter().map(|s| s.id).collect();
+    assert!(songs.len() >= 4, "a long enough album: {}", songs.len());
+    let row = open / 4 * 4;
+    let same_row = (row..row + 4)
+        .find(|&i| i != open && i < cards.len())
+        .unwrap();
+    let other_row = if row == 0 { 4 } else { 0 };
+    assert!(other_row < cards.len());
+    GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        same_row,
+        other_row,
+    }
+}
+
+fn grid_keys(vm: &LibraryViewModel) -> HashSet<String> {
+    vm.grid_selection().selected_keys().into_iter().collect()
+}
+
+fn walk(vm: &LibraryViewModel, key: Key, modifiers: Modifiers) -> GridKey {
+    vm.grid_key(&key, modifiers, false)
+}
+
+#[test]
+fn g2_down_from_the_open_card_enters_its_songs_and_up_from_the_first_returns() {
+    // `handle_key_nav`, Grid branch (`library.rs:808-872`).
+    let GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        ..
+    } = grid_open();
+    assert_eq!(
+        walk(&vm, Key::ArrowDown, Modifiers::NONE),
+        GridKey::EnteredBand
+    );
+    let selection = vm.selection().get();
+    assert_eq!(selection.selected, [song(songs[0])].into_iter().collect());
+    assert_eq!(selection.focused, Some(song(songs[0])));
+    assert!(grid_keys(&vm).is_empty(), "the card is no longer selected");
+    assert_eq!(
+        vm.scroll_request().get().map(|r| r.1),
+        Some(ScrollRequest::GridSong {
+            tile: open,
+            row: 0,
+            force_top: false
+        })
+    );
+    assert_eq!(walk(&vm, Key::ArrowDown, Modifiers::NONE), GridKey::Used);
+    assert_eq!(vm.selection().get().focused, Some(song(songs[1])));
+    assert_eq!(
+        vm.scroll_request().get().map(|r| r.1),
+        Some(ScrollRequest::GridSong {
+            tile: open,
+            row: 1,
+            force_top: false
+        })
+    );
+    assert_eq!(walk(&vm, Key::ArrowUp, Modifiers::NONE), GridKey::Used);
+    assert_eq!(vm.selection().get().focused, Some(song(songs[0])));
+    assert_eq!(walk(&vm, Key::ArrowUp, Modifiers::NONE), GridKey::LeftBand);
+    assert_eq!(grid_keys(&vm), [cards[open].clone()].into_iter().collect());
+    assert!(vm.selection().get().selected.is_empty());
+    assert_eq!(vm.grid_anchor(), Some(cards[open].clone()));
+    assert_eq!(
+        vm.scroll_request().get().map(|r| r.1),
+        Some(ScrollRequest::GridTile(open))
+    );
+    // On the open card again, ↑ closes it (`app.rs:3187-3200`).
+    assert_eq!(walk(&vm, Key::ArrowUp, Modifiers::NONE), GridKey::Used);
+    assert_eq!(vm.expanded_album().get(), None);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g2_down_from_any_card_of_the_open_row_enters_the_band_and_other_steps_are_the_grids() {
+    let GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        same_row,
+        other_row,
+    } = grid_open();
+    vm.grid_selection().select(cards[same_row].clone());
+    assert_eq!(vm.expanded_album().get(), Some(cards[open].clone()));
+    assert_eq!(
+        walk(&vm, Key::ArrowDown, Modifiers::NONE),
+        GridKey::EnteredBand
+    );
+    assert_eq!(vm.selection().get().focused, Some(song(songs[0])));
+    // From another row, a step between cards: the grid's own.
+    vm.grid_selection().select(cards[other_row].clone());
+    for key in [
+        Key::ArrowDown,
+        Key::ArrowUp,
+        Key::ArrowLeft,
+        Key::ArrowRight,
+    ] {
+        assert_eq!(walk(&vm, key, Modifiers::NONE), GridKey::Unused, "{key:?}");
+    }
+    // Sideways from the open row: the grid's own too.
+    vm.grid_selection().select(cards[same_row].clone());
+    assert_eq!(walk(&vm, Key::ArrowRight, Modifiers::NONE), GridKey::Unused);
+    assert_eq!(walk(&vm, Key::ArrowLeft, Modifiers::NONE), GridKey::Unused);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g2_down_stops_at_the_last_song_and_left_and_right_stay() {
+    let GridOpen {
+        services,
+        vm,
+        songs,
+        ..
+    } = grid_open();
+    let last = *songs.last().unwrap();
+    vm.click(song(last), Modifiers::NONE, at(0));
+    assert_eq!(walk(&vm, Key::ArrowDown, Modifiers::NONE), GridKey::Used);
+    assert_eq!(vm.selection().get().focused, Some(song(last)));
+    vm.click(song(songs[1]), Modifiers::NONE, at(1_000));
+    vm.click(song(songs[2]), ctrl(), at(2_000));
+    for key in [Key::ArrowLeft, Key::ArrowRight] {
+        assert_eq!(walk(&vm, key, Modifiers::NONE), GridKey::Used);
+        let selection = vm.selection().get();
+        assert_eq!(selection.focused, Some(song(songs[2])), "{key:?}");
+        // Iced's `navigate` to the same song selects it alone.
+        assert_eq!(selection.selected, [song(songs[2])].into_iter().collect());
+    }
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g2_shift_extends_the_selection_over_the_songs_from_the_pivot() {
+    let GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        ..
+    } = grid_open();
+    assert_eq!(
+        walk(&vm, Key::ArrowDown, Modifiers::NONE),
+        GridKey::EnteredBand
+    );
+    walk(&vm, Key::ArrowDown, Modifiers::SHIFT);
+    walk(&vm, Key::ArrowDown, Modifiers::SHIFT);
+    let selection = vm.selection().get();
+    assert_eq!(
+        selection.selected,
+        songs[..3].iter().map(|id| song(*id)).collect()
+    );
+    assert_eq!(selection.pivot, Some(song(songs[0])));
+    assert_eq!(selection.focused, Some(song(songs[2])));
+    // Up past the first song, still extending: the range runs from the song
+    // to the open card over Iced's order, the cards after it in its row
+    // included, and the card, an end of it, brings all its songs.
+    walk(&vm, Key::ArrowUp, Modifiers::SHIFT);
+    walk(&vm, Key::ArrowUp, Modifiers::SHIFT);
+    assert_eq!(walk(&vm, Key::ArrowUp, Modifiers::SHIFT), GridKey::LeftBand);
+    let row_end = (open / 4 * 4 + 4).min(cards.len());
+    assert_eq!(
+        grid_keys(&vm),
+        cards[open..row_end].iter().cloned().collect()
+    );
+    assert_eq!(
+        vm.selection().get().selected,
+        songs.iter().map(|id| song(*id)).collect()
+    );
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g2_a_clicked_song_is_where_the_walk_starts_and_a_ctrl_click_on_a_card_ends_it() {
+    let GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        other_row,
+        ..
+    } = grid_open();
+    vm.click(song(songs[1]), Modifiers::NONE, at(0));
+    assert_eq!(walk(&vm, Key::ArrowDown, Modifiers::NONE), GridKey::Used);
+    assert_eq!(vm.selection().get().focused, Some(song(songs[2])));
+    // The open card and a song Ctrl-picked with it, then a Ctrl-click on a
+    // card of another row: the songs stay selected, and the walk starts
+    // from that card (Iced's `focused_item`), a step the grid takes.
+    vm.grid_selection().select(cards[open].clone());
+    vm.click(song(songs[1]), ctrl(), at(1_000));
+    assert_eq!(vm.selection().get().focused, Some(song(songs[1])));
+    vm.grid_selection().toggle(cards[other_row].clone());
+    assert!(vm.selection().get().selected.contains(&song(songs[1])));
+    assert_eq!(walk(&vm, Key::ArrowDown, Modifiers::NONE), GridKey::Unused);
+    assert_eq!(vm.selection().get().focused, None);
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g2_a_shift_click_ranges_over_the_card_and_the_songs_as_iced_does() {
+    // `handle_click` ranges over `get_visible_items`, cards and songs.
+    let GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        ..
+    } = grid_open();
+    assert_eq!(
+        walk(&vm, Key::ArrowDown, Modifiers::NONE),
+        GridKey::EnteredBand
+    );
+    assert_eq!(walk(&vm, Key::ArrowUp, Modifiers::NONE), GridKey::LeftBand);
+    // The pivot is the open card now: the range runs from it to the song,
+    // the cards after it in its row included.
+    vm.click(song(songs[1]), Modifiers::SHIFT, at(0));
+    let row_end = (open / 4 * 4 + 4).min(cards.len());
+    assert_eq!(
+        grid_keys(&vm),
+        cards[open..row_end].iter().cloned().collect()
+    );
+    assert!(vm.selection().get().selected.contains(&song(songs[1])));
+    assert!(services.ctx.shutdown());
+}
+
+// ---- G3: the grid's rubber band ---------------------------------------------
+
+#[test]
+fn g3_a_sweep_selects_the_cards_and_the_band_songs_it_crosses() {
+    let GridOpen {
+        services,
+        vm,
+        cards,
+        songs,
+        open,
+        ..
+    } = grid_open();
+    // A hand-made layout: 90 × 100 cards in rows of four, 100 px apart, the
+    // band's songs 10 px rows under the open card's row.
+    let band_row = open / 4;
+    let rect_of = |spot: GridSpot, _shape: GridShape| match spot {
+        GridSpot::Card(i) => ContentRect::new(
+            (i % 4) as f32 * 100.0,
+            (i / 4) as f32 * 100.0 + if i / 4 > band_row { 1000.0 } else { 0.0 },
+            90.0,
+            100.0,
+        ),
+        GridSpot::Song(row) => ContentRect::new(
+            0.0,
+            (band_row + 1) as f32 * 100.0 + row as f32 * 10.0,
+            400.0,
+            10.0,
+        ),
+    };
+    let top = band_row as f32 * 100.0;
+    let (first, second) = (band_row * 4, band_row * 4 + 1);
+    // From inside the row's second card down over the first two songs.
+    vm.select_grid_marquee(
+        ContentRect::new(150.0, top + 50.0, 20.0, 65.0),
+        Modifiers::NONE,
+        rect_of,
+    );
+    assert_eq!(
+        grid_keys(&vm),
+        [cards[second].clone()].into_iter().collect()
+    );
+    assert_eq!(
+        vm.selection().get().selected,
+        [song(songs[0]), song(songs[1])].into_iter().collect()
+    );
+    // Shift adds, Ctrl toggles.
+    vm.select_grid_marquee(
+        ContentRect::new(50.0, top + 50.0, 20.0, 10.0),
+        Modifiers::SHIFT,
+        rect_of,
+    );
+    assert_eq!(
+        grid_keys(&vm),
+        [cards[first].clone(), cards[second].clone()]
+            .into_iter()
+            .collect()
+    );
+    vm.select_grid_marquee(
+        ContentRect::new(150.0, top + 105.0, 20.0, 2.0),
+        ctrl(),
+        rect_of,
+    );
+    assert_eq!(
+        vm.selection().get().selected,
+        [song(songs[1])].into_iter().collect()
+    );
+    assert_eq!(grid_keys(&vm).len(), 2, "the cards it does not cross stay");
     assert!(services.ctx.shutdown());
 }

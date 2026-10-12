@@ -1,5 +1,5 @@
-//! The rubber band of the list modes: [`MarqueeController`] and the
-//! [`Marquee`] overlay that draws it.
+//! The rubber band of the list modes and of the grid: [`MarqueeController`]
+//! and the [`Marquee`] overlay that draws it.
 //!
 //! Port of the Iced library marquee (`LibraryMarqueeStart`, the drag in
 //! `PlayerMouseMoved`, `GlobalMouseRelease`, `DragTick` and the overlay,
@@ -20,7 +20,9 @@
 //!   exists only while a drag does;
 //! - on release, the band selects the rows it crosses
 //!   (`LibraryViewModel::select_marquee`): it replaces the selection, adds to
-//!   it with Shift, toggles with Ctrl.
+//!   it with Shift, toggles with Ctrl. The grid gives the controller its own
+//!   selection ([`MarqueeController::with_select`]): the cards and the open
+//!   album's songs the band crosses (G3).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -93,8 +95,12 @@ struct Drag {
     modifiers: Modifiers,
 }
 
+/// What a finished sweep selects: the band (content space), the viewport's
+/// width, the modifiers at the release.
+type SelectFn = Rc<dyn Fn(ContentRect, f32, Modifiers)>;
+
 struct Shared {
-    vm: LibraryViewModel,
+    select: SelectFn,
     scroll_y: Signal<f32>,
     /// The list's (width, height).
     viewport: Rc<Cell<(f32, f32)>>,
@@ -125,9 +131,22 @@ impl MarqueeController {
         scroll_y: Signal<f32>,
         viewport: Rc<Cell<(f32, f32)>>,
     ) -> Self {
+        Self::with_select(scroll_y, viewport, move |rect, width, modifiers| {
+            vm.select_marquee(rect, width, modifiers);
+        })
+    }
+
+    /// The marquee of a view scrolled by `scroll_y`, `viewport` big, whose
+    /// finished sweeps `select` applies (the band in content space, the
+    /// viewport's width, the modifiers at the release).
+    pub fn with_select(
+        scroll_y: Signal<f32>,
+        viewport: Rc<Cell<(f32, f32)>>,
+        select: impl Fn(ContentRect, f32, Modifiers) + 'static,
+    ) -> Self {
         Self {
             shared: Rc::new(Shared {
-                vm,
+                select: Rc::new(select),
                 scroll_y,
                 viewport,
                 drag: RefCell::new(Drag::default()),
@@ -247,7 +266,7 @@ impl MarqueeController {
 
     fn select(&self, rect: ContentRect, modifiers: Modifiers) {
         let width = self.shared.viewport.get().0;
-        self.shared.vm.select_marquee(rect, width, modifiers);
+        (self.shared.select)(rect, width, modifiers);
     }
 
     /// One auto-scroll step for `elapsed_ms` since the last one.

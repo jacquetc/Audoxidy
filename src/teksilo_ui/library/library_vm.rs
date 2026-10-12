@@ -6,8 +6,9 @@
 //! `LibrarySearchQueryChanged`, `ToggleAlbumExpansion`, `ToggleArtistExpansion`,
 //! `SelectAlbum`, `SelectSong`, `SelectArtistHeader`, `LibraryDeselect`,
 //! `LibraryKeyNav`, the marquee, `PlayLibrarySelection`, `LibraryDeleteSelection`,
-//! `OpenFolderPicker`, `LibraryShowPlaying` and the reveal of a song by path
-//! (`handle_library_reveal`).
+//! `OpenFolderPicker`, `LibraryShowPlaying`, the reveal of a song by path
+//! (`handle_library_reveal`), and what `InternalLibraryRefreshed` does to the
+//! selection ([`LibraryViewModel::on_library_changed`]).
 //!
 //! # State
 //!
@@ -20,7 +21,12 @@
 //!   [`ListStructure`] they give;
 //! - the selection: [`LibrarySelection`] for the rows of the list modes and the
 //!   songs of the grid's open album, and a keyed selection of album ids for
-//!   the grid tiles, which `GridView` writes and this view-model observes;
+//!   the grid tiles, which `GridView` writes and this view-model observes. In
+//!   Grid mode the two are one selection, as Iced's `selected_items`: a Shift
+//!   click, the band walk of the keys ([`LibraryViewModel::grid_key`], G2)
+//!   and the rubber band ([`LibraryViewModel::select_grid_marquee`], G3) work
+//!   on the cards and the open album's songs together, in Iced's order
+//!   (`logic::library_selection::grid_items`);
 //! - the grid's expanded album and its songs, which the grid shows in its
 //!   detail band, under the album's row of cards, as Iced does;
 //! - the figures of the status bar, by priority: the selection, then the
@@ -62,6 +68,11 @@
 //!
 //! # For the App
 //!
+//! The filter column does not know the library: when its type, letter,
+//! restore icon or node changes what the library shows, the App calls
+//! [`LibraryViewModel::on_filter_changed`] (back to the top, the figures to
+//! the filter until its songs arrive; G1, G6).
+//!
 //! A reveal whose song the search or the filters hide clears them all. The
 //! library's search field follows [`LibraryViewModel::search`]; the filter
 //! column does not listen to the library, so the App resets its highlight
@@ -91,14 +102,15 @@ use crate::logic::library_groups::{
     AlbumEntry, LibraryStats, UNKNOWN_ALBUM, album_composite_id, compute_stats, selection_stats,
 };
 use crate::logic::library_selection::{
-    LibraryListItem, LibraryNavDir, LibrarySelection, LibraryStructure, apply_bulk_toggle_fixed,
-    artist_to_toggle_fixed, bulk_toggle_targets_fixed, list_nav_target, selected_song_ids,
-    selected_songs,
+    GridShape, GridSpot, LibraryListItem, LibraryNavDir, LibrarySelection, LibraryStructure,
+    apply_bulk_toggle_fixed, artist_to_toggle_fixed, bulk_toggle_targets_fixed, grid_items,
+    grid_nav_target, list_nav_target, selected_song_ids, selected_songs,
 };
 use crate::logic::library_sort::{SortState, sort_songs};
 use crate::logic::selection_modifiers::SelectModifiers;
 use crate::teksilo_ui::app::{AppServices, Request};
 use crate::teksilo_ui::models::has_any_filter;
+use crate::teksilo_ui::models::library_songs_model::is_reload_event;
 use crate::teksilo_ui::models::load::{finish_reply, finish_tracked};
 use crate::teksilo_ui::widgets::column_header::{
     self, ColumnWidths, columns_for, default_widths, width_of,
@@ -256,14 +268,34 @@ pub enum ScrollRequest {
     },
     /// Reveal the grid tile at this index.
     GridTile(usize),
-    /// Put the song row `row` of the band under the tile `tile` at the top
-    /// (the grid knows where the band is).
+    /// Reveal the song row `row` of the band under the tile `tile` (the grid
+    /// knows where the band is): at the top when `force_top` (a reveal by
+    /// path), else only as far as needed (the keys).
     GridSong {
         /// The open tile.
         tile: usize,
         /// The row among the band's songs.
         row: usize,
+        /// Whether to put it at the top whatever the viewport shows.
+        force_top: bool,
     },
+}
+
+/// What a grid key did ([`LibraryViewModel::grid_key`]), so that the view
+/// moves the keyboard focus with the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridKey {
+    /// Not the view-model's: the grid's own navigation takes it (a step
+    /// between cards, with the grid's focus ring and scroll).
+    Unused,
+    /// Done; the keyboard stays where it is.
+    Used,
+    /// The selection went from a card into the open album's songs: the
+    /// keyboard goes into the band.
+    EnteredBand,
+    /// The selection went from the first song back to the open album's
+    /// card: the keyboard goes back to the grid, on that card.
+    LeftBand,
 }
 
 struct Inner {
@@ -284,6 +316,9 @@ struct Inner {
     grid_anchor: RefCell<Option<String>>,
     /// Set while the view-model itself writes the grid selection.
     writing_grid: Cell<bool>,
+    /// The grid's cards to a row, as the grid lays them out (Iced's
+    /// `albums_per_row`).
+    grid_per_row: Cell<usize>,
     expanded_album: Signal<Option<String>>,
     expanded_songs: Signal<Rc<Vec<Arc<SongData>>>>,
     detail_latest: Latest,
@@ -294,6 +329,12 @@ struct Inner {
     last_album_click: RefCell<Option<(String, Instant)>>,
     pending_reveal: RefCell<Option<String>>,
     reveal_cleared: Request<LibrarySearchParams>,
+    /// Set by a library change (a scan, a delete): the next snapshot is a
+    /// refresh, which clears the selection (G4).
+    refresh_pending: Cell<bool>,
+    /// Set by a filter change while its songs are on their way: the status
+    /// bar shows the filter's figures, not the selection's (G6).
+    filter_figures: Cell<bool>,
     deletes: RefCell<HashSet<OpId>>,
     observers: RefCell<Vec<ObserverHandle>>,
 }
@@ -348,6 +389,7 @@ impl LibraryViewModel {
             grid_seen: RefCell::new(HashSet::new()),
             grid_anchor: RefCell::new(None),
             writing_grid: Cell::new(false),
+            grid_per_row: Cell::new(GRID_MIN_COLUMNS),
             expanded_album: Signal::new(None),
             expanded_songs: Signal::new(Rc::new(Vec::new())),
             detail_latest: Latest::new(),
@@ -358,6 +400,8 @@ impl LibraryViewModel {
             last_album_click: RefCell::new(None),
             pending_reveal: RefCell::new(None),
             reveal_cleared: Request::default(),
+            refresh_pending: Cell::new(false),
+            filter_figures: Cell::new(false),
             deletes: RefCell::new(HashSet::new()),
             observers: RefCell::new(Vec::new()),
         });
@@ -397,7 +441,15 @@ impl LibraryViewModel {
         }));
         handles.push(inner.selection.observe({
             let weak = weak.clone();
-            move |_| with_vm(&weak, LibraryViewModel::refresh_stats)
+            move |_| with_vm(&weak, LibraryViewModel::on_selection_changed)
+        }));
+        handles.push(inner.services.library_songs.loading().observe({
+            let weak = weak.clone();
+            move |loading: &bool| {
+                if !*loading {
+                    with_vm(&weak, LibraryViewModel::on_answer);
+                }
+            }
         }));
         handles.push(inner.services.library_stats.stats().observe({
             let weak = weak.clone();
@@ -513,10 +565,16 @@ impl LibraryViewModel {
     // -----------------------------------------------------------------
 
     /// Switches to `mode` (`ChangeLibraryViewMode`, `src/gui/app.rs:3365`):
-    /// the grid's expanded album closes, the view scrolls back to the top and
-    /// the horizontal offset returns to 0.
+    /// the covers that failed to decode are retried when next shown (G5:
+    /// `clear_all_cover_cache`, `:3367`; [`CoverStore::forget_failed`]), the
+    /// grid's expanded album closes, the view scrolls back to the top and the
+    /// horizontal offset returns to 0.
+    ///
+    /// [`CoverStore::forget_failed`]: crate::teksilo_ui::shared::cover_store::CoverStore::forget_failed
     pub fn set_view_mode(&self, mode: LibraryViewMode) {
         let inner = &self.inner;
+        // Before the views of the new mode ask for their covers.
+        inner.services.covers.forget_failed();
         inner.view_mode.set(mode);
         inner.expanded_album.set(None);
         inner.expanded_songs.set(Rc::new(Vec::new()));
@@ -608,6 +666,9 @@ impl LibraryViewModel {
     }
 
     fn on_snapshot(&self) {
+        if self.inner.refresh_pending.replace(false) {
+            self.clear_selected();
+        }
         self.rebuild();
         self.refresh_expanded_from_snapshot();
         let pending = self.inner.pending_reveal.borrow_mut().take();
@@ -640,10 +701,17 @@ impl LibraryViewModel {
         selected_songs(&self.selected_items(), &structure.data(), &snapshot.songs)
     }
 
-    /// Recomputes the status bar's figures.
+    /// Recomputes the status bar's figures: the selection's, unless a filter
+    /// change gave them to the filter until its songs arrive (G6), then the
+    /// songs', then the totals.
     pub fn refresh_stats(&self) {
         let inner = &self.inner;
-        let stats = selection_stats(&self.selected_songs()).unwrap_or_else(|| {
+        let selection = if inner.filter_figures.get() {
+            None
+        } else {
+            selection_stats(&self.selected_songs())
+        };
+        let stats = selection.unwrap_or_else(|| {
             if inner.services.library_songs.version().get() > 0 {
                 compute_stats(&inner.services.library_songs.snapshot().get().songs)
             } else {
@@ -651,6 +719,48 @@ impl LibraryViewModel {
             }
         });
         inner.stats.set_if_changed(stats);
+    }
+
+    /// The selection changed: its figures show again (Iced's
+    /// `update_selection_stats`, which every selection gesture calls).
+    fn on_selection_changed(&self) {
+        self.inner.filter_figures.set(false);
+        self.refresh_stats();
+    }
+
+    /// The library model answered (or failed): the selection's figures,
+    /// over the new songs, show again, as Iced's `LibraryFilteredLoaded`
+    /// recomputes them (`src/gui/app.rs:3909-3912`).
+    fn on_answer(&self) {
+        if self.inner.filter_figures.replace(false) {
+            self.refresh_stats();
+        }
+    }
+
+    /// The filter column changed what the library shows: a type, a letter,
+    /// the restore icon or a node was chosen (`ChangeGeneralFilter`,
+    /// `SelectSubfilter`, `SelectTreeNode`, `src/gui/app.rs:4245-4354`). The
+    /// App calls it on `FiltersViewModel::library_reset`.
+    ///
+    /// - G1: the view goes back to its top (`:4276-4282`, `:4313-4316`,
+    ///   `:4349-4354`).
+    /// - G6: Iced sets `selection_stats` to `None` "so that `filter_stats`
+    ///   has priority" (`:4265-4269`, `:4296-4299`, `:4330-4334`) and keeps
+    ///   `selected_items`; the search it starts answers with
+    ///   `LibraryFilteredLoaded`, which recomputes the selection's figures
+    ///   over the new songs (`:3909-3912`). So while the filter's songs are on
+    ///   their way the bar shows the filter's figures (those of the songs
+    ///   shown), and once they arrive the selection's again, or the new
+    ///   songs' when none of the selection is left. A letter that leaves the
+    ///   library's filters as they were queries nothing here (Iced queries
+    ///   the same songs again), so the selection's figures stay.
+    pub fn on_filter_changed(&self) {
+        let inner = &self.inner;
+        inner.scroll.send(ScrollRequest::Top);
+        if inner.services.library_songs.loading().get() {
+            inner.filter_figures.set(true);
+            self.refresh_stats();
+        }
     }
 
     // -----------------------------------------------------------------
@@ -696,41 +806,48 @@ impl LibraryViewModel {
             }
             LibraryListItem::Song(_) => {}
         }
-        let grid = inner.view_mode.get() == LibraryViewMode::Grid;
         let modifiers = select_modifiers(modifiers);
-        if grid && !modifiers.toggle && !modifiers.range {
-            // A plain click on a band song replaces the whole selection.
-            self.write_grid_selection(|keyed| keyed.clear());
+        if inner.view_mode.get() == LibraryViewMode::Grid {
+            // The cards and the band's songs are one selection, as Iced's
+            // `selected_items`: a plain click replaces both, and a Shift click
+            // ranges over both in Iced's order (`handle_click` over
+            // `get_visible_items`, `src/gui/library.rs:913-922`).
+            self.update_grid(|selection, items, structure| {
+                selection.click(item, modifiers, || items.to_vec(), &structure.data());
+            });
+            return;
         }
         self.update_selection(|selection, structure| {
             selection.click(
                 item,
                 modifiers,
-                || {
-                    if grid {
-                        self.detail_items()
-                    } else {
-                        structure.item_rects(1.0)
-                    }
-                },
+                || structure.item_rects(1.0),
                 &structure.data(),
             );
         });
     }
 
-    /// The band's songs as items (the range order of a Shift click).
-    fn detail_items(&self) -> Vec<(LibraryListItem, ContentRect)> {
-        let songs = visible_album_songs(&self.inner.expanded_songs.get(), &self.inner.search.get());
-        songs
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                (
-                    LibraryListItem::Song(s.id),
-                    ContentRect::new(0.0, i as f32 * 32.0, 1.0, 32.0),
-                )
-            })
-            .collect()
+    /// Empties the selection and leaves the focus and the pivot, as Iced's
+    /// `InternalLibraryRefreshed` empties `selected_items` (`src/gui/app.rs:3944`).
+    fn clear_selected(&self) {
+        let mut selection = self.inner.selection.get();
+        selection.selected.clear();
+        self.inner.selection.set_if_changed(selection);
+        self.write_grid_selection(|keyed| keyed.clear());
+    }
+
+    /// The library changed under the view-model (`LibraryEvent::Changed` or
+    /// `ScanFinished`: a scan, a delete): the snapshot the library model
+    /// reloads on it is a refresh, and a refresh clears the selection (G4),
+    /// as Iced's `InternalLibraryRefreshed` does (`src/gui/app.rs:3921-3944`;
+    /// the reply of `LibraryRefresh`, and of the scanner's dirty flag,
+    /// `:1340-1365`). A search or a filter answer (Iced's
+    /// `LibraryFilteredLoaded`, `:3909`) keeps it. The model reloads on the
+    /// next frame and its reload supersedes the requests before it, so the
+    /// next snapshot is the refresh (or, at worst, a search answer already
+    /// on its way, a frame earlier).
+    pub fn on_library_changed(&self) {
+        self.inner.refresh_pending.set(true);
     }
 
     /// A press on the empty background (`LibraryDeselect`): nothing selected.
@@ -929,6 +1046,7 @@ impl LibraryViewModel {
 
     /// Writes the grid selection without treating it as a user gesture.
     fn write_grid_selection(&self, f: impl FnOnce(&KeyedSelectionModel<String>)) {
+        self.inner.filter_figures.set(false);
         self.inner.writing_grid.set(true);
         f(&self.inner.grid_selection);
         self.inner.writing_grid.set(false);
@@ -968,11 +1086,20 @@ impl LibraryViewModel {
         let single_toggle = !previous.is_empty()
             && ((added.len() == 1 && removed == 0)
                 || (added.is_empty() && removed == 1 && keys.len() > 1));
-        if !single_toggle {
+        if single_toggle {
+            // A Ctrl-click on a card makes the card the current item (Iced's
+            // `focused_item`): the keys no longer walk from a band song.
+            let mut selection = self.inner.selection.get();
+            if matches!(selection.focused, Some(LibraryListItem::Song(_))) {
+                selection.focused = None;
+                self.inner.selection.set_if_changed(selection);
+            }
+        } else {
             self.inner
                 .selection
                 .set_if_changed(LibrarySelection::default());
         }
+        self.inner.filter_figures.set(false);
         self.refresh_stats();
     }
 
@@ -981,39 +1108,240 @@ impl LibraryViewModel {
         self.inner.grid_anchor.borrow().clone()
     }
 
-    /// The grid's keys on top of `GridView`'s own navigation
-    /// (`LibraryKeyNav` in Grid mode, `src/gui/app.rs:3170-3201`): Alt+↑
-    /// closes the selected album and Alt+↓ opens it; ↑ alone on the open
-    /// album closes it. Returns whether the key was used.
-    pub fn grid_key(&self, key: &Key, modifiers: Modifiers) -> bool {
-        let up = matches!(key, Key::ArrowUp);
-        let down = matches!(key, Key::ArrowDown);
-        if !(up || down) {
-            return false;
+    /// Tells the view-model how many cards a row of the grid holds (the grid
+    /// sets it from its width).
+    pub fn set_grid_per_row(&self, per_row: usize) {
+        self.inner.grid_per_row.set(per_row.max(1));
+    }
+
+    /// The grid's cards, by composite id, in the grid's order.
+    fn grid_cards(&self) -> Vec<String> {
+        let list = self.inner.services.albums.list();
+        (0..list.len())
+            .filter_map(|i| list.with_item(i, |card| card.id.clone()))
+            .collect()
+    }
+
+    /// The ids of the songs the band shows.
+    fn band_song_ids(&self) -> Vec<i64> {
+        visible_album_songs(&self.inner.expanded_songs.get(), &self.inner.search.get())
+            .iter()
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// The grid's shape over `cards` and the band's `songs`.
+    fn grid_shape(&self, cards: &[String], songs: &[i64]) -> GridShape {
+        let open = self
+            .inner
+            .expanded_album
+            .get()
+            .and_then(|id| cards.iter().position(|card| *card == id));
+        GridShape {
+            cards: cards.len(),
+            per_row: self.inner.grid_per_row.get(),
+            open,
+            songs: songs.len(),
         }
+    }
+
+    /// Applies `f` to the Grid mode's selection as Iced holds it: one
+    /// selection of the cards and of the band's songs, over the grid's items
+    /// in Iced's order ([`grid_items`]); the result is written back to the
+    /// tiles' keyed selection (the cards) and to the rows' selection (the
+    /// songs, the focus and the pivot). A pivot that is not one of the items
+    /// is dropped.
+    fn update_grid(
+        &self,
+        f: impl FnOnce(&mut LibrarySelection, &[LibraryListItem], &ListStructure),
+    ) {
+        let cards = self.grid_cards();
+        let songs = self.band_song_ids();
+        let items = grid_items(&cards, &songs, self.grid_shape(&cards, &songs));
+        let mut selection = self.inner.selection.get();
+        selection.selected.extend(
+            self.inner
+                .grid_selection
+                .selected_keys()
+                .into_iter()
+                .map(LibraryListItem::Album),
+        );
+        if selection
+            .pivot
+            .as_ref()
+            .is_some_and(|pivot| !items.contains(pivot))
+        {
+            selection.pivot = None;
+        }
+        f(&mut selection, &items, &self.inner.structure.get());
+        let (albums, rest): (HashSet<LibraryListItem>, HashSet<LibraryListItem>) = selection
+            .selected
+            .into_iter()
+            .partition(|item| matches!(item, LibraryListItem::Album(_)));
+        let albums: Vec<String> = albums
+            .into_iter()
+            .filter_map(|item| match item {
+                LibraryListItem::Album(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        self.write_grid_selection(|keyed| {
+            if albums.is_empty() {
+                keyed.clear();
+            } else {
+                keyed.select_keys(albums, false);
+            }
+        });
+        self.inner.selection.set_if_changed(LibrarySelection {
+            selected: rest,
+            focused: selection.focused,
+            pivot: selection.pivot,
+        });
+    }
+
+    /// The current item of the grid's walk (Iced's `focused_item`): the
+    /// focused song when it is one of the band's, else the card the last
+    /// gesture was on; with the keyboard in the band (`in_band`) and no
+    /// song current, the open album's card, where the grid's cursor is when
+    /// it moved the keyboard there.
+    fn grid_spot(&self, cards: &[String], songs: &[i64], in_band: bool) -> Option<GridSpot> {
+        if let Some(LibraryListItem::Song(id)) = self.inner.selection.get().focused
+            && let Some(row) = songs.iter().position(|song| *song == id)
+        {
+            return Some(GridSpot::Song(row));
+        }
+        let card = if in_band {
+            self.inner.expanded_album.get()?
+        } else {
+            self.grid_anchor()?
+        };
+        cards.iter().position(|id| *id == card).map(GridSpot::Card)
+    }
+
+    /// A sweep of the grid's rubber band (G3), `rect` in content space: it
+    /// selects the cards and the open album's songs it crosses, `rect_of`
+    /// giving each one's rectangle in the grid as laid out. Iced sweeps the
+    /// grid's items, cards and songs, on release (`select_marquee` over
+    /// `get_visible_items`, `src/gui/library.rs:900-910`, from
+    /// `GlobalMouseRelease`, `src/gui/app.rs:4800-4812`): it replaces the
+    /// selection, adds to it with Shift, toggles with Ctrl, and leaves the
+    /// focus and the pivot.
+    pub fn select_grid_marquee(
+        &self,
+        rect: ContentRect,
+        modifiers: Modifiers,
+        rect_of: impl Fn(GridSpot, GridShape) -> ContentRect,
+    ) {
+        let cards = self.grid_cards();
+        let songs = self.band_song_ids();
+        let shape = self.grid_shape(&cards, &songs);
+        let band = if shape.band_start().is_some() {
+            songs.as_slice()
+        } else {
+            &[]
+        };
+        let rects: Vec<(LibraryListItem, ContentRect)> = cards
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                (
+                    LibraryListItem::Album(id.clone()),
+                    rect_of(GridSpot::Card(i), shape),
+                )
+            })
+            .chain(band.iter().enumerate().map(|(row, id)| {
+                (
+                    LibraryListItem::Song(*id),
+                    rect_of(GridSpot::Song(row), shape),
+                )
+            }))
+            .collect();
+        let modifiers = select_modifiers(modifiers);
+        self.update_grid(|selection, _, _| selection.select_marquee(&rects, rect, modifiers));
+    }
+
+    /// The grid's arrow keys (`LibraryKeyNav` in Grid mode,
+    /// `src/gui/app.rs:3170-3213`, then `handle_key_nav`,
+    /// `src/gui/library.rs:760-880`), `in_band` when the keyboard is in the
+    /// open album's band:
+    ///
+    /// - Alt+↑ closes the selected album and Alt+↓ opens it; ↑ alone on the
+    ///   open album's card closes it;
+    /// - the walk of [`grid_nav_target`] over the cards and the band's songs:
+    ///   ↓ from a card of the open album's row enters its first song, ↓ and ↑
+    ///   move song by song (↓ stops at the last), ↑ from the first song goes
+    ///   back to the open album's card, ← and → stay on a song; Shift extends
+    ///   the selection from the pivot over the cards and the songs, as in the
+    ///   list modes (`LibrarySelection::navigate`). A song moved to is
+    ///   revealed ([`ScrollRequest::GridSong`]);
+    /// - a step between two cards is left to the grid's own navigation
+    ///   ([`GridKey::Unused`]), which moves its cursor and focus ring, selects
+    ///   and scrolls, and steps over the band.
+    pub fn grid_key(&self, key: &Key, modifiers: Modifiers, in_band: bool) -> GridKey {
+        let dir = match key {
+            Key::ArrowUp => LibraryNavDir::Up,
+            Key::ArrowDown => LibraryNavDir::Down,
+            Key::ArrowLeft => LibraryNavDir::Left,
+            Key::ArrowRight => LibraryNavDir::Right,
+            _ => return GridKey::Unused,
+        };
+        let (up, down) = (dir == LibraryNavDir::Up, dir == LibraryNavDir::Down);
         let expanded = self.inner.expanded_album.get();
-        let anchor = self.grid_anchor();
-        if modifiers.alt()
+        if (up || down)
+            && modifiers.alt()
             && !modifiers.ctrl()
-            && let Some(selected) = anchor.clone()
+            && let Some(selected) = self.grid_anchor()
         {
             let is_expanded = expanded.as_deref() == Some(selected.as_str());
             if (up && is_expanded) || (down && !is_expanded) {
                 self.toggle_album(&selected);
-                return true;
+                return GridKey::Used;
             }
         }
+        let cards = self.grid_cards();
+        let songs = self.band_song_ids();
+        let shape = self.grid_shape(&cards, &songs);
+        let Some(spot) = self.grid_spot(&cards, &songs, in_band) else {
+            return GridKey::Unused;
+        };
         if up
             && !modifiers.shift()
             && !modifiers.alt()
             && !modifiers.ctrl()
-            && let (Some(selected), Some(open)) = (anchor, expanded)
-            && selected == open
+            && let GridSpot::Card(card) = spot
+            && expanded.as_deref() == Some(cards[card].as_str())
         {
-            self.toggle_album(&selected);
-            return true;
+            self.toggle_album(&cards[card]);
+            return GridKey::Used;
         }
-        false
+        let target = grid_nav_target(spot, dir, shape);
+        let outcome = match (spot, target) {
+            (GridSpot::Card(_), GridSpot::Card(_)) => return GridKey::Unused,
+            (GridSpot::Card(_), GridSpot::Song(_)) => GridKey::EnteredBand,
+            (GridSpot::Song(_), GridSpot::Song(_)) => GridKey::Used,
+            (GridSpot::Song(_), GridSpot::Card(_)) => GridKey::LeftBand,
+        };
+        let (Some(current), Some(next), Some(open)) =
+            (shape.index_of(spot), shape.index_of(target), shape.open)
+        else {
+            return GridKey::Unused;
+        };
+        let modifiers = select_modifiers(modifiers);
+        self.update_grid(|selection, items, structure| {
+            selection.navigate(items, current, next, modifiers, &structure.data());
+        });
+        // Iced's `sync_legacy_selection`: the album is the open one either
+        // way (`src/gui/library.rs:961-976`).
+        *self.inner.grid_anchor.borrow_mut() = Some(cards[open].clone());
+        self.inner.scroll.send(match target {
+            GridSpot::Song(row) => ScrollRequest::GridSong {
+                tile: open,
+                row,
+                force_top: false,
+            },
+            GridSpot::Card(card) => ScrollRequest::GridTile(card),
+        });
+        outcome
     }
 
     /// Opens the album `id` in the grid (`Some`) or closes the open one
@@ -1376,17 +1704,29 @@ impl LibraryViewModel {
         inner.selection.set_if_changed(selection);
         let visible = visible_album_songs(&inner.expanded_songs.get(), &inner.search.get());
         match visible.iter().position(|s| s.id == song.id) {
-            Some(row) => inner.scroll.send(ScrollRequest::GridSong { tile, row }),
+            Some(row) => inner.scroll.send(ScrollRequest::GridSong {
+                tile,
+                row,
+                force_top: true,
+            }),
             None => inner.scroll.send(ScrollRequest::GridTile(tile)),
         }
     }
 
-    /// Subscribes to the long operations (the end of a delete) for as long as
-    /// the widget building it lives; call it from the panel's `build`.
+    /// Subscribes to the long operations (the end of a delete) and to the
+    /// library's changes ([`on_library_changed`](Self::on_library_changed))
+    /// for as long as the widget building it lives; call it from the panel's
+    /// `build`.
     pub fn wire(&self, ctx: &mut BuildContext) {
         let vm = self.clone();
         ctx.subscribe_event_with_ctx(Origin::LongOperation, move |event: &Event, ctx| {
             vm.on_long_op(event, ctx);
+        });
+        let vm = self.clone();
+        ctx.subscribe_event(Origin::Library, move |event: &Event| {
+            if is_reload_event(event) {
+                vm.on_library_changed();
+            }
         });
     }
 }

@@ -12,7 +12,9 @@
 //! - **One decode per path.** Every request for a path shares one entry, so
 //!   fifty tiles of one album (or a tile and the player's cover) decode it
 //!   once. A path whose decode failed (a missing or unreadable file) stays
-//!   empty, and is not retried until it leaves the LRU.
+//!   empty, and is not retried until it leaves the LRU or
+//!   [`CoverStore::forget_failed`] forgets the failures (a view-mode change,
+//!   as Iced's `clear_all_cover_cache`, `src/gui/app.rs:3367`).
 //! - **Bounded work.** At most four decodes run at once (two in low-resource
 //!   mode), each on its own thread (`spawn_blocking`); the others wait their
 //!   turn, the most recently requested first, since that is what is on screen.
@@ -121,6 +123,9 @@ enum State {
     Done,
     /// The decode failed; not retried.
     Failed,
+    /// The decode failed and the failure was forgotten
+    /// ([`CoverStore::forget_failed`]): the next request decodes it again.
+    Forgotten,
 }
 
 struct Entry {
@@ -194,7 +199,15 @@ impl CoverStore {
     /// entry; asking promotes it to the most recently used.
     pub fn request(&self, path: &str) -> CoverSignal {
         let inner = &self.inner;
-        if let Some(entry) = inner.cache.borrow_mut().get(path) {
+        let cached = inner.cache.borrow_mut().get(path);
+        if let Some(entry) = cached {
+            if entry.state.get() == State::Forgotten {
+                // The signal stays the one its holders bind, so a retry that
+                // succeeds shows in every tile that asked for it before.
+                entry.state.set(State::Queued);
+                inner.queue.borrow_mut().push(path.to_string());
+                self.pump();
+            }
             return entry.signal.clone();
         }
         let entry = Rc::new(Entry {
@@ -298,6 +311,23 @@ impl CoverStore {
             .cache
             .borrow_mut()
             .purge_oldest(count, crate::utils::is_low_resource());
+    }
+
+    /// Forgets every failed decode, so that the next request for its path
+    /// decodes it again: a cover a scan wrote since is then shown. The
+    /// decoded covers are kept. Iced's `ChangeLibraryViewMode` clears its
+    /// negative cache the same way (`clear_all_cover_cache`,
+    /// `src/gui/app.rs:3367`, `src/utils/covers.rs:192`), and keeps its
+    /// image handles.
+    pub fn forget_failed(&self) {
+        let cache = self.inner.cache.borrow();
+        for path in cache.order_mru_to_lru() {
+            if let Some(entry) = cache.peek(&path)
+                && entry.state.get() == State::Failed
+            {
+                entry.state.set(State::Forgotten);
+            }
+        }
     }
 
     /// Drops every cover.
@@ -734,6 +764,37 @@ mod tests {
         let _ = store.request("/nonexistent/cover.png");
         assert_eq!(store.decodes_started(), 1);
         assert_eq!(store.in_flight(), 0);
+    }
+
+    #[cfg(not(feature = "teksilo-mocks"))]
+    #[test]
+    fn g5_a_forgotten_failure_is_decoded_again_on_its_next_request() {
+        let covers = Covers::new("forget");
+        let runtime = AsyncRuntimeHandle::new();
+        let store = CoverStore::new(runtime.clone());
+        let good = covers.path(0);
+        let late = covers.dir.join("late.png").to_string_lossy().into_owned();
+        let good_signal = store.request(&good);
+        let late_signal = store.request(&late);
+        assert!(settled(&runtime, &store));
+        assert!(good_signal.get().is_some());
+        assert!(late_signal.get().is_none(), "no file yet");
+        // A scan writes the cover afterwards; the failure is remembered.
+        std::fs::copy(&good, &late).unwrap();
+        let _ = store.request(&late);
+        assert!(settled(&runtime, &store));
+        assert_eq!(store.decodes_started(), 2);
+        assert!(late_signal.get().is_none());
+        // Forgotten, it is decoded on its next request, into the signal its
+        // first holder binds; the good cover is not decoded again.
+        store.forget_failed();
+        assert_eq!(store.decodes_started(), 2, "nothing before a request");
+        let _ = store.request(&good);
+        let again = store.request(&late);
+        assert!(Signal::same(&again, &late_signal));
+        assert!(settled(&runtime, &store));
+        assert_eq!(store.decodes_started(), 3);
+        assert!(late_signal.get().is_some());
     }
 
     #[cfg(not(feature = "teksilo-mocks"))]

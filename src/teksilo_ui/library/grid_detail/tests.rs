@@ -4,7 +4,9 @@ use teksilo::widgets::Spacer;
 
 use super::*;
 use crate::teksilo_ui::app::AppServices;
-use crate::teksilo_ui::library::test_util::{REGION, all_of_type, loaded, settle_layout, tree_for};
+use crate::teksilo_ui::library::test_util::{
+    REGION, all_of_type, loaded, resent_selected, settle_layout, tree_for,
+};
 use crate::teksilo_ui::test_support::pointer_click;
 
 /// The band of the first album, alone, `REGION.0` wide and as tall as it
@@ -118,5 +120,18 @@ fn with_no_song_to_show_the_band_takes_no_space() {
     settle_layout(&mut tree);
     assert_eq!(tree.bounds(detail).height, 0.0, "Iced draws no block");
     assert!(all_of_type(&tree, detail, "SongRow").is_empty());
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g7_a_selection_made_without_an_event_reaches_the_accessibility_tree() {
+    // Ctrl+A in the grid selects the open album's songs too.
+    let (services, vm, mut tree, detail) = mounted();
+    let _ = tree.sync_accessibility();
+    let rows = all_of_type(&tree, detail, "SongRow");
+    assert!(rows.len() > 1);
+    vm.select_all();
+    crate::teksilo_ui::test_support::layout(&mut tree);
+    assert_eq!(resent_selected(&mut tree, &rows), rows);
     assert!(services.ctx.shutdown());
 }

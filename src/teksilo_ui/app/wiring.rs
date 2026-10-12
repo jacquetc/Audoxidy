@@ -8,6 +8,13 @@
 //!   and its selected node ([`FiltersViewModel::clear_highlight`]), as Iced
 //!   clears `selected_subfilter` and `selected_tree_node`
 //!   (`src/gui/app.rs:6108-6110`).
+//! - **A filter change resets the library.** When the filter column's type,
+//!   letter, restore icon or node changes what the library shows
+//!   ([`FiltersViewModel::library_reset`]), the library goes back to its top
+//!   and its status bar gives the selection's figures to the filter's until
+//!   the filter's songs arrive ([`LibraryViewModel::on_filter_changed`]), as
+//!   Iced's `ChangeGeneralFilter`, `SelectSubfilter` and `SelectTreeNode` do
+//!   (`src/gui/app.rs:4245-4354`; G1, G6).
 //! - **The memory purge** (`GlobalMemoryPurge`, `src/gui/app.rs:1580-1631`):
 //!   the backend part (the string interner, the preload, the stream buffers,
 //!   memory back to the OS) runs on the engine worker, queued by the playback
@@ -48,13 +55,31 @@ pub fn wire(
             .get()
             .map_or(0, |(sequence, _)| sequence),
     ));
-    let filters = filters.clone();
-    ctx.effect(&library.reveal_cleared(), move |request| {
+    {
+        let filters = filters.clone();
+        ctx.effect(&library.reveal_cleared(), move |request| {
+            if let Some((sequence, _)) = request
+                && *sequence > handled.get()
+            {
+                handled.set(*sequence);
+                filters.clear_highlight();
+            }
+        });
+    }
+
+    let handled = Rc::new(Cell::new(
+        filters
+            .library_reset()
+            .get()
+            .map_or(0, |(sequence, _)| sequence),
+    ));
+    let library = library.clone();
+    ctx.effect(&filters.library_reset(), move |request| {
         if let Some((sequence, _)) = request
             && *sequence > handled.get()
         {
             handled.set(*sequence);
-            filters.clear_highlight();
+            library.on_filter_changed();
         }
     });
 

@@ -18,10 +18,17 @@
 //! preview handler, before the list or the grid sees them, unless a text
 //! field has the focus. In the list modes ↑ and ↓ move the selection (Shift
 //! extends it) and ← and → collapse and expand; in the grid Alt+↑ / Alt+↓ and
-//! ↑ on the open album close and open it, and the other arrows are the
-//! grid's own navigation. Ctrl+A is the app's global shortcut, routed to
+//! ↑ on the open album close and open it, ↓ from a card of the open album's
+//! row enters its songs (the keyboard goes into the band), ↑ and ↓ walk them
+//! and ↑ from the first goes back to the open card (the keyboard goes back to
+//! the grid, on that card: the band lets the key through and the grid takes
+//! it), and a step between cards is the grid's own navigation (G2,
+//! [`LibraryViewModel::grid_key`]). Ctrl+A is the app's global shortcut, routed to
 //! [`LibraryViewModel::select_all`]. None of these is a global shortcut: a key
 //! acts on the panel that has the keyboard.
+
+use std::cell::Cell;
+use std::rc::Rc;
 
 use teksilo::core::binding::BindingLevel;
 use teksilo::core::event::{ScrollDelta, WidgetEvent};
@@ -33,7 +40,7 @@ use teksilo::widgets::{Expand, FixedSize, Padding, Panel, VStack};
 use super::bottom_bar::BottomBar;
 use super::grid::LibraryGrid;
 use super::hshift::HShift;
-use super::library_vm::{LibraryViewModel, content_width};
+use super::library_vm::{GridKey, LibraryViewModel, content_width};
 use super::list_rows::LibraryList;
 use crate::logic::library_geometry::LibraryViewMode;
 use crate::logic::library_selection::LibraryNavDir;
@@ -58,9 +65,10 @@ pub fn nav_dir(key: &Key) -> Option<LibraryNavDir> {
 }
 
 /// The panel's keys (see the module documentation), for a key that does not
-/// come from a text field.
+/// come from a text field; `band` holds the grid band's id once it is built.
 pub fn handle_key(
     vm: &LibraryViewModel,
+    band: &Cell<Option<WidgetId>>,
     key: &Key,
     modifiers: Modifiers,
     ctx: &mut EventContext,
@@ -76,10 +84,22 @@ pub fn handle_key(
         }
         _ => match nav_dir(key) {
             Some(_) if vm.view_mode().get() == LibraryViewMode::Grid => {
-                if vm.grid_key(key, modifiers) {
-                    EventResponse::Handled
-                } else {
-                    EventResponse::Ignored
+                let band = band.get();
+                let in_band = band.is_some() && ctx.focused() == band;
+                match vm.grid_key(key, modifiers, in_band) {
+                    GridKey::Unused => EventResponse::Ignored,
+                    GridKey::Used => EventResponse::Handled,
+                    GridKey::EnteredBand => {
+                        if let Some(band) = band {
+                            ctx.request_focus(band);
+                        }
+                        EventResponse::Handled
+                    }
+                    // In the band, the key goes on: the band does not use it
+                    // and the grid takes the keyboard back, its cursor on the
+                    // band's card.
+                    GridKey::LeftBand if in_band => EventResponse::Ignored,
+                    GridKey::LeftBand => EventResponse::Handled,
                 }
             }
             Some(dir) => {
@@ -100,7 +120,7 @@ const ARROWS: SortArrows = SortArrows {
 /// The column header of the current mode, rebuilt when the mode changes.
 struct ModeHeader {
     vm: LibraryViewModel,
-    width: std::rc::Rc<std::cell::Cell<f32>>,
+    width: Rc<Cell<f32>>,
     root: Option<WidgetId>,
 }
 
@@ -175,6 +195,7 @@ impl Widget for ModeHeader {
 /// The body of the current mode, rebuilt when the mode changes.
 struct ModeBody {
     vm: LibraryViewModel,
+    band: Rc<Cell<Option<WidgetId>>>,
     root: Option<WidgetId>,
 }
 
@@ -190,7 +211,10 @@ impl Widget for ModeBody {
         vm.view_mode()
             .bind_to(ctx.self_id(), ctx.binding_registry(), BindingLevel::Rebuild);
         let root = match vm.view_mode().get() {
-            LibraryViewMode::Grid => ctx.add(LibraryGrid::new(vm)),
+            LibraryViewMode::Grid => {
+                self.band.set(None);
+                ctx.add(LibraryGrid::new(vm).band_focus(self.band.clone()))
+            }
             mode => ctx.add(
                 Padding::new(0.0, 0.0, 0.0, CONTENT_LEADING).child(LibraryList::new(vm, mode)),
             ),
@@ -259,7 +283,9 @@ impl Widget for LibraryPanel {
         vm.wire(ctx);
         let surfaces = ctx.text_surfaces();
         let key_vm = vm.clone();
-        let header_width = std::rc::Rc::new(std::cell::Cell::new(0.0));
+        let band = Rc::new(Cell::new(None));
+        let key_band = band.clone();
+        let header_width = Rc::new(Cell::new(0.0));
         let root = ctx.add(
             Panel::new()
                 .padding(0.0)
@@ -276,6 +302,7 @@ impl Widget for LibraryPanel {
                         }))
                         .child(Expand::new().child(ModeBody {
                             vm: vm.clone(),
+                            band,
                             root: None,
                         }))
                         .child(Expand::horizontal().child(BottomBar::new(vm, self.meter.take()))),
@@ -286,7 +313,7 @@ impl Widget for LibraryPanel {
                     WidgetEvent::KeyDown { key, modifiers, .. }
                         if !surfaces.focused_is_text_surface() =>
                     {
-                        handle_key(&key_vm, key, *modifiers, ctx)
+                        handle_key(&key_vm, &key_band, key, *modifiers, ctx)
                     }
                     _ => EventResponse::Ignored,
                 }),
