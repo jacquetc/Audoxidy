@@ -11,6 +11,7 @@ use teksilo::prelude::AsyncRuntimeHandle;
 use super::*;
 use crate::frontend::events::{PlaybackEvent, PlaybackSnapshot};
 use crate::frontend::fakes::{InMemoryFakes, PlayerCall};
+use crate::frontend::ports::PlayerPort;
 use crate::frontend::{AppContext, Event};
 use crate::teksilo_ui::app::session::RestoreStatus;
 use crate::teksilo_ui::mock_data::screenshot_library;
@@ -306,13 +307,20 @@ fn a_mouse_move_hides_the_bubble_one_second_after_the_move() {
 }
 
 #[test]
-fn a_click_hides_the_bubble_at_once() {
-    let (services, _fakes) = restored();
+fn the_play_state_follows_a_transport_command_without_waiting_for_the_monitor() {
+    let (services, fakes) = restored();
+    // Not wired to the monitor's events: only the command can move it.
     let vm = PlayerViewModel::new(&services);
-    vm.scroll_volume(1.0);
-    assert!(vm.volume().get().is_some());
-    vm.clicked();
-    assert_eq!(vm.volume().get(), None);
+    let before = vm.is_playing().get();
+    assert!(vm.play_pause());
+    assert_eq!(vm.is_playing().get(), !before);
+    assert_eq!(vm.is_playing().get(), fakes.player.is_playing());
+    assert!(vm.pause());
+    assert!(!vm.is_playing().get());
+    assert!(vm.play());
+    assert!(vm.is_playing().get());
+    assert!(vm.stop());
+    assert!(!vm.is_playing().get());
     finish(&services);
 }
 

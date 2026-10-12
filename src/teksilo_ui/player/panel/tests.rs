@@ -327,6 +327,31 @@ fn the_seek_slider_is_announced_and_a_flat_rail_replaces_it_when_the_duration_is
 }
 
 #[test]
+fn the_seek_slider_tells_the_position_as_a_time() {
+    let mut f = Fixture::new(0.0, 0.0, true);
+    f.play("A", "B", 245.0);
+    f.services
+        .now_playing
+        .on_event(&Event::Playback(PlaybackEvent::PositionChanged {
+            position_secs: 83.0,
+            duration_secs: 245.0,
+        }));
+    f.settle();
+    let slider = f.tree.find_by_role(Role::Slider).unwrap();
+    let expected = format!(
+        "{} de {}",
+        crate::utils::format_duration(83.0),
+        crate::utils::format_duration(245.0)
+    );
+    assert_eq!(
+        crate::teksilo_ui::test_support::a11y_node(&mut f.tree, slider).value(),
+        Some(expected.as_str()),
+        "a time, not the fraction of the track"
+    );
+    f.finish();
+}
+
+#[test]
 fn the_three_zones_split_the_band_in_thirds() {
     let f = Fixture::new(0.0, 0.0, true);
     let previous = f.rect(f.named("Pista anterior"));
@@ -404,6 +429,31 @@ fn a_click_in_a_zone_activates_it_through_the_pointer() {
             .calls()
             .contains(&PlayerCall::TogglePlayPause)
     );
+    f.finish();
+}
+
+#[test]
+fn a_click_on_a_control_zone_hides_the_volume_bubble_at_once() {
+    // Iced has no click message of its own: the click's action wakes the
+    // controls, which drops the bubble (`wake_up_controls(false)`, from
+    // `PlayPause`, `NextTrack`, `PreviousTrack`, `SeekTo` and `SetPlaying`,
+    // `app.rs:1705`, `1772`, `1804`, `1841`, `1853`).
+    let mut f = Fixture::new(0.0, 0.0, true);
+    f.vm.scroll_volume(1.0);
+    assert!(f.vm.volume().get().is_some());
+    f.settle();
+    let play = f.rect(f.named("Reproducir o pausar"));
+    tap_at(
+        &mut f.tree,
+        Point::new(play.0 + play.2 / 2.0, play.1 + 60.0),
+    );
+    assert!(
+        f.fakes
+            .player
+            .calls()
+            .contains(&PlayerCall::TogglePlayPause)
+    );
+    assert_eq!(f.vm.volume().get(), None);
     f.finish();
 }
 

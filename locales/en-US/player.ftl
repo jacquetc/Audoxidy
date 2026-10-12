@@ -25,6 +25,7 @@ player-previous = Previous track
 player-play-pause = Play or pause
 player-next = Next track
 player-seek = Playback position
+player-seek-value = { $elapsed } of { $total }
 
 ## Errors
 player-scan-failed = The folder could not be scanned: { $error }
