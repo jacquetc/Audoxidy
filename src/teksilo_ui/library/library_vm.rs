@@ -513,10 +513,16 @@ impl LibraryViewModel {
     // -----------------------------------------------------------------
 
     /// Switches to `mode` (`ChangeLibraryViewMode`, `src/gui/app.rs:3365`):
-    /// the grid's expanded album closes, the view scrolls back to the top and
-    /// the horizontal offset returns to 0.
+    /// the covers that failed to decode are retried when next shown (G5:
+    /// `clear_all_cover_cache`, `:3367`; [`CoverStore::forget_failed`]), the
+    /// grid's expanded album closes, the view scrolls back to the top and the
+    /// horizontal offset returns to 0.
+    ///
+    /// [`CoverStore::forget_failed`]: crate::teksilo_ui::shared::cover_store::CoverStore::forget_failed
     pub fn set_view_mode(&self, mode: LibraryViewMode) {
         let inner = &self.inner;
+        // Before the views of the new mode ask for their covers.
+        inner.services.covers.forget_failed();
         inner.view_mode.set(mode);
         inner.expanded_album.set(None);
         inner.expanded_songs.set(Rc::new(Vec::new()));

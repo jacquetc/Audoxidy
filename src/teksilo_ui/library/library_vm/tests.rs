@@ -121,6 +121,37 @@ fn changing_the_view_mode_closes_the_grid_detail_and_resets_the_offset() {
     assert!(services.ctx.shutdown());
 }
 
+#[cfg(not(feature = "teksilo-mocks"))]
+#[test]
+fn g5_a_view_mode_change_retries_the_covers_that_failed() {
+    // Iced's `ChangeLibraryViewMode` clears its negative cover cache
+    // (`app.rs:3367`): a cover a scan wrote since shows in the new mode.
+    let (services, vm) = loaded();
+    let dir = std::env::temp_dir().join(format!("audoxidy-g5-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("late.png");
+    let path = file.to_string_lossy().into_owned();
+    let covers = services.covers.clone();
+    let idle =
+        |covers: &crate::teksilo_ui::shared::cover_store::CoverStore| covers.in_flight() == 0;
+    let cover = covers.request(&path);
+    assert!(run_until(&services.runtime, TIMEOUT, || idle(&covers)));
+    assert!(cover.get().is_none(), "no file yet");
+    image::RgbaImage::from_pixel(10, 10, image::Rgba([1, 2, 3, 255]))
+        .save(&file)
+        .unwrap();
+    let _ = covers.request(&path);
+    assert!(run_until(&services.runtime, TIMEOUT, || idle(&covers)));
+    assert!(cover.get().is_none(), "the failure is remembered");
+    vm.set_view_mode(LibraryViewMode::DetailedList);
+    let _ = covers.request(&path);
+    assert!(run_until(&services.runtime, TIMEOUT, || cover
+        .get()
+        .is_some()));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(services.ctx.shutdown());
+}
+
 #[test]
 fn the_column_widths_start_at_the_iced_defaults_and_store_a_resize() {
     let (services, vm) = loaded();
