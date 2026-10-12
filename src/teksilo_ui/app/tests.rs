@@ -428,3 +428,32 @@ fn g1_g6_a_click_on_a_filter_node_brings_the_library_to_its_top_with_the_filters
     assert_eq!(library.stats().get(), expected, "then the selection's");
     live.finish();
 }
+
+#[test]
+fn show_in_library_gives_the_library_the_keyboard() {
+    // Iced's reveal sets `AppFocus::Library` (`app.rs:6086`): Delete then
+    // acts on the song revealed, not on the playlist's row.
+    let mut live = Live::new();
+    let list = live.views.playlist_list.get().unwrap();
+    live.tree.focus(list);
+    let rows = live.views.playlist.rows().get().len();
+    live.views.playlist.show_in_library(1);
+    layout(&mut live.tree);
+    layout(&mut live.tree);
+    let focused = live.tree.focused().unwrap();
+    let grid = live.find_type(live.regions.library, "GridView");
+    assert_eq!(focused, grid, "the library has the keyboard");
+    assert_eq!(live.library_selected(), 1, "the song is revealed");
+    live.tree.dispatch_event(WidgetEvent::KeyDown {
+        key: Key::Delete,
+        modifiers: Modifiers::NONE,
+        text: None,
+    });
+    layout(&mut live.tree);
+    assert_eq!(
+        crate::teksilo_ui::test_support::drain_dialog_titles(&mut live.tree),
+        vec!["Delete from the library?".to_string()]
+    );
+    assert_eq!(live.views.playlist.rows().get().len(), rows);
+    live.finish();
+}

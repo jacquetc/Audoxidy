@@ -338,6 +338,8 @@ struct Inner {
     last_album_click: RefCell<Option<(String, Instant)>>,
     pending_reveal: RefCell<Option<String>>,
     reveal_cleared: Request<LibrarySearchParams>,
+    /// A reveal asks the panel to give the library the keyboard.
+    focus_request: Request<()>,
     /// Set by a library change (a scan, a delete): the next snapshot is a
     /// refresh, which clears the selection (G4).
     refresh_pending: Cell<bool>,
@@ -410,6 +412,7 @@ impl LibraryViewModel {
             last_album_click: RefCell::new(None),
             pending_reveal: RefCell::new(None),
             reveal_cleared: Request::default(),
+            focus_request: Request::default(),
             refresh_pending: Cell::new(false),
             filter_figures: Cell::new(false),
             deletes: RefCell::new(HashSet::new()),
@@ -558,6 +561,14 @@ impl LibraryViewModel {
     /// highlight from it; see the module documentation.
     pub fn reveal_cleared(&self) -> Signal<Option<(u64, LibrarySearchParams)>> {
         self.inner.reveal_cleared.latest()
+    }
+
+    /// The reveal's requests for the keyboard: the panel moves it to the list
+    /// or the grid on each, as Iced's reveal sets `AppFocus::Library`
+    /// (`src/gui/app.rs:6086`), so that Enter, Delete and the arrows act on
+    /// the song revealed.
+    pub fn focus_request(&self) -> Signal<Option<(u64, ())>> {
+        self.inner.focus_request.latest()
     }
 
     /// The playing track's path (the playing markers).
@@ -1625,7 +1636,7 @@ impl LibraryViewModel {
 
     /// Reveals the song at `path` (`handle_library_reveal`,
     /// `src/gui/app.rs:6073`): selects it and scrolls to it, opening what hides
-    /// it. When the search or a filter hides it, they are cleared, what was
+    /// it, and asks for the keyboard ([`focus_request`](Self::focus_request)). When the search or a filter hides it, they are cleared, what was
     /// cleared goes out on [`reveal_cleared`](Self::reveal_cleared), and the
     /// reveal resumes when the new results arrive.
     pub fn reveal_path(&self, path: &str) {
@@ -1637,12 +1648,14 @@ impl LibraryViewModel {
             .any(|s| s.full_file_path.as_ref() == path)
         {
             self.reveal_found(path);
+            inner.focus_request.send(());
             return;
         }
         let params = inner.services.library_songs.params();
         if !has_any_filter(&params) && inner.search.get().is_empty() {
             return;
         }
+        inner.focus_request.send(());
         *inner.pending_reveal.borrow_mut() = Some(path.to_string());
         let search = inner.search.get();
         inner.reveal_cleared.send(LibrarySearchParams {

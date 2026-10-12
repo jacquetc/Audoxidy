@@ -29,7 +29,9 @@
 //! it), and a step between cards is the grid's own navigation (G2,
 //! [`LibraryViewModel::grid_key`]). Ctrl+A is the app's global shortcut, routed to
 //! [`LibraryViewModel::select_all`]. None of these is a global shortcut: a key
-//! acts on the panel that has the keyboard.
+//! acts on the panel that has the keyboard. A reveal ("Mostrar en la
+//! biblioteca", "show playing") gives the list or the grid the keyboard, as
+//! Iced's sets `AppFocus::Library` ([`LibraryViewModel::focus_request`]).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -277,6 +279,44 @@ impl Widget for ModeBody {
     }
 }
 
+/// Moves the keyboard to the list or the grid on each of the view-model's
+/// focus requests (a reveal). The requests come from observers, which have no
+/// event context to call `request_focus` from, so this empty widget rebuilds
+/// on them and focuses from its `build` (`BuildContext::focus`). The request
+/// pending when it is first built is not one.
+struct FocusOnRequest {
+    request: Signal<Option<(u64, ())>>,
+    seen: Option<u64>,
+    view: Rc<Cell<Option<WidgetId>>>,
+}
+
+impl std::fmt::Debug for FocusOnRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FocusOnRequest")
+            .field("seen", &self.seen)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Widget for FocusOnRequest {
+    fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
+        self.request
+            .bind_to(ctx.self_id(), ctx.binding_registry(), BindingLevel::Rebuild);
+        let latest = self.request.get().map(|(sequence, ())| sequence);
+        if latest != self.seen {
+            self.seen = latest;
+            if let Some(view) = self.view.get() {
+                ctx.focus(view);
+            }
+        }
+        Vec::new()
+    }
+
+    fn layout_response(&self, _proposal: SizeProposal, _ctx: &LayoutContext) -> LayoutResponse {
+        Size::ZERO.into()
+    }
+}
+
 /// The library panel; see the module documentation.
 pub struct LibraryPanel {
     vm: LibraryViewModel,
@@ -328,6 +368,11 @@ impl Widget for LibraryPanel {
         let key_band = band.clone();
         let view = Rc::new(Cell::new(None));
         let key_view = view.clone();
+        let focus = ctx.add(FocusOnRequest {
+            request: vm.focus_request(),
+            seen: vm.focus_request().get().map(|(sequence, ())| sequence),
+            view: view.clone(),
+        });
         let header_width = Rc::new(Cell::new(0.0));
         let root = ctx.add(
             Panel::new()
@@ -349,7 +394,8 @@ impl Widget for LibraryPanel {
                             view,
                             root: None,
                         }))
-                        .child(Expand::horizontal().child(BottomBar::new(vm, self.meter.take()))),
+                        .child(Expand::horizontal().child(BottomBar::new(vm, self.meter.take())))
+                        .child(focus),
                 )
                 .access_role(teksilo::core::accesskit::Role::Region)
                 .access_label(tr!(library_panel()))

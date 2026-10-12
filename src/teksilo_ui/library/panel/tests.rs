@@ -878,3 +878,20 @@ fn quirk_36_narrowing_a_column_keeps_the_offset_within_the_content() {
     assert_eq!(m.vm.h_offset().get(), left);
     assert!(m.services.ctx.shutdown());
 }
+
+// ---- review #6: a reveal gives the library the keyboard ---------------------
+
+#[test]
+fn a_reveal_in_a_list_mode_gives_the_list_the_keyboard() {
+    let (mut m, list) = simple_with_a_selection();
+    let field = m
+        .tree
+        .find_by_role(teksilo::core::accesskit::Role::TextInput)
+        .unwrap();
+    m.tree.focus(field);
+    let path = m.vm.structure().get().songs[3].full_file_path.to_string();
+    m.vm.reveal_path(&path);
+    m.relayout();
+    assert_eq!(m.tree.focused(), Some(list));
+    assert!(m.services.ctx.shutdown());
+}
