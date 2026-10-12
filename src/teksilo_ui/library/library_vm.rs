@@ -6,8 +6,9 @@
 //! `LibrarySearchQueryChanged`, `ToggleAlbumExpansion`, `ToggleArtistExpansion`,
 //! `SelectAlbum`, `SelectSong`, `SelectArtistHeader`, `LibraryDeselect`,
 //! `LibraryKeyNav`, the marquee, `PlayLibrarySelection`, `LibraryDeleteSelection`,
-//! `OpenFolderPicker`, `LibraryShowPlaying` and the reveal of a song by path
-//! (`handle_library_reveal`).
+//! `OpenFolderPicker`, `LibraryShowPlaying`, the reveal of a song by path
+//! (`handle_library_reveal`), and what `InternalLibraryRefreshed` does to the
+//! selection ([`LibraryViewModel::on_library_changed`]).
 //!
 //! # State
 //!
@@ -99,6 +100,7 @@ use crate::logic::library_sort::{SortState, sort_songs};
 use crate::logic::selection_modifiers::SelectModifiers;
 use crate::teksilo_ui::app::{AppServices, Request};
 use crate::teksilo_ui::models::has_any_filter;
+use crate::teksilo_ui::models::library_songs_model::is_reload_event;
 use crate::teksilo_ui::models::load::{finish_reply, finish_tracked};
 use crate::teksilo_ui::widgets::column_header::{
     self, ColumnWidths, columns_for, default_widths, width_of,
@@ -294,6 +296,9 @@ struct Inner {
     last_album_click: RefCell<Option<(String, Instant)>>,
     pending_reveal: RefCell<Option<String>>,
     reveal_cleared: Request<LibrarySearchParams>,
+    /// Set by a library change (a scan, a delete): the next snapshot is a
+    /// refresh, which clears the selection (G4).
+    refresh_pending: Cell<bool>,
     deletes: RefCell<HashSet<OpId>>,
     observers: RefCell<Vec<ObserverHandle>>,
 }
@@ -358,6 +363,7 @@ impl LibraryViewModel {
             last_album_click: RefCell::new(None),
             pending_reveal: RefCell::new(None),
             reveal_cleared: Request::default(),
+            refresh_pending: Cell::new(false),
             deletes: RefCell::new(HashSet::new()),
             observers: RefCell::new(Vec::new()),
         });
@@ -614,6 +620,9 @@ impl LibraryViewModel {
     }
 
     fn on_snapshot(&self) {
+        if self.inner.refresh_pending.replace(false) {
+            self.clear_selected();
+        }
         self.rebuild();
         self.refresh_expanded_from_snapshot();
         let pending = self.inner.pending_reveal.borrow_mut().take();
@@ -737,6 +746,29 @@ impl LibraryViewModel {
                 )
             })
             .collect()
+    }
+
+    /// Empties the selection and leaves the focus and the pivot, as Iced's
+    /// `InternalLibraryRefreshed` empties `selected_items` (`src/gui/app.rs:3944`).
+    fn clear_selected(&self) {
+        let mut selection = self.inner.selection.get();
+        selection.selected.clear();
+        self.inner.selection.set_if_changed(selection);
+        self.write_grid_selection(|keyed| keyed.clear());
+    }
+
+    /// The library changed under the view-model (`LibraryEvent::Changed` or
+    /// `ScanFinished`: a scan, a delete): the snapshot the library model
+    /// reloads on it is a refresh, and a refresh clears the selection (G4),
+    /// as Iced's `InternalLibraryRefreshed` does (`src/gui/app.rs:3921-3944`;
+    /// the reply of `LibraryRefresh`, and of the scanner's dirty flag,
+    /// `:1340-1365`). A search or a filter answer (Iced's
+    /// `LibraryFilteredLoaded`, `:3909`) keeps it. The model reloads on the
+    /// next frame and its reload supersedes the requests before it, so the
+    /// next snapshot is the refresh (or, at worst, a search answer already
+    /// on its way, a frame earlier).
+    pub fn on_library_changed(&self) {
+        self.inner.refresh_pending.set(true);
     }
 
     /// A press on the empty background (`LibraryDeselect`): nothing selected.
@@ -1387,12 +1419,20 @@ impl LibraryViewModel {
         }
     }
 
-    /// Subscribes to the long operations (the end of a delete) for as long as
-    /// the widget building it lives; call it from the panel's `build`.
+    /// Subscribes to the long operations (the end of a delete) and to the
+    /// library's changes ([`on_library_changed`](Self::on_library_changed))
+    /// for as long as the widget building it lives; call it from the panel's
+    /// `build`.
     pub fn wire(&self, ctx: &mut BuildContext) {
         let vm = self.clone();
         ctx.subscribe_event_with_ctx(Origin::LongOperation, move |event: &Event, ctx| {
             vm.on_long_op(event, ctx);
+        });
+        let vm = self.clone();
+        ctx.subscribe_event(Origin::Library, move |event: &Event| {
+            if is_reload_event(event) {
+                vm.on_library_changed();
+            }
         });
     }
 }

@@ -1207,3 +1207,106 @@ fn quirk_36_the_shared_offset_stays_within_the_overflowing_content() {
     assert_eq!(vm.h_offset().get(), 0.0, "a viewport the content fits in");
     assert!(services.ctx.shutdown());
 }
+
+// ---- G4: a refresh clears the selection, a search does not ---------------
+
+/// A widget whose build wires a view-model to the facade's events, as the
+/// panel's build does.
+#[derive(Debug)]
+struct Wired(LibraryViewModel);
+
+impl Widget for Wired {
+    fn build(&mut self, ctx: &mut BuildContext) -> Vec<WidgetId> {
+        self.0.wire(ctx);
+        Vec::new()
+    }
+
+    fn layout_response(&self, proposal: SizeProposal, _ctx: &LayoutContext) -> LayoutResponse {
+        proposal.resolve(0.0, 0.0).into()
+    }
+}
+
+/// The loaded view-model, wired through a tree whose events `pump` delivers.
+fn wired() -> (
+    AppServices,
+    LibraryViewModel,
+    WidgetTree,
+    crate::teksilo_ui::test_support::EventPump,
+) {
+    let (services, vm) = loaded();
+    let (mut tree, _runtime, pump) = crate::teksilo_ui::test_support::tree_with_pump(&services.ctx);
+    tree.add(Wired(vm.clone()));
+    crate::teksilo_ui::test_support::layout(&mut tree);
+    (services, vm, tree, pump)
+}
+
+/// The library changed (a scan, a delete): the event, then the reload the
+/// library model makes on it.
+fn library_changed(
+    services: &AppServices,
+    tree: &WidgetTree,
+    pump: &crate::teksilo_ui::test_support::EventPump,
+) {
+    services.ctx.hub.publish(Event::Library(
+        crate::frontend::events::LibraryEvent::Changed,
+    ));
+    assert!(run_until(&services.runtime, TIMEOUT, || pump.deliver(tree) > 0));
+    services.library_songs.reload();
+    settle(services);
+}
+
+#[test]
+fn g4_a_library_refresh_clears_the_selection_and_keeps_the_focus() {
+    // `InternalLibraryRefreshed` empties `selected_items` (`app.rs:3944`).
+    let (services, vm, tree, pump) = wired();
+    list_mode(&vm);
+    vm.grid_selection().select(first_card(&services));
+    let picked = bowie(&vm).songs[0].id;
+    vm.click(song(picked), Modifiers::NONE, at(0));
+    assert!(!vm.selection().get().selected.is_empty());
+    assert!(!vm.grid_selection().selected_keys().is_empty());
+    library_changed(&services, &tree, &pump);
+    assert!(vm.selection().get().selected.is_empty());
+    assert!(vm.grid_selection().selected_keys().is_empty());
+    assert_eq!(vm.selection().get().focused, Some(song(picked)));
+    assert_eq!(
+        vm.stats().get().songs,
+        vm.structure().get().songs.len() as u64
+    );
+    // Only that refresh: a selection made afterwards stays.
+    vm.click(song(picked), Modifiers::NONE, at(1_000));
+    services.library_songs.reload();
+    settle(&services);
+    assert_eq!(
+        vm.selection().get().selected,
+        [song(picked)].into_iter().collect()
+    );
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn g4_a_search_or_a_filter_answer_keeps_the_selection() {
+    // `LibraryFilteredLoaded` (`app.rs:3909`) leaves `selected_items` alone.
+    let (services, vm, _tree, _pump) = wired();
+    list_mode(&vm);
+    let picked = bowie(&vm).songs[0].clone();
+    vm.click(song(picked.id), Modifiers::NONE, at(0));
+    let title = picked.title.as_deref().unwrap_or_default().to_string();
+    vm.search().set(title);
+    settle(&services);
+    assert!(vm.structure().get().songs.iter().any(|s| s.id == picked.id));
+    assert_eq!(
+        vm.selection().get().selected,
+        [song(picked.id)].into_iter().collect()
+    );
+    vm.search().set(String::new());
+    services
+        .library_songs
+        .update_params(|params| params.artist = Some(BOWIE.to_string()));
+    settle(&services);
+    assert_eq!(
+        vm.selection().get().selected,
+        [song(picked.id)].into_iter().collect()
+    );
+    assert!(services.ctx.shutdown());
+}
