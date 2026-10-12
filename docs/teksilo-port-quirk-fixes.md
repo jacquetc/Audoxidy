@@ -81,6 +81,7 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 65 | The grid's keys step between cards and enter the open album only from its row |
 | 66 | A letter brings the filter tree to its top |
 | 67 | The window reopens where it was |
+| 68 | The equalizer tab waits for the restored equalizer |
 
 ---
 
@@ -116,11 +117,13 @@ Unfinished Iced features (stubs) are not listed here; they are in
 
 - **Iced:** the close button calls `std::process::exit(0)` (`src/gui/app.rs:4669`), so nothing is
   saved at exit.
-- **Teksilo:** the window's close hook does three things, then lets the app exit normally:
+- **Teksilo:** the window's close hook does two things, then lets the app exit normally:
   - saves the playlist position, shuffle and repeat state;
-  - stops the background threads and the audio engine.
+  - stops the background threads and the audio engine. A startup restore still waiting in the
+    engine's queue then loads, seeks and plays nothing, and the player is stopped again once the
+    threads are joined, so a close during the restore never starts playback.
 - **Why:** the playback position and open settings were lost on every close.
-- **Pinned by:** the persistence part by `frontend::session::tests::quirk_3_persist_now_then_stop_stores_the_position_and_the_session` (the position, play state, shuffle and session saved by `session::persist_now` are written before `session::stop` ends the threads); the close path by `teksilo_ui::shell::main_window::tests::closing_runs_the_hooks_and_stops_the_backend` (`AppHandles::before_close` runs the close hooks and queues the save from the window's close guard; `AppHandles::after_close` stops the backend from the window's removal hook) and `teksilo_ui::app::session::tests::persisting_after_the_restore_writes_the_position`. Iced also saves the equalizer and the effects when the Audio Center closes; the Teksilo facade stores every equalizer, effect and mix change as it is made, so nothing is left to save at close (`teksilo_ui::audio_center::shell::audio_center_vm::tests::the_equalizer_and_the_effects_are_stored_without_a_close`).
+- **Pinned by:** the whole close of a restored session by `teksilo_ui::shell::main_window::tests::quirk_3_closing_a_restored_session_stores_the_position_the_player_reached` (the stored song, position and play state after `before_close` and `after_close`); a close during the restore by `frontend::session::tests::a_close_while_the_restore_waits_in_the_queue_starts_no_playback`; the persistence part by `frontend::session::tests::quirk_3_persist_now_then_stop_stores_the_position_and_the_session` (the position, play state, shuffle and session saved by `session::persist_now` are written before `session::stop` ends the threads); the close path by `teksilo_ui::shell::main_window::tests::closing_runs_the_hooks_and_stops_the_backend` (`AppHandles::before_close` runs the close hooks and queues the save from the window's close guard; `AppHandles::after_close` stops the backend from the window's removal hook) and `teksilo_ui::app::session::tests::persisting_after_the_restore_writes_the_position`. Iced also saves the equalizer and the effects when the Audio Center closes; the Teksilo facade stores every equalizer, effect and mix change as it is made, so nothing is left to save at close (`teksilo_ui::audio_center::shell::audio_center_vm::tests::the_equalizer_and_the_effects_are_stored_without_a_close`).
 
 ## 4. Escape closes overlays and dialogs
 
@@ -870,11 +873,12 @@ Unfinished Iced features (stubs) are not listed here; they are in
   then restores the backup in the engine and on screen, without saving it
   (`src/gui/app.rs:2163-2178`). The database keeps the imported preset, so the next start shows it.
 - **Teksilo:** Cancel saves the restored state too, so the database matches what the engine plays
-  and the tab shows. A Cancel while the import is still reading its file wins: when the file has
-  been read, its presets join the list but the backup stays applied and saved.
+  and the tab shows. The import is applied when its reply reaches the tab, not on the database
+  worker: a Cancel before the reply wins, the file's preset joins the list and nothing of it is
+  applied or saved, and a row previewed meanwhile is never split between the engine and the tab.
 - **Why:** the equalizer that came back after a restart was not the one the user had cancelled back
   to.
-- **Pinned by:** `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::{quirk_60_cancelling_after_an_import_saves_the_restored_state, quirk_60_a_cancel_before_the_import_finishes_still_restores_the_backup}` (each fails without its part of the fix).
+- **Pinned by:** `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::{quirk_60_cancelling_after_an_import_saves_the_restored_state, quirk_60_a_cancel_before_the_import_finishes_still_restores_the_backup, a_preview_made_while_an_import_reply_is_on_its_way_never_splits_the_engine_and_the_tab}` (each fails without its part of the fix).
 
 ## 61. A click on empty space commits an open value field
 
@@ -966,3 +970,15 @@ Unfinished Iced features (stubs) are not listed here; they are in
   `window_state.toml` in the app's settings directory); the profile's size applies on the first run.
 - **Why:** the approved plan ("window geometry goes through `WindowStateService`").
 - **Pinned by:** `teksilo_ui::shell::main_window::tests::the_initial_size_is_the_profile_size_within_the_minimum` (the first run) and a live check (Wave E): an edited `window_state.toml` (1500 × 900) came back on the next launch, and closing wrote it again.
+
+## 68. The equalizer tab waits for the restored equalizer
+
+- **Iced:** the equalizer is restored synchronously before the window exists (`src/gui/app.rs:839-875`),
+  and the tab reads the engine when it opens (`src/gui/audio_center.rs:1143-1152`).
+- **Teksilo:** the startup restore runs on the facade's workers while the window is already up.
+  The equalizer's view-model reads the engine once the restore has settled; until that read
+  answers, its controls, "Guardar" and the preset dialogs do nothing (a toggle or a radio that moved
+  goes back).
+- **Why:** reading the engine before the restore showed its defaults, and the first change then
+  stored them over the saved equalizer, for both UIs (found by the Wave F review).
+- **Pinned by:** `teksilo_ui::audio_center::equalizer::equalizer_vm::tests::{the_equalizer_built_during_the_restore_shows_and_keeps_the_restored_settings, the_controls_do_nothing_before_the_restored_equalizer_is_read, the_load_dialogs_backup_is_the_restored_equalizer}`.
