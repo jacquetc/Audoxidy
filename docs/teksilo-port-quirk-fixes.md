@@ -78,6 +78,8 @@ Unfinished Iced features (stubs) are not listed here; they are in
 | 62 | A memory purge never cuts the library |
 | 63 | The cursor shows what can be clicked or resized |
 | 64 | A sideways wheel over the player leaves the volume alone |
+| 65 | The grid's keys step between cards and enter the open album only from its row |
+| 66 | A letter brings the filter tree to its top |
 
 ---
 
@@ -722,9 +724,14 @@ Unfinished Iced features (stubs) are not listed here; they are in
 - **Iced:** the marquee is drawn 2 px off the pointer (`pos.y − 72` for a list starting at y = 70,
   `src/gui/app.rs:3333`, `:4704`). Its hit rectangles use `window width − 722`
   (`src/gui/app.rs:3429`), so the last 120 px of the list can never be selected by it.
-- **Teksilo:** the band and its hit rectangles use the list's own coordinates and width.
+- **Iced, in Grid mode:** the open album's row is hit as `252 + 60 + 32 × all its songs` px tall
+  (`src/gui/library.rs:730`), where the band draws `32 + 32 × the songs the search keeps + 37`
+  (`library.rs:1653-1719`), and its songs from 32 px under the cards at the full library width
+  (`:721-726`): the cards under an open album are hit at least 9 px off where they are drawn.
+- **Teksilo:** the band and its hit rectangles use the list's own coordinates and width; in the
+  grid, where the cards and the band's songs are drawn (`library/grid.rs` `spot_rect`).
 - **Why:** the band selected rows it did not cover and missed rows it did.
-- **Pinned by:** `teksilo_ui::library::list_rows::tests::a_drag_over_the_rows_selects_them_with_the_marquee` and `teksilo_ui::library::library_vm::tests::the_marquee_selects_the_rows_it_crosses`.
+- **Pinned by:** `teksilo_ui::library::list_rows::tests::a_drag_over_the_rows_selects_them_with_the_marquee` and `teksilo_ui::library::library_vm::tests::the_marquee_selects_the_rows_it_crosses`; in the grid `teksilo_ui::library::grid::tests::g3_the_rubber_bands_rectangles_are_where_the_grid_draws_its_cards_and_songs` and `teksilo_ui::library::panel::tests::g3_a_drag_from_a_card_down_over_the_band_selects_the_card_and_the_songs`.
 
 ## 49. Delete takes only what is picked
 
@@ -908,3 +915,31 @@ Unfinished Iced features (stubs) are not listed here; they are in
   down turns step the volume as in Iced.
 - **Why:** the user's decision (2026-10-12). Scrolling sideways should not turn the music down.
 - **Pinned by:** `teksilo_ui::player::panel::tests::a_wheel_with_no_turn_is_not_a_step` (it fails without the fix) and `teksilo_ui::player::panel::tests::the_wheel_over_the_band_moves_the_volume_five_percent_and_shows_the_bubble`.
+
+## 65. The grid's keys step between cards and enter the open album only from its row
+
+- **Iced:** the Grid branch of `handle_key_nav` (`src/gui/library.rs:803-872`) walks the flat list
+  of `get_visible_items` (`:663-737`), where the open album's songs sit between the rows of cards,
+  with the arithmetic of a grid of cards: Up from a card under the open album (`current − per_row`)
+  lands on one of its songs, or on a card shifted by the number of songs; Right from the last card
+  of the open row enters the songs; Left from the first card under them lands on the last song;
+  Down from a card above a short last row that holds the open album enters its songs.
+- **Teksilo:** steps between cards are the grid's own and step over the open album; only Down
+  from a card of the open album's row enters its songs, Up from the first song returns to the open
+  card, Down stops at the last song, Left and Right do nothing in the songs
+  (`logic::library_selection::grid_nav_target`). Shift extends the selection in Iced's order.
+- **Why:** the user's decision (2026-10-12). The arithmetic counted songs as cards.
+- **Pinned by:** `logic::library_selection::tests::the_cards_step_by_one_and_by_a_row_and_never_sideways_into_the_band` and `teksilo_ui::library::library_vm::tests::g2_down_from_any_card_of_the_open_row_enters_the_band_and_other_steps_are_the_grids`.
+
+## 66. A letter brings the filter tree to its top
+
+- **Iced:** `SelectSubfilter` resets `filters_manager.scroll_offset` (`src/gui/app.rs:4293`) but,
+  unlike a type change (`:4279-4282`) or a search (`:4383-4386`), does not scroll the tree. The
+  window of rows it draws (`tree_window`, `src/gui/library_filters.rs:121`) is computed for the
+  top while the scrollable stays where it was, so a scrolled tree can show blank rows until the
+  next scroll.
+- **Teksilo:** a letter or the restore icon scrolls the tree to its top, as a type change and a
+  search do.
+- **Why:** the user's decision (2026-10-12): what Iced's reset evidently intends, without the
+  blank rows.
+- **Pinned by:** `teksilo_ui::filters::panel::tests::g1_a_letter_and_the_search_bring_the_scrolled_tree_back_to_its_top`.
