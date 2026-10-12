@@ -8,8 +8,9 @@ use crate::db::database::PlaylistSongRef;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// Playlist file format. Both formats are written identically (UTF-8 text);
-/// only the file extension differs.
+/// Playlist file format. The Iced UI writes both identically (UTF-8 text);
+/// the facade's export (`frontend::commands::playlist::export`) writes M3U in
+/// Latin-1 and M3U8 in UTF-8 (Teksilo quirk fix 25).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportFormat {
     /// `.m3u`
