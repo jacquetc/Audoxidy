@@ -25,6 +25,7 @@ use crate::teksilo_ui::test_support::{
     VIEWPORT, access_click, find_by_name, first_of_type, key_down, layout, tap_at, tree_with_async,
     with_shipped_messages,
 };
+use crate::teksilo_ui::widgets::vu_meter;
 
 /// Where the slot sits: the bottom bar's meter slot, at the window's foot.
 const SLOT_X: f32 = 700.0;
@@ -499,6 +500,107 @@ fn the_library_bar_hosts_the_slot_between_the_figures_and_the_actions() {
 }
 
 // --- strings ------------------------------------------------------------------------------
+
+/// The library at `width` with a shown meter: the meter's and the slot's
+/// bounds, the play button's left edge, and the clip in force for each fill
+/// the meter draws in its top 4 px (the part above the 40 px bar).
+fn meter_in_the_bar(
+    width: f32,
+) -> (
+    teksilo::canvas::Rect,
+    teksilo::canvas::Rect,
+    f32,
+    Vec<Option<teksilo::canvas::Rect>>,
+) {
+    use teksilo::canvas::{DrawCommand, Rect};
+    let (services, vm) = library_util::loaded();
+    let meter_vm = MeterViewModel::new(&services);
+    meter_vm.enabled().set(true);
+    let mut tree = library_util::tree_for(&services);
+    let id = library_util::mount_at(
+        &mut tree,
+        crate::teksilo_ui::library::LibraryPanel::new(vm).meter_slot(MeterSlot::new(meter_vm)),
+        width,
+        library_util::REGION.1,
+    );
+    library_util::settle_layout(&mut tree);
+    let meter = tree.bounds(library_util::all_of_type(&tree, id, "VuMeter")[0]);
+    let slot = tree.bounds(library_util::all_of_type(&tree, id, "MeterSlot")[0]);
+    let play = tree
+        .bounds(find_by_name(&tree, id, "Play the selection")[0])
+        .x;
+    let frame = tree.render();
+    let inside = |r: [f32; 4]| {
+        r[0] >= meter.x - 0.01
+            && r[1] >= meter.y - 0.01
+            && r[0] + r[2] <= meter.x + vu_meter::paint::WIDTH + 0.01
+            && r[1] + r[3] <= meter.y + meter.height + 0.01
+    };
+    let mut stack: Vec<Rect> = Vec::new();
+    let mut clips = Vec::new();
+    for cmd in &frame.draw_order {
+        let rect = match cmd {
+            DrawCommand::SetClip(clip) => {
+                stack.push(*clip);
+                continue;
+            }
+            DrawCommand::ClearClip => {
+                stack.pop();
+                continue;
+            }
+            DrawCommand::Decoration(k) => frame.decorations[*k].rect,
+            DrawCommand::Shape(k) => frame.shapes[*k].screen,
+            _ => continue,
+        };
+        if inside(rect) && rect[1] < meter.y + 4.0 {
+            clips.push(stack.last().copied());
+        }
+    }
+    services.ctx.shutdown();
+    (meter, slot, play, clips)
+}
+
+#[test]
+fn the_library_bar_draws_the_whole_meter_over_its_edges() {
+    // Iced centres the 48 px meter on the 40 px bar and draws the 4 px it
+    // overflows by, above and below (`library.rs:1943`). In the library of a
+    // 1600 px window the meter has its 400 px: nothing clips it.
+    let (meter, slot, _, clips) = meter_in_the_bar(998.0);
+    assert_eq!((meter.width, meter.height), (400.0, 48.0));
+    assert_eq!(meter.y, slot.y - 4.0);
+    assert!(
+        !clips.is_empty(),
+        "the meter draws in the 4 px above the bar"
+    );
+    for clip in clips.into_iter().flatten() {
+        assert!(
+            clip.y <= meter.y && clip.y + clip.height >= meter.y + meter.height,
+            "{clip:?} cuts the meter {meter:?}"
+        );
+    }
+}
+
+#[test]
+fn a_squeezed_meter_shows_its_left_part_and_keeps_its_height() {
+    // The library of the default 1360 px window: the slot is narrower than
+    // 400 px. The meter fills it, draws the left part of its layout, and its
+    // clip cuts it at the slot's right edge only, before the actions.
+    let (meter, slot, play, clips) = meter_in_the_bar(library_util::REGION.0);
+    assert!(slot.width < 400.0, "{slot:?}");
+    assert_eq!(
+        (meter.x, meter.width, meter.height),
+        (slot.x, slot.width, 48.0)
+    );
+    assert!(slot.x + slot.width <= play - 10.0 + 0.01);
+    assert!(
+        !clips.is_empty(),
+        "the meter draws in the 4 px above the bar"
+    );
+    for clip in clips {
+        let clip = clip.expect("a squeezed meter clips itself");
+        assert_eq!(clip, meter, "the clip is the meter's own bounds");
+    }
+}
 
 #[test]
 fn the_popup_reads_iceds_spanish() {

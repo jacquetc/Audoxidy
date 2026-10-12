@@ -24,8 +24,10 @@
 //!   current mode's), each an Iced `mouse_area` icon in the icon colour.
 //!
 //! When the bar is too narrow, the figures give way first (they end in an
-//! ellipsis, down to 40 px), then the meter slot (the meter is clipped), so
-//! the actions never leave the bar. Iced lets them fall off its end.
+//! ellipsis, down to 40 px), then the meter slot (the meter shows its left
+//! part), so the actions never leave the bar. Iced lets them fall off its end.
+//! The slot does not clip: a 48 px meter overflows the 40 px bar by 4 px above
+//! and below, as in Iced (`library.rs:1943`).
 
 use teksilo::core::binding::BindingLevel;
 use teksilo::prelude::*;
@@ -280,15 +282,13 @@ impl Widget for BottomBar {
             .child(gap(METER_GAP))
             // The slot takes the free space, at least what its widget wants
             // (quirk fix 10); in a bar too narrow even then, it gives way
-            // after the figures, clipping the meter, so the actions stay.
+            // after the figures, so the actions stay. Its widget must draw
+            // within the width it is given (the meter clips itself).
             .child(
                 Shrinkable::new().shrink(1.0).child(
-                    Expand::horizontal().respect_intrinsic().child(
-                        FixedSize::new()
-                            .height(HEIGHT)
-                            .child(slot)
-                            .clips_children_on(true),
-                    ),
+                    Expand::horizontal()
+                        .respect_intrinsic()
+                        .child(FixedSize::new().height(HEIGHT).child(slot)),
                 ),
             )
             .child(gap(METER_GAP))

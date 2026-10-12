@@ -193,11 +193,12 @@ Unfinished Iced features (stubs) are not listed here; they are in
     narrower than the meter wants (400 px when shown, as in Iced). With the meter disabled it
     is the gap Iced leaves there, so the bar keeps Iced's layout.
   - When the bar is too narrow for a shown meter (the library of the default 1360 px window),
-    the figures give way first (ellipsis), then the meter is clipped, so the actions stay in
-    the bar; Iced lets them fall off its end.
+    the figures give way first (ellipsis), then the meter shows the left part of its 400 px,
+    so the actions stay in the bar; Iced lets them fall off its end. As in Iced, the 48 px
+    meter overflows the 40 px bar by 4 px above and below.
   - The popup stays open while values change.
 - **Why:** the setting was unreachable, and the popup closed under the user's hand.
-- **Pinned by:** the slot by `teksilo_ui::library::panel::tests::{quirk_10_without_a_meter_the_actions_end_the_bar_after_a_free_slot, quirk_10_a_meter_fills_its_slot_and_a_shown_one_gets_its_400_px, quirk_10_in_a_narrow_bar_the_figures_give_way_and_the_actions_stay}` and, with the real meter slot, `teksilo_ui::meter::tests::{the_library_bar_hosts_the_slot_between_the_figures_and_the_actions, the_disabled_slot_keeps_its_400_by_40_and_shows_no_meter}`; the right-click on an empty slot by `teksilo_ui::meter::tests::a_right_click_on_the_empty_slot_opens_the_popup_too`; enabling the meter from the popup by `teksilo_ui::meter::tests::the_checkboxes_show_the_options_and_flip_them_persistently` and `teksilo_ui::meter::meter_vm::tests::showing_the_meter_sets_the_engine_and_persists_it`; the popup staying open by `teksilo_ui::meter::tests::the_popup_stays_open_while_its_values_change`.
+- **Pinned by:** the slot by `teksilo_ui::library::panel::tests::{quirk_10_without_a_meter_the_actions_end_the_bar_after_a_free_slot, quirk_10_a_meter_fills_its_slot_and_a_shown_one_gets_its_400_px, quirk_10_in_a_narrow_bar_the_figures_give_way_and_the_actions_stay}` and, with the real meter slot, `teksilo_ui::meter::tests::{the_library_bar_hosts_the_slot_between_the_figures_and_the_actions, the_disabled_slot_keeps_its_400_by_40_and_shows_no_meter, the_library_bar_draws_the_whole_meter_over_its_edges, a_squeezed_meter_shows_its_left_part_and_keeps_its_height}`; the right-click on an empty slot by `teksilo_ui::meter::tests::a_right_click_on_the_empty_slot_opens_the_popup_too`; enabling the meter from the popup by `teksilo_ui::meter::tests::the_checkboxes_show_the_options_and_flip_them_persistently` and `teksilo_ui::meter::meter_vm::tests::showing_the_meter_sets_the_engine_and_persists_it`; the popup staying open by `teksilo_ui::meter::tests::the_popup_stays_open_while_its_values_change`.
 
 ## 11. The playing row is tracked by song id
 

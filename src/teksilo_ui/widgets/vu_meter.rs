@@ -13,6 +13,12 @@
 //! The view-model's maths are not this widget's concern: it draws whatever
 //! frame it is handed.
 //!
+//! **Size.** 400 px wide, as in Iced, but a stack too narrow for it may
+//! squeeze it: it then draws its 400 px layout from its left edge, clipped to
+//! the width it was given. It never clips its height, so a 48 px meter
+//! centred on Iced's 40 px library bar overflows it by 4 px above and below,
+//! as in Iced (`src/gui/library.rs:1943`).
+//!
 //! **Timing.** While `active` is true (playing or fading) the meter holds a
 //! frame-tick subscription throttled to [`TICK`], and calls `on_tick` with
 //! the current time on every frame tick; the view-model advances its state
@@ -212,12 +218,18 @@ impl Widget for VuMeter {
 
     fn layout_response(&self, _proposal: SizeProposal, _ctx: &LayoutContext) -> LayoutResponse {
         let height = if self.tall.get() { HEIGHT_TALL } else { HEIGHT };
-        Size::new(WIDTH, height).into()
+        LayoutResponse::shrinkable(Size::new(WIDTH, height), Size::new(0.0, height), 1.0)
     }
 
     fn paint(&self, bounds: Rect, canvas: &mut Canvas, ctx: &PaintContext) {
         let colors = &ctx.theme.colors;
-        for item in meter_paint(&self.frame.get(), bounds, &Self::words()) {
+        // Squeezed, the meter shows the left part of its 400 px layout.
+        let squeezed = bounds.width < WIDTH;
+        if squeezed {
+            canvas.set_clip(bounds);
+        }
+        let layout = Rect::new(bounds.x, bounds.y, WIDTH, bounds.height);
+        for item in meter_paint(&self.frame.get(), layout, &Self::words()) {
             match item {
                 MeterPaint::Fill { rect, tone } => canvas.fill_rect(rect, tone.resolve(colors)),
                 MeterPaint::Led { rect, fill, border } => {
@@ -237,6 +249,9 @@ impl Widget for VuMeter {
                 }
                 MeterPaint::Text(text) => text.paint(canvas, ctx),
             }
+        }
+        if squeezed {
+            canvas.clear_clip();
         }
     }
 
