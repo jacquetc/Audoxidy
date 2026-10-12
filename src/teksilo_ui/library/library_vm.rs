@@ -90,7 +90,7 @@ use teksilo::core::signal::ObserverHandle;
 use teksilo::core::{Key, Modifiers};
 use teksilo::data::{KeyedSelectionModel, SelectionMode};
 use teksilo::prelude::*;
-use teksilo::widgets::{MessageBoxResult, StandardButton, Toast};
+use teksilo::widgets::{StandardButton, Toast};
 
 use super::structure::ListStructure;
 use crate::db::database::{LibrarySearchParams, SongData};
@@ -104,7 +104,7 @@ use crate::logic::library_groups::{
 use crate::logic::library_selection::{
     GridShape, GridSpot, LibraryListItem, LibraryNavDir, LibrarySelection, LibraryStructure,
     apply_bulk_toggle_fixed, artist_to_toggle_fixed, bulk_toggle_targets_fixed, grid_items,
-    grid_nav_target, list_nav_target, selected_song_ids, selected_songs,
+    grid_nav_target, list_nav_target, selected_songs,
 };
 use crate::logic::library_sort::{SortState, sort_songs};
 use crate::logic::selection_modifiers::SelectModifiers;
@@ -115,7 +115,7 @@ use crate::teksilo_ui::models::load::{finish_reply, finish_tracked};
 use crate::teksilo_ui::widgets::column_header::{
     self, ColumnWidths, columns_for, default_widths, width_of,
 };
-use crate::teksilo_ui::widgets::dialog_frame::confirm_box;
+use crate::teksilo_ui::widgets::dialog_frame::{ConfirmResult, confirm_box};
 use crate::utils::{SortColumn, get_effective_artist, song_matches_search};
 
 /// Two clicks on the same header within this make a double click, which
@@ -180,19 +180,25 @@ pub fn content_width(mode: LibraryViewMode, widths: &ColumnWidths) -> f32 {
     column_header::leading_padding(mode) + columns + column_header::ROW_TRAILING
 }
 
-/// The songs a delete of `selected` removes, among the songs `structure`
-/// shows: the songs Play takes (quirk fix 49, [`selected_song_ids`]), the
-/// selected songs, and every song of a selected artist or album none of whose
-/// songs is picked. Iced's `LibraryDeleteSelection` (`src/gui/app.rs:3717-3790`)
-/// adds every song of a selected album or artist even when songs are picked
-/// inside it, so Delete took more than Play. The ids come sorted, without
-/// duplicates.
+/// The songs a delete of `selected` removes: the songs Play takes
+/// ([`selected_songs`] over `songs`, the songs the search and the filters let
+/// through), so songs picked inside a selected artist or album narrow it
+/// (quirk fix 49), and a selected song the search or a filter hides stays.
+/// Iced's `LibraryDeleteSelection` (`src/gui/app.rs:3717-3790`) also looks
+/// only among `filtered_songs` (the loop at `:3759`), but adds every song of
+/// a selected album or artist even when songs are picked inside it, so Delete
+/// took more than Play. The ids come sorted, without duplicates.
 pub fn delete_target_ids(
     selected: &HashSet<LibraryListItem>,
     structure: &impl LibraryStructure,
+    songs: &[Arc<SongData>],
 ) -> Vec<i64> {
-    let mut ids: Vec<i64> = selected_song_ids(selected, structure).into_iter().collect();
+    let mut ids: Vec<i64> = selected_songs(selected, structure, songs)
+        .iter()
+        .map(|s| s.id)
+        .collect();
     ids.sort_unstable();
+    ids.dedup();
     ids
 }
 
@@ -1486,13 +1492,19 @@ impl LibraryViewModel {
 
     /// The songs a delete would remove now.
     pub fn delete_targets(&self) -> Vec<i64> {
-        delete_target_ids(&self.selected_items(), &self.inner.structure.get().data())
+        let snapshot = self.inner.services.library_songs.snapshot().get();
+        delete_target_ids(
+            &self.selected_items(),
+            &self.inner.structure.get().data(),
+            &snapshot.songs,
+        )
     }
 
-    /// Delete (quirk fix 1): asks for confirmation with a message box naming
-    /// how many songs go ([`delete_targets`](Self::delete_targets), quirk fix
-    /// 49); only its "Eliminar" deletes. Nothing happens when nothing is
-    /// selected, as in Iced.
+    /// Delete (quirk fix 1): asks for confirmation with a box naming how many
+    /// songs go ([`delete_targets`](Self::delete_targets), quirk fix 49); only
+    /// its "Eliminar" deletes, and Enter does nothing in it
+    /// ([`ConfirmBox`](crate::teksilo_ui::widgets::dialog_frame::ConfirmBox)).
+    /// Nothing happens when nothing is selected, as in Iced.
     pub fn request_delete(&self, ctx: &mut EventContext) {
         let ids = self.delete_targets();
         if ids.is_empty() {
@@ -1504,7 +1516,7 @@ impl LibraryViewModel {
             delete_text(ids.len()),
             tr!(library_delete_confirm()),
         )
-        .on_result(move |result: MessageBoxResult, _ctx| {
+        .on_result(move |result: ConfirmResult, _ctx| {
             if result.button == StandardButton::Ok && !result.was_dismissed() {
                 vm.delete_songs(ids.clone());
             }

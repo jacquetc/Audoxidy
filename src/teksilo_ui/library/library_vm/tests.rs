@@ -542,7 +542,10 @@ fn quirk_49_delete_takes_only_the_songs_picked_inside_a_selected_album_as_play_d
             .collect();
     let mut expected = vec![picked, lone];
     expected.sort_unstable();
-    assert_eq!(delete_target_ids(&selected, &structure.data()), expected);
+    assert_eq!(
+        delete_target_ids(&selected, &structure.data(), &structure.songs),
+        expected
+    );
     let played: Vec<i64> = selected_songs(&selected, &structure.data(), &structure.songs)
         .iter()
         .map(|s| s.id)
@@ -555,13 +558,39 @@ fn quirk_49_delete_takes_only_the_songs_picked_inside_a_selected_album_as_play_d
     let mut expected: Vec<i64> = album.songs.iter().map(|(s, _)| s.id).collect();
     expected.push(lone);
     expected.sort_unstable();
-    assert_eq!(delete_target_ids(&whole, &structure.data()), expected);
+    assert_eq!(
+        delete_target_ids(&whole, &structure.data(), &structure.songs),
+        expected
+    );
     // A selected artist narrows the same way.
     let artist: HashSet<LibraryListItem> =
         [LibraryListItem::Artist(BOWIE.to_string()), song(picked)]
             .into_iter()
             .collect();
-    assert_eq!(delete_target_ids(&artist, &structure.data()), vec![picked]);
+    assert_eq!(
+        delete_target_ids(&artist, &structure.data(), &structure.songs),
+        vec![picked]
+    );
+    assert!(services.ctx.shutdown());
+}
+
+#[test]
+fn delete_leaves_the_selected_songs_the_search_hides_as_iced_and_play_do() {
+    // Review #2: Iced deletes among `filtered_songs` only
+    // (`src/gui/app.rs:3759`); the selection survives a search (`:2797`).
+    let (services, vm) = loaded();
+    list_mode(&vm);
+    let hidden = bowie(&vm).songs[0].id;
+    vm.click(song(hidden), Modifiers::NONE, at(0));
+    vm.search().set("Placebo".to_string());
+    settle(&services);
+    let visible = vm.structure().get().songs[0].id;
+    assert!(!vm.structure().get().songs.iter().any(|s| s.id == hidden));
+    vm.click(song(visible), ctrl(), at(5_000));
+    assert!(vm.selection().get().selected.contains(&song(hidden)));
+    let played: Vec<i64> = vm.selected_songs().iter().map(|s| s.id).collect();
+    assert_eq!(played, vec![visible]);
+    assert_eq!(vm.delete_targets(), vec![visible], "the hidden song stays");
     assert!(services.ctx.shutdown());
 }
 
@@ -595,50 +624,90 @@ fn quirk_49_the_confirmation_states_how_many_songs_go() {
     assert!(services.ctx.shutdown());
 }
 
+/// The delete confirmation `request_delete` presented, its content built
+/// into `tree`: the layer and the callback Escape and a click outside run.
+fn open_confirmation(
+    tree: &mut WidgetTree,
+) -> (
+    WidgetId,
+    Option<teksilo::core::overlay::OverlayDismissCallback>,
+) {
+    use teksilo::core::modal::ModalContent;
+    let queued = tree
+        .drain_pending_modal_requests()
+        .pop()
+        .expect("the confirmation was presented");
+    assert_eq!(
+        queued.request.title.as_deref(),
+        Some("Delete from the library?")
+    );
+    let on_dismiss = queued.request.on_dismiss.clone();
+    let layer = match queued.request.content {
+        ModalContent::Deferred(build) => build(tree),
+        ModalContent::ExistingWidget(id) => id,
+    };
+    crate::teksilo_ui::test_support::layout(tree);
+    let _ = tree.render();
+    (layer, on_dismiss)
+}
+
+/// Whether the library still holds the song `id`, after a reload.
+fn still_there(services: &AppServices, id: i64) -> bool {
+    services.library_songs.reload();
+    settle(services);
+    services
+        .library_songs
+        .snapshot()
+        .get()
+        .songs
+        .iter()
+        .any(|s| s.id == id)
+}
+
 #[test]
-fn quirk_1_delete_asks_first_and_deletes_only_after_the_confirmation() {
+fn quirk_1_only_the_confirmations_eliminar_deletes() {
+    use crate::teksilo_ui::test_support::{find_by_name, tap_at};
     let (services, vm) = loaded();
     list_mode(&vm);
     let (mut tree, _) = tree_with_async(&services.ctx);
     let victim = bowie(&vm).songs[0].clone();
     vm.click(song(victim.id), Modifiers::NONE, at(0));
-    let asked = vm.clone();
-    press(&mut tree, move |ctx| asked.request_delete(ctx));
-    let titles = drain_dialog_titles(&mut tree);
-    assert_eq!(titles, vec!["Delete from the library?".to_string()]);
-    services.library_songs.reload();
-    settle(&services);
+    let ask = |tree: &mut WidgetTree| {
+        let asked = vm.clone();
+        press(tree, move |ctx| asked.request_delete(ctx));
+        open_confirmation(tree)
+    };
+    let cancel = tr!(chrome_dialog_cancel()).resolve_now();
+
+    // "Cancelar", with the pointer.
+    let (layer, _) = ask(&mut tree);
+    let button = find_by_name(&tree, layer, &cancel)[0];
+    let center = tree.bounds(button).center();
+    tap_at(&mut tree, center);
+    assert!(!vm.is_deleting());
     assert!(
-        services
-            .library_songs
-            .snapshot()
-            .get()
-            .songs
-            .iter()
-            .any(|s| s.id == victim.id),
-        "nothing is deleted before the confirmation"
+        still_there(&services, victim.id),
+        "Cancelar deletes nothing"
     );
 
-    let op = vm.delete_songs(vm.delete_targets());
-    assert!(vm.is_deleting());
-    let deleted = loop {
-        if let Some(result) = services.ctx.ops.take_result::<usize>(op) {
-            break result.unwrap();
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    };
-    assert_eq!(deleted, 1);
-    services.library_songs.reload();
-    settle(&services);
-    assert!(
-        !services
-            .library_songs
-            .snapshot()
-            .get()
-            .songs
-            .iter()
-            .any(|s| s.id == victim.id)
-    );
+    // Escape (the framework runs the modal's dismissal).
+    let (_, on_dismiss) = ask(&mut tree);
+    let dismiss = on_dismiss.expect("a dismissal callback");
+    press(&mut tree, move |ctx| {
+        dismiss(teksilo::core::overlay::DismissReason::Escape, ctx)
+    });
+    assert!(!vm.is_deleting());
+    assert!(still_there(&services, victim.id), "Escape deletes nothing");
+
+    // "Eliminar", with the pointer.
+    let (layer, _) = ask(&mut tree);
+    let button = find_by_name(&tree, layer, "Delete")[0];
+    let center = tree.bounds(button).center();
+    tap_at(&mut tree, center);
+    assert!(vm.is_deleting(), "Eliminar starts the delete");
+    assert!(run_until(&services.runtime, TIMEOUT, || !still_there(
+        &services, victim.id
+    )));
     assert!(services.ctx.shutdown());
 }
 

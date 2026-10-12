@@ -254,3 +254,116 @@ fn a_text_button_is_named_by_its_label_and_can_be_disabled() {
     access_click(&mut tree, id);
     assert_eq!(count.get(), 0);
 }
+
+// ---- the confirmation: Enter does nothing (review #14e) -------------------
+
+/// A presented [`confirm_box`], its content built into the tree.
+struct Confirm {
+    tree: WidgetTree,
+    layer: WidgetId,
+    answers: Rc<std::cell::RefCell<Vec<ConfirmResult>>>,
+    on_dismiss: Option<teksilo::core::overlay::OverlayDismissCallback>,
+}
+
+impl Confirm {
+    fn open() -> Self {
+        use teksilo::core::modal::ModalContent;
+        let mut tree = tree();
+        let answers: Rc<std::cell::RefCell<Vec<ConfirmResult>>> = Rc::default();
+        let sink = answers.clone();
+        press(&mut tree, move |ctx| {
+            let sink = sink.clone();
+            confirm_box(
+                lit!("¿Eliminar lista?"),
+                lit!("Esta acción no se puede deshacer."),
+                lit!("Eliminar"),
+            )
+            .on_result(move |result, _ctx| sink.borrow_mut().push(result))
+            .present(ctx);
+        });
+        let queued = tree
+            .drain_pending_modal_requests()
+            .pop()
+            .expect("a modal was presented");
+        let on_dismiss = queued.request.on_dismiss.clone();
+        let layer = match queued.request.content {
+            ModalContent::Deferred(build) => build(&mut tree),
+            ModalContent::ExistingWidget(id) => id,
+        };
+        layout(&mut tree);
+        let _ = tree.render();
+        Self {
+            tree,
+            layer,
+            answers,
+            on_dismiss,
+        }
+    }
+
+    /// The button named `name` ("Cancelar" is the shipped locale's word).
+    fn button(&self, name: &str) -> WidgetId {
+        let name = if name == "Cancelar" {
+            tr!(chrome_dialog_cancel()).resolve_now()
+        } else {
+            name.to_string()
+        };
+        find_by_name(&self.tree, self.layer, &name)[0]
+    }
+
+    fn key_on(&mut self, name: &str, key: teksilo::core::Key) {
+        let button = self.button(name);
+        self.tree.focus(button);
+        crate::teksilo_ui::test_support::key_down(&mut self.tree, button, key);
+    }
+
+    fn answers(&self) -> Vec<ConfirmResult> {
+        self.answers.borrow().clone()
+    }
+}
+
+#[test]
+fn enter_does_nothing_in_a_confirmation_whatever_has_the_keyboard() {
+    // Iced's delete dialog takes no key (`app.rs:5296-5304`); the stock
+    // `MessageBox` pressed "Cancelar", its default button, on Enter.
+    let mut c = Confirm::open();
+    c.key_on("Cancelar", teksilo::core::Key::Enter);
+    c.key_on("Eliminar", teksilo::core::Key::Enter);
+    assert!(c.answers().is_empty(), "{:?}", c.answers());
+    assert!(!c.tree.drain_pending_modal_dismissal(), "still open");
+    // Space still presses the button the keyboard is on.
+    c.key_on("Eliminar", teksilo::core::Key::Space);
+    assert_eq!(c.answers()[0].button, StandardButton::Ok);
+}
+
+#[test]
+fn a_confirmations_buttons_answer_with_the_pointer() {
+    let mut c = Confirm::open();
+    let at = c.tree.bounds(c.button("Cancelar")).center();
+    crate::teksilo_ui::test_support::tap_at(&mut c.tree, at);
+    let answer = c.answers()[0];
+    assert_eq!(answer.button, StandardButton::Cancel);
+    assert!(!answer.was_dismissed());
+
+    let mut c = Confirm::open();
+    let at = c.tree.bounds(c.button("Eliminar")).center();
+    crate::teksilo_ui::test_support::tap_at(&mut c.tree, at);
+    assert_eq!(c.answers().len(), 1);
+    assert_eq!(c.answers()[0].button, StandardButton::Ok);
+}
+
+#[test]
+fn escape_or_a_click_outside_answers_cancel_once() {
+    let mut c = Confirm::open();
+    let dismiss = c.on_dismiss.clone().expect("an on_dismiss callback");
+    let again = dismiss.clone();
+    press(&mut c.tree, move |ctx| {
+        dismiss(teksilo::core::overlay::DismissReason::Escape, ctx)
+    });
+    press(&mut c.tree, move |ctx| {
+        again(teksilo::core::overlay::DismissReason::Escape, ctx)
+    });
+    let answers = c.answers();
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0].button, StandardButton::Cancel);
+    assert!(answers[0].was_dismissed());
+}
